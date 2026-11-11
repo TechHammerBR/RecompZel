@@ -1,5 +1,5 @@
 # instalar.ps1 - instala o RecompZel do zero (chamado por INSTALAR-RECOMPZEL.bat).
-# 1) confere o PC e as ferramentas de compilacao  2) acha o seu .nup  3) compila  4) cria o atalho para jogar.
+# 1) confere o PC  2) acha o seu .nup  3) compila (baixando as ferramentas na primeira vez)  4) cria o atalho para jogar.
 # Voce precisa do seu proprio arquivo do jogo (.nup, v131072). Nada do jogo e baixado ou distribuido.
 param([string]$Nup, [string]$Out)
 $ErrorActionPreference = 'Continue'
@@ -29,18 +29,7 @@ try {
 foreach ($a in $aviso) { Write-Host ('Aviso: ' + $a) -ForegroundColor Yellow }
 Write-Host ''
 
-# (so confere se as ferramentas existem; o build-game.ps1 prepara o ambiente, uma vez so)
-$ferramentas = Get-ChildItem "$env:LOCALAPPDATA\HookshotBuilder\versions" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $ferramentas) {
-    $url = 'https://github.com/TechHammerBR/RecompZel/releases/tag/nightly'
-    Write-Host 'Falta instalar as ferramentas de compilacao (so uma vez):' -ForegroundColor Yellow
-    Write-Host "  1) Baixe o RecompZelBuilder.exe em $url"
-    Write-Host '     (e o instalador gerado a partir deste repositorio; nao use o do projeto original)'
-    Write-Host '  2) Rode, deixe terminar e feche.'
-    Write-Host '  3) Abra INSTALAR-RECOMPZEL.bat de novo.'
-    try { Start-Process $url } catch {}
-    exit 1
-}
+# (as ferramentas de compilacao e o codigo-fonte sao baixados sozinhos pelo build-game.ps1 na primeira vez, se faltarem)
 $args2 = @{}
 if ($Nup) { $args2.Nup = $Nup }
 if ($Out) { $args2.Out = $Out }

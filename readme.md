@@ -43,12 +43,7 @@ powershell -ExecutionPolicy Bypass -File recompzel\instalar.ps1 -Nup "C:\caminho
 
 ### Ferramentas de compilação (uma vez)
 
-O build usa um compilador e ferramentas que são baixados por um instalador. Se o `INSTALAR-RECOMPZEL.bat` disser que as ferramentas não estão instaladas:
-
-- Baixe o **`RecompZelBuilder.exe`** da release [RecompZel Builder](https://github.com/TechHammerBR/RecompZel/releases/tag/nightly) **deste** repositório (ela é gerada a partir do código do RecompZel; o `INSTALAR-RECOMPZEL.bat` abre essa página sozinho). Rode uma vez, deixe terminar e feche. Ele só baixa as ferramentas; o jogo é construído pelo `INSTALAR-RECOMPZEL.bat`.
-- Não use o instalador do repositório original (NotRexed/Hookshot).
-
-Depois, abra o `INSTALAR-RECOMPZEL.bat` de novo.
+O build usa um compilador, Python e outras ferramentas (cerca de 400 MB). **Elas são baixadas sozinhas** na primeira vez que você monta o jogo, a partir da release [RecompZel Builder](https://github.com/TechHammerBR/RecompZel/releases/tag/nightly) deste repositório, com o hash de cada parte conferido. Você não precisa baixar nem rodar nada à parte.
 
 ## Jogar depois de instalado
 
@@ -74,7 +69,7 @@ Dentro do jogo, **Insert** abre o menu (idioma, qualidade, geração de quadros,
 
 | Mensagem ou sintoma | O que fazer |
 |---|---|
-| "As ferramentas de compilação ainda não estão instaladas" | Faça a etapa **Ferramentas de compilação** acima e abra o instalador de novo |
+| O download das ferramentas falha ou o hash não confere | Verifique a internet e rode de novo; ele continua de onde parou. Se o antivírus apagar arquivos, libere `%LOCALAPPDATA%\HookshotBuilder` |
 | "Não achei o arquivo do jogo" | Uma janela pede o arquivo. Ou rode `recompzel\instalar.ps1 -Nup "caminho\arquivo.nup"` |
 | "O arquivo é a versão vXXXX" | O RecompZel só aceita a v131072 do jogo (`[v131072]` no nome do `.nup`) |
 | Avisos de memória, espaço ou placa no começo | São só avisos. O build pede 16 GB de RAM, cerca de 60 GB livres e uma placa com Vulkan e mesh shaders |

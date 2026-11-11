@@ -23,9 +23,17 @@ if (-not (Test-Path (Join-Path $Repo 'nx2\make_game.py'))) {
         throw "Nao consegui baixar o codigo do RecompZel (https://github.com/TechHammerBR/RecompZel). Baixe o ZIP do repositorio, extraia e rode o INSTALAR-RECOMPZEL.bat. Detalhe: $($_.Exception.Message)"
     } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
 }
-$ver = Get-ChildItem "$env:LOCALAPPDATA\HookshotBuilder\versions" -Directory -ErrorAction SilentlyContinue |
-       Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $ver) { throw "As ferramentas de compilacao ainda nao estao instaladas ($env:LOCALAPPDATA\HookshotBuilder\versions). O instalador explica como instala-las." }
+function Get-ToolsVersion {
+    Get-ChildItem "$env:LOCALAPPDATA\HookshotBuilder\versions" -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notlike '*.part' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+}
+$ver = Get-ToolsVersion
+if (-not $ver) {
+    # sem ferramentas: instala agora (baixa da release do RecompZel, sem precisar do Builder)
+    & (Join-Path $PSScriptRoot 'install-tools.ps1')
+    $ver = Get-ToolsVersion
+}
+if (-not $ver) { throw "As ferramentas de compilacao nao foram instaladas ($env:LOCALAPPDATA\HookshotBuilder\versions)." }
 $Tools = Join-Path $ver.FullName 'HookshotBuilder\tools'
 $Py = Join-Path $Tools 'python\python.exe'
 if (-not (Test-Path -LiteralPath $Py)) { throw "Python do Builder nao encontrado: $Py" }
