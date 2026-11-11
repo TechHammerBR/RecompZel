@@ -59,7 +59,7 @@ $STR['pt'] = @{
     fg_1 = 'AMD FSR 3.1 (so 2x)'
     fg_2 = 'Desligado (sem geracao de quadros)'
     diag = 'Registrar diagnostico (buffer sem conexao)'
-    ram_save = 'Economizar RAM (nao carrega o cache de shaders: 1 a 3 GB a menos; a abertura demora uns segundos a mais)'
+    ram_save = 'Nao carregar o cache de pipelines (teste: nos logs nao reduziu a RAM e a abertura demora mais)'
     ram_tip = 'RX_VK_PCACHE_LOAD=0'
     mem_now = 'Jogo agora: RAM {0}, VRAM {1}'
     fsr = 'Usar AMD FSR 4 (mais quadros por segundo)'
@@ -210,7 +210,7 @@ $STR['en'] = @{
     fg_1 = 'AMD FSR 3.1 (2x only)'
     fg_2 = 'Off (no frame generation)'
     diag = 'Log diagnostics (unbound buffer)'
-    ram_save = 'Save RAM (does not load the shader cache: 1 to 3 GB less; the start takes a few seconds longer)'
+    ram_save = 'Do not load the pipeline cache (a test: logs show no RAM saving and the start takes longer)'
     ram_tip = 'RX_VK_PCACHE_LOAD=0'
     mem_now = 'Game now: RAM {0}, VRAM {1}'
     fsr = 'Use AMD FSR 4 (higher frame rate)'
@@ -539,8 +539,8 @@ $vramOptions = @(
 #   Pool = RX_VK_TARGET_POOL_MB (alvos de renderizacao guardados), Tex = RX_VK_TEX_MAX_MB (maior textura), PCache = sem cache de pipelines
 $memProfiles = @(
     @{ Key = '';  Pt = 'Padrao do jogo'; Vram = 0; Mirror = 0; Pool = 0; Tex = 0; PCache = $false },
-    @{ Key = '';  Pt = 'Equilibrado (economiza uns 1 a 2 GB)'; Vram = 6144; Mirror = 1536; Pool = 128; Tex = 0; PCache = $true },
-    @{ Key = '';  Pt = 'Economico (menos RAM e VRAM, pode recarregar texturas)'; Vram = 4096; Mirror = 1024; Pool = 64; Tex = 768; PCache = $true }
+    @{ Key = '';  Pt = 'Equilibrado (menos VRAM)'; Vram = 6144; Mirror = 1536; Pool = 128; Tex = 0; PCache = $false },
+    @{ Key = '';  Pt = 'Economico (menos VRAM, pode recarregar texturas)'; Vram = 4096; Mirror = 1024; Pool = 64; Tex = 768; PCache = $false }
 )
 # Upload de texturas (RX_VK_UPLOAD_BUDGET_MS): 40 ms e o padrao do jogo; 0 = sem adiamento
 $uploadOptions = @(
