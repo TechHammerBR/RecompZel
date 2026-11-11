@@ -12,9 +12,9 @@
 # No game data is involved.
 name: Release
 
+# (recompzel: so a mao por enquanto. O release-please precisa que o repositorio permita "Allow GitHub Actions to create and approve pull requests"
+# em Settings > Actions > General; com isso ligado, volte o push em main aqui)
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       rc:

@@ -5,11 +5,10 @@
 # pushed by hand, or the tag the Release workflow passes when it calls this one (inputs.tag). On any other push to main,
 # the same files replace those of the nightly prerelease, the latest development build.
 name: Linux AppImage
+# (recompzel: o Linux nao e o foco por enquanto. Nao roda a cada push no main; roda ao marcar uma versao (tag), a mao, ou chamado pelo Release)
 on:
   push:
-    branches: [main]
     tags: ['*']
-  pull_request:
   workflow_dispatch:
   workflow_call:
     inputs:
