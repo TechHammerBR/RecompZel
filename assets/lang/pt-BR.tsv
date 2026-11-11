@@ -574,3 +574,14 @@ The language of this menu, the FPS counter and the start-up screen. Auto follows
 A frame for each of the display's refreshes, by RecompZel's own interpolation: none made when the game keeps up. Frame pacing does not apply.	Um quadro para cada atualização do monitor, pela interpolação própria do RecompZel: nenhum é gerado quando o jogo acompanha. O ritmo dos quadros não se aplica.
 %s between each two of the game's, by RecompZel's own interpolation of the finished pictures.	%s entre cada dois do jogo, pela interpolação própria do RecompZel, a partir das imagens prontas.
 Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can show artifacts. The value names the method: RecompZel's own interpolation or, at 2x, AMD FSR 3.1 where it is turned on.	Cria quadros entre os do próprio jogo, para um movimento mais suave, com um pouco de atraso nos comandos. Movimentos rápidos ou cortes de câmera podem mostrar falhas na imagem. O valor mostra o método: a interpolação própria do RecompZel ou, em 2x, o AMD FSR 3.1 quando está ligado.
+V-Sync	V-Sync
+Whether a frame waits for the display's refresh before it is shown. Changes at once.	Se o quadro espera a atualização do monitor antes de ser mostrado. Vale na hora.
+No tearing and no wait where the driver allows it (mailbox); otherwise as On, or on Windows as Off.	Sem rasgos e sem espera onde o driver permite (mailbox); senão como Ligado ou, no Windows, como Desligado.
+Each frame waits for the display's refresh: no tearing, at most the display's rate.	Cada quadro espera a atualização do monitor: sem rasgos, no máximo a taxa do monitor.
+Each frame is shown at once: the least delay, and it can tear. Where the driver cannot, as Auto.	Cada quadro é mostrado na hora: o menor atraso, mas pode rasgar a imagem. Onde o driver não permite, age como Auto.
+Off (16:9)	Desligado (16:9)
+Off (no upscaling)	Desligado (sem upscaling)
+No upscaler, not even the game's network: the 3D is stretched to the output with a plain linear filter. The fastest choice and the roughest picture: no edge smoothing, and softer below 100%.	Sem upscaler, nem a rede do jogo: o 3D é esticado até a saída com um filtro linear simples. A escolha mais rápida e a imagem mais grosseira: sem suavização de bordas, e mais borrada abaixo de 100%.
+The game lowers it when the GPU is busy; the 3D is stretched from whatever size it draws.	O jogo reduz quando a GPU está ocupada; o 3D é esticado de qualquer tamanho em que for desenhado.
+The 3D at the output's full size, not stretched: the sharpest, but its edges stay jagged.	O 3D no tamanho total da saída, sem esticar: o mais nítido, mas as bordas ficam serrilhadas.
+A steady size, stretched to the output: lower is faster, and blurrier.	Um tamanho fixo, esticado até a saída: menor é mais rápido e mais borrado.
