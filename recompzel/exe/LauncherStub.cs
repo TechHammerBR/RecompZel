@@ -21,6 +21,13 @@ static class LauncherStub
         return true;
     }
 
+    // Numero do build (rz.build.txt dentro do exe, o numero da execucao do CI): um exe mais velho nao desfaz um launcher que ja foi atualizado
+    static int ReadBuild(string text)
+    {
+        int n;
+        return int.TryParse((text ?? "").Trim(), out n) ? n : 0;
+    }
+
     [STAThread]
     static int Main(string[] args)
     {
@@ -28,9 +35,19 @@ static class LauncherStub
         {
             Directory.CreateDirectory(Dir);
             var asm = Assembly.GetExecutingAssembly();
+            int embedded = 0, installed = 0;
+            using (var bs = asm.GetManifestResourceStream("rz.build.txt"))
+            {
+                if (bs != null) using (var rd = new StreamReader(bs)) embedded = ReadBuild(rd.ReadToEnd());
+            }
+            string buildFile = Path.Combine(Dir, "build.txt");
+            try { if (File.Exists(buildFile)) installed = ReadBuild(File.ReadAllText(buildFile)); } catch (IOException) { }
+            bool keepInstalled = embedded > 0 && installed > embedded;   // ja ha scripts mais novos na pasta: nao volta atras
             foreach (var name in asm.GetManifestResourceNames())
             {
+                if (keepInstalled) break;
                 if (!name.StartsWith("rz.", StringComparison.Ordinal)) continue;
+                if (name == "rz.build.txt") continue;
                 string file = name.Substring(3);
                 string dest = Path.Combine(Dir, file);
                 // games.json guarda o perfil do usuario (caminhos); so e criado se ainda nao existe.
@@ -48,6 +65,10 @@ static class LauncherStub
                 try { File.WriteAllBytes(dest, data); }
                 catch (IOException) { if (!File.Exists(dest)) throw; }                // em uso por outro processo: usa o que ja esta la
                 catch (UnauthorizedAccessException) { if (!File.Exists(dest)) throw; }
+            }
+            if (embedded > 0 && !keepInstalled)
+            {
+                try { File.WriteAllText(buildFile, embedded.ToString()); } catch (IOException) { }
             }
             var psi = new ProcessStartInfo
             {

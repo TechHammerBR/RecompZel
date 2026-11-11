@@ -29,6 +29,13 @@ $STR['pt'] = @{
     folder_tip = 'Abre a pasta onde o jogo foi montado.'
     report = 'Copiar relatorio para suporte'
     report_tip = 'Copia o final do registro do build. Cole numa conversa para pedir ajuda.'
+    upd = 'Atualizar o RecompZel'
+    upd_avail = 'Atualizar o RecompZel (ha novidade!)'
+    upd_tip = 'Baixa a versao mais nova do launcher e do codigo do jogo direto do GitHub. Depois, Reconstruir aplica as mudancas do jogo.'
+    upd_ask = 'Baixar e instalar a atualizacao do RecompZel agora? O launcher fecha e abre de novo sozinho.'
+    upd_none = 'Voce ja esta com a versao mais nova.'
+    upd_fail = 'Nao consegui atualizar agora: {0}'
+    upd_src_ok = 'Codigo do jogo atualizado. Clique em Reconstruir para aplicar (so recompila o que mudou).'
     vram_t = 'Memoria de video para texturas'
     vram_d = 'Padrao do jogo (70% da VRAM, ate 6 GB)'
     vram_tip = 'Quanta memoria da placa de video o jogo pode usar para texturas. Valores maiores ajudam nas texturas embaralhadas, se a placa tiver folga. Padrao: o jogo decide.'
@@ -172,6 +179,13 @@ $STR['en'] = @{
     folder_tip = 'Opens the folder where the game was built.'
     report = 'Copy report for support'
     report_tip = 'Copies the end of the build log. Paste it into a chat to ask for help.'
+    upd = 'Update RecompZel'
+    upd_avail = 'Update RecompZel (news!)'
+    upd_tip = 'Downloads the newest launcher and game code straight from GitHub. Then Rebuild applies the game changes.'
+    upd_ask = 'Download and install the RecompZel update now? The launcher closes and opens again by itself.'
+    upd_none = 'You already have the newest version.'
+    upd_fail = 'Could not update now: {0}'
+    upd_src_ok = 'Game code updated. Click Rebuild to apply it (only what changed is recompiled).'
     vram_t = 'Video memory for textures'
     vram_d = 'Game default (70% of VRAM, up to 6 GB)'
     vram_tip = 'How much graphics card memory the game may use for textures. Larger values help with scrambled textures, if the card has room. Default: the game decides.'
@@ -394,6 +408,7 @@ $xaml = @'
       <Button x:Name="btnBuild" Style="{StaticResource Row}"/>
       <Button x:Name="btnFolder" Style="{StaticResource Row}"/>
       <Button x:Name="btnReport" Style="{StaticResource Row}"/>
+      <Button x:Name="btnUpdate" Style="{StaticResource Row}"/>
       <Border x:Name="vramBox" Background="#1B2A25" BorderBrush="#2E4A40" BorderThickness="1" CornerRadius="3" Padding="16,10">
         <StackPanel>
           <TextBlock x:Name="txtVramT" Foreground="#E6F2EC" FontSize="13"/>
@@ -498,7 +513,7 @@ $xaml = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
 try { if (Test-Path (Join-Path $PSScriptRoot 'recompzel.ico')) { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri](Join-Path $PSScriptRoot 'recompzel.ico')) } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','btnUpdate','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -548,6 +563,8 @@ function Apply-Language {
         $btnPlay.Content = T 'play';   $btnPlay.Tag = T 'play_tip'
         $btnFolder.Content = T 'folder'; $btnFolder.Tag = T 'folder_tip'
         $btnReport.Content = T 'report'; $btnReport.Tag = T 'report_tip'
+        if ($script:updateAvail) { $btnUpdate.Content = T 'upd_avail' } else { $btnUpdate.Content = T 'upd' }
+        $btnUpdate.Tag = T 'upd_tip'
         $btnBuild.Tag = T 'build_tip'
         $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtFgT.Text = T 'fg_t'
         $tbRam = New-Object System.Windows.Controls.TextBlock; $tbRam.Text = (T 'ram_save'); $tbRam.TextWrapping = 'Wrap'; $chkRam.Content = $tbRam; $chkRam.ToolTip = (T 'ram_tip')
@@ -731,7 +748,7 @@ $cbLang.Add_SelectionChanged({
 })
 
 # ---------- Ajuda ao passar o mouse ----------
-foreach ($b in @($btnPlay, $btnBuild, $btnFolder, $btnReport)) {
+foreach ($b in @($btnPlay, $btnBuild, $btnFolder, $btnReport, $btnUpdate)) {
     $b.Add_MouseEnter({ param($s, $e) $txtHelp.Text = [string]$s.Tag })
     $b.Add_MouseLeave({ $txtHelp.Text = $script:defaultHelp })
 }
@@ -1298,6 +1315,71 @@ $btnPlay.Add_Click({
 # ---------- Atualizacao automatica ----------
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(2)
+# ---------- Atualizacao do proprio RecompZel (launcher e codigo do jogo) a partir do GitHub ----------
+# O exe leva um numero de build (build.txt, o numero da execucao do CI). A release "launcher" publica o build.txt e o exe mais novos:
+# se o numero de la e maior que o desta pasta, o botao Atualizar avisa. Atualizar baixa o exe (hash conferido), atualiza o codigo do jogo
+# (so a copia baixada pelo launcher, nunca um clone com git) e abre o exe novo, que troca os scripts e abre o launcher de novo.
+$script:updateAvail = $false; $script:updateTask = $null; $script:updateWc = $null
+$UpdBase = 'https://github.com/TechHammerBR/RecompZel/releases/download/launcher'
+function Get-LocalBuild {
+    try { $f = Join-Path $AppDir 'build.txt'; if (Test-Path -LiteralPath $f) { return [int](Get-Content -LiteralPath $f -Raw).Trim() } } catch {}
+    return 0
+}
+function Start-UpdateCheck {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $script:updateWc = New-Object System.Net.WebClient
+        $script:updateTask = $script:updateWc.DownloadStringTaskAsync(($UpdBase + '/build.txt?t=' + [guid]::NewGuid().ToString('N')))
+    } catch { $script:updateTask = $null }
+}
+function Poll-UpdateCheck {
+    if ($null -eq $script:updateTask -or -not $script:updateTask.IsCompleted) { return }
+    $t = $script:updateTask; $script:updateTask = $null
+    try {
+        if (-not $t.IsFaulted -and -not $t.IsCanceled) {
+            $remote = [int]($t.Result.Trim())
+            $local = Get-LocalBuild
+            if ($local -gt 0 -and $remote -gt $local) { $script:updateAvail = $true; $btnUpdate.Content = T 'upd_avail' }
+        }
+    } catch {}
+    try { $script:updateWc.Dispose() } catch {}
+}
+function Update-GameSource {
+    # so a copia que o launcher baixou (sem .git); quem usa um clone atualiza com git pull ou atualizar-fork.ps1
+    $src = Join-Path $env:LOCALAPPDATA 'RecompZel\RecompZel'
+    if (-not (Test-Path -LiteralPath (Join-Path $src 'nx2\make_game.py')) -or (Test-Path -LiteralPath (Join-Path $src '.git'))) { return $false }
+    $tmp = Join-Path $env:TEMP ('recompzel-upd-' + [guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+        $zip = Join-Path $tmp 'src.zip'
+        Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/TechHammerBR/RecompZel/archive/refs/heads/main.zip' -OutFile $zip
+        Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
+        $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
+        Copy-Item -Path (Join-Path $inner.FullName '*') -Destination $src -Recurse -Force
+        return $true
+    } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+}
+$btnUpdate.Add_Click({
+    if ([System.Windows.MessageBox]::Show($win, (T 'upd_ask'), 'RecompZel', 'YesNo', 'Question') -ne 'Yes') { return }
+    $btnUpdate.IsEnabled = $false
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $tmp = Join-Path $env:TEMP 'RecompZel-Launcher-novo.exe'
+        Invoke-WebRequest -UseBasicParsing -Uri ($UpdBase + '/RecompZel-Launcher.exe') -OutFile $tmp
+        $want = ((Invoke-WebRequest -UseBasicParsing -Uri ($UpdBase + '/RecompZel-Launcher.exe.sha256')).Content).Trim().Split(' ')[0]
+        if ((Get-FileHash -Path $tmp -Algorithm SHA256).Hash -ine $want) { throw 'arquivo baixado nao confere (hash)' }
+        $srcOk = Update-GameSource
+        if ($srcOk) { [System.Windows.MessageBox]::Show($win, (T 'upd_src_ok'), 'RecompZel') | Out-Null }
+        # abre o exe novo depois que este launcher fechar (ele troca os scripts e abre o launcher de novo)
+        $cmd = "Start-Sleep -Seconds 2; Start-Process -FilePath '" + $tmp + "'"
+        Start-Process powershell.exe -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-Command', ('"' + $cmd + '"'))
+        $win.Close()
+    } catch {
+        [System.Windows.MessageBox]::Show($win, ((T 'upd_fail') -f $_.Exception.Message), 'RecompZel') | Out-Null
+        $btnUpdate.IsEnabled = $true
+    }
+})
+
 # Enquanto o jogo roda, mostra a memoria dele (RAM e VRAM, com o pico): serve para ver o que o jogo usa de verdade e comparar as opcoes de economia
 $script:memTick = 0; $script:memText = ''; $script:memPeakRam = 0.0; $script:memPeakVram = 0.0
 function Sample-GameMem {
@@ -1449,10 +1531,11 @@ $btnTechAll.Add_Click({ Install-AllTech })
 # O painel de tecnologias muda raramente: atualiza a cada 5 ticks (10 s), e na hora quando o usuario mexe (os botoes chamam Update-Tech)
 $script:techTick = 0
 $timer.Add_Tick({
-    Update-View; Show-ToolsProgress; Check-Game
+    Update-View; Show-ToolsProgress; Check-Game; Poll-UpdateCheck
     $script:techTick++
     if ($script:techTick -ge 5) { $script:techTick = 0; Update-Tech }
 })
+Start-UpdateCheck
 $timer.Start()
 Update-View
 Update-Tech

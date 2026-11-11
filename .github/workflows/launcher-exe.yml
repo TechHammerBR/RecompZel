@@ -32,7 +32,9 @@ jobs:
         run: |
           $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
           if (-not (Test-Path $csc)) { throw "csc.exe nao encontrado: $csc" }
-          $res = @()
+          # numero do build: o launcher compara com o da release para oferecer a atualizacao (botao Atualizar)
+          Set-Content -Path recompzel\build.txt -Value '${{ github.run_number }}' -NoNewline -Encoding ASCII
+          $res = @('/resource:recompzel\build.txt,rz.build.txt')
           foreach ($f in 'launcher.ps1','build-game.ps1','env-recompzel.ps1','install-tools.ps1','post-install.ps1','criar-atalhos.ps1','medir-rodada.ps1','monitor-build.ps1','atualizar-fork.ps1','recompzel.ico') {
             $p = Join-Path 'recompzel' $f
             if (-not (Test-Path $p)) { throw "falta $p" }
@@ -70,4 +72,5 @@ jobs:
           else
             gh release create launcher --title "RecompZel Launcher (exe)" --notes "$notes" --latest=false --target "$GITHUB_SHA"
           fi
-          gh release upload launcher out/RecompZel-Launcher.exe out/RecompZel-Launcher.exe.sha256 --clobber
+          cp recompzel/build.txt out/build.txt
+          gh release upload launcher out/RecompZel-Launcher.exe out/RecompZel-Launcher.exe.sha256 out/build.txt --clobber
