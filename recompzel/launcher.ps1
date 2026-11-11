@@ -59,6 +59,7 @@ $STR['pt'] = @{
     fg_1 = 'AMD FSR 3.1 (so 2x)'
     fg_2 = 'Desligado (sem geracao de quadros)'
     diag = 'Registrar diagnostico (buffer sem conexao)'
+    linear = 'DLSS com cor linear (teste: tira o halo e a borda escura?)'
     ram_save = 'Nao carregar o cache de pipelines (teste: nos logs nao reduziu a RAM e a abertura demora mais)'
     ram_tip = 'RX_VK_PCACHE_LOAD=0'
     mem_now = 'Jogo agora: RAM {0}, VRAM {1}'
@@ -210,6 +211,7 @@ $STR['en'] = @{
     fg_1 = 'AMD FSR 3.1 (2x only)'
     fg_2 = 'Off (no frame generation)'
     diag = 'Log diagnostics (unbound buffer)'
+    linear = 'DLSS with linear color (test: removes the halo and the dark edge?)'
     ram_save = 'Do not load the pipeline cache (a test: logs show no RAM saving and the start takes longer)'
     ram_tip = 'RX_VK_PCACHE_LOAD=0'
     mem_now = 'Game now: RAM {0}, VRAM {1}'
@@ -433,6 +435,7 @@ $xaml = @'
           <TextBlock x:Name="txtFgT" Foreground="#E6F2EC" FontSize="13"/>
           <ComboBox x:Name="cbFg" Margin="0,6,0,8" Height="26"/>
           <CheckBox x:Name="chkRam" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
+          <CheckBox x:Name="chkLinear" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkDiag" Foreground="#E6F2EC" FontSize="12"/>
         </StackPanel>
       </Border>
@@ -517,7 +520,7 @@ $xaml = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
 try { if (Test-Path (Join-Path $PSScriptRoot 'recompzel.ico')) { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri](Join-Path $PSScriptRoot 'recompzel.ico')) } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','btnUpdate','cbMem','txtMemT','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','btnUpdate','cbMem','txtMemT','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary','chkLinear') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -583,6 +586,7 @@ function Apply-Language {
         $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtMemT.Text = T 'mem_t'; $txtFgT.Text = T 'fg_t'
         $tbRam = New-Object System.Windows.Controls.TextBlock; $tbRam.Text = (T 'ram_save'); $tbRam.TextWrapping = 'Wrap'; $chkRam.Content = $tbRam; $chkRam.ToolTip = (T 'ram_tip')
         $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'; $chkDlss.Content = T 'dlss'; $chkDsr.Content = T 'dsr'
+        $tbLin = New-Object System.Windows.Controls.TextBlock; $tbLin.Text = (T 'linear'); $tbLin.TextWrapping = 'Wrap'; $chkLinear.Content = $tbLin
         $txtTechT.Text = T 'tech_t'; $txtTechIntro.Text = T 'tech_intro'; $ttlDsr.Text = T 'tn_dsr'; $ttlDlss.Text = T 'tn_dlss'; $ttlFsr.Text = T 'tn_fsr'; $btnTechAll.Content = T 'tech_all'; $chkSafe.Content = T 'safe'
         $lblNow.Text = T 'lbl_now'; $lblSteps.Text = T 'lbl_steps'; $lblNext.Text = T 'lbl_next'
         $lblNotes.Text = T 'lbl_notes'; $lblSummary.Text = T 'lbl_summary'
@@ -620,6 +624,7 @@ try {
         if ($c.fsr -eq $true) { $chkFsr.IsChecked = $true }
         if ($c.dlss -eq $true) { $chkDlss.IsChecked = $true }
         if ($c.dsr -eq $true) { $chkDsr.IsChecked = $true }
+        if ($c.dlssLinear -eq $true) { $chkLinear.IsChecked = $true }
         if ($c.safe -eq $true) { $chkSafe.IsChecked = $true }
         if ($c.fgIndex -ge 0 -and $c.fgIndex -lt $fgOptions.Count) { $cbFg.SelectedIndex = [int]$c.fgIndex }
     }
@@ -631,7 +636,7 @@ $cbFg.SelectedIndex = 0; $txtFgT.Visibility = 'Collapsed'; $cbFg.Visibility = 'C
 function Save-Settings {
     if ($script:loading) { return }
     try {
-        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; memIndex = $cbMem.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; ramSave = [bool]$chkRam.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; lang = $script:lang } |
+        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; memIndex = $cbMem.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; ramSave = [bool]$chkRam.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; dlssLinear = [bool]$chkLinear.IsChecked; lang = $script:lang } |
             ConvertTo-Json | Set-Content $Cfg -Encoding ASCII
     } catch {}
 }
@@ -750,6 +755,7 @@ $cbMem.Add_SelectionChanged({ Save-Settings })
 $cbFg.Add_SelectionChanged({ Save-Settings })
 $chkDiag.Add_Click({ Save-Settings })
 $chkRam.Add_Click({ Save-Settings })
+$chkLinear.Add_Click({ Save-Settings })
 $chkFsr.Add_Click({ Save-Settings; Update-Fsr-Text; Update-Tech })
 $chkDlss.Add_Click({ Save-Settings; Set-FgChoice ([bool]$chkDlss.IsChecked); Update-Dlss-Text; Update-Tech })
 $chkDsr.Add_Click({ Save-Settings; Update-Dsr-Text; Update-Tech })
@@ -1254,6 +1260,8 @@ $btnPlay.Add_Click({
     $mp = $memProfiles[[math]::Max(0, $cbMem.SelectedIndex)]
     # RX_VK_COMPACT=1: compactacao de VRAM do motor (desligada por padrao la): o driver conta os blocos inteiros, e o espaco livre dentro deles nao volta
     if ($mp.Compact) { [Environment]::SetEnvironmentVariable('RX_VK_COMPACT', '1', 'Process') } else { [Environment]::SetEnvironmentVariable('RX_VK_COMPACT', $null, 'Process') }
+    # RX_VK_DLSS_LINEAR=1: o DLSS recebe luz linear da cena (a receita do NX2navi), em teste contra o halo e a borda escura
+    if ($chkLinear.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_DLSS_LINEAR', '1', 'Process') } else { [Environment]::SetEnvironmentVariable('RX_VK_DLSS_LINEAR', $null, 'Process') }
     if ($mp.Vram -gt 0) {
         if ($mb -le 0) { [Environment]::SetEnvironmentVariable('RX_VK_VRAM_MB', [string]$mp.Vram, 'Process') }
         if ($mb -le 0 -or $mb -gt 6144) { [Environment]::SetEnvironmentVariable('RX_VK_MIRROR_MB', [string]$mp.Mirror, 'Process') }
@@ -1336,7 +1344,7 @@ $btnPlay.Add_Click({
     }
     # a nota da rodada fica sempre em portugues (e lida pelo medir-rodada.ps1)
     $meshNow = Read-Mesh
-    $script:roundNote = ('VRAM={0} UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7}' -f $vramOptions[$cbVram.SelectedIndex].Pt, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr)
+    $script:roundNote = ('VRAM={0} UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8}' -f $vramOptions[$cbVram.SelectedIndex].Pt, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked)
     $script:gameOut = Get-OutDir
     $script:gameProc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
     $txtHelp.Text = T 'started'
