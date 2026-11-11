@@ -323,7 +323,7 @@ uint32_t asked() {
         return e && *e ? std::max(0, atoi(e)) : -1;
     }();
     if (env >= 0) return env ? 1u : 0u;
-    return 0u;   // (opt-in: the renderer's own blend at 2x, see above)
+    return opts.fgtype == 2 ? 1u : 0u;   // (opt-in: the Frame generation method row on AMD FSR 3.1; else the renderer's own blend at 2x, see above)
 }
 
 /// A memory dependency over the whole queue, in the synchronization2 form this renderer loads.

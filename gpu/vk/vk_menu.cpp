@@ -113,14 +113,26 @@ const char* tx_framegen(int v) {
     snprintf(t[v], sizeof t[v], "%dx (%s)", v, v == 2 && fsr3fi::frames_wanted() != 0 ? "AMD FSR 3.1" : "RecompZel");
     return t[v];
 }
-/// The Frame generation method (opts.fgtype): shown only where NVIDIA's Streamline is loaded and DLSS-G runs on this GPU
-const char* tx_fgtype(int v) { return v == 1 ? "NVIDIA DLSS Frame Generation" : "RecompZel / AMD FSR 3.1"; }
+/// The Frame generation method (opts.fgtype): 0 RecompZel's own interpolation (any GPU), 1 NVIDIA DLSS Frame Generation (where
+/// Streamline is loaded and DLSS-G runs on this GPU), 2 AMD FSR 3.1 (2x, where this GPU can run its passes)
+bool fgtype_available(int v) {
+    return v == 0 || (v == 1 && slfg::max_generated() > 0) || (v == 2 && fsr3fi::capable());
+}
+const char* tx_fgtype(int v) {
+    static const char* const on[] = {"RecompZel", "NVIDIA DLSS-G", "AMD FSR 3.1"};
+    static const char* const off[] = {"RecompZel", "NVIDIA DLSS-G (not here)", "AMD FSR 3.1 (not here)"};
+    v = std::clamp(v, 0, 2);
+    return fgtype_available(v) ? on[v] : off[v];
+}
 const char* hn_fgtype(int v, int variant) {
     static const char* const t[] = {
-        "The renderer's own interpolation, or AMD FSR 3.1 at 2x where it is turned on. Works on any GPU.",
-        "NVIDIA's frame generation (RTX 40 and 50), from the scene's depth and motion. It needs the Upscaler row on NVIDIA DLSS or "
-        "DLAA, and takes the Frame generation row below as its multiplier: 2x on an RTX 40, up to 4x on an RTX 50."};
-    return variant <= 0 && v >= 0 && v <= 1 ? t[v] : nullptr;
+        "RecompZel's own interpolation: a frame for each of the display's refreshes (Auto) or 2x to 8x. Works on any GPU.",
+        "NVIDIA's frame generation (RTX 40 and 50), from the scene's depth and motion. The Frame generation row below is its "
+        "multiplier: 2x on an RTX 40, up to 4x on an RTX 50. Choosing it sets the Upscaler to NVIDIA DLSS. Needs the NVIDIA files "
+        "beside the game (the launcher installs them).",
+        "AMD FSR 3.1's frame interpolation, at 2x (higher values use RecompZel's own). Works on most GPUs. The HUD can smear "
+        "while it moves: the game draws it into the same picture."};
+    return variant <= 0 && v >= 0 && v <= 2 ? t[v] : nullptr;
 }
 const char* tx_language(int v) {
     static const char* const names[] = {"Auto", "English", "Portugu\xc3\xaas (Brasil)"};
@@ -760,9 +772,9 @@ Row rows[] = {
      "Fills the whole screen with the game, without the window's border. The same as F11.", nullptr, false, true},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
      "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
-    {TAB_GRAPHICS, "Frame generation method", &opts.fgtype, 0, 1, 1, tx_fgtype,
-     "Who makes the frames between the game's own: the renderer's interpolation (or AMD FSR 3.1) or NVIDIA DLSS Frame Generation. "
-     "Shown where DLSS Frame Generation is set up (the launcher's box).", hn_fgtype, false, true},
+    {TAB_GRAPHICS, "Frame generation method", &opts.fgtype, 0, 2, 1, tx_fgtype,
+     "Who makes the frames between the game's own: RecompZel's interpolation, NVIDIA DLSS Frame Generation or AMD FSR 3.1. "
+     "A method that cannot run on this GPU says so and is skipped.", hn_fgtype, false, true},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
      "show artifacts. The value names the method: RecompZel's own interpolation or, at 2x, AMD FSR 3.1 where it is turned on.",
@@ -1164,7 +1176,7 @@ int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 bool row_shown(int i) {
     const int* v = rows[i].value;
     return (rows[i].cheat < 0 || cheats_on()) && (v != &opts.reflex || reflex_available()) &&
-           (v != &opts.antilag || antilag_available()) && (v != &opts.fgtype || slfg::max_generated() > 0) &&
+           (v != &opts.antilag || antilag_available()) &&
            (v != &opts.dlss || ur::upscaler_shown(upscalers_available())) &&
            (v != &opts.dlss_model || ur::model_shown(dlss_why() == DLSS_OK)) &&
            ((v != &opts.hdr_white && v != &opts.hdr_peak) || opts.hdr != 0);
@@ -1368,6 +1380,11 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         ur::step_render(upscaler(), *r.value, dir, &up, &res);
         if (up != upscaler()) opts.dlss = up;   // (Native in or out: DLAA / DLSS, FSR 4's native AA / FSR 4)
         v = res;
+    }
+    if (r.value == &opts.fgtype) {   // (only the methods that can run here: the next one that can, in the arrow's direction)
+        int c = ((v % 3) + 3) % 3;
+        for (int i = 0; i < 3 && !fgtype_available(c); i++) c = (c + (dir < 0 ? 2 : 1)) % 3;
+        v = c;
     }
     if (r.value == &opts.output_res) {   // (smallest to largest: step_output_choice)
         v = step_output_choice(*r.value, dir);

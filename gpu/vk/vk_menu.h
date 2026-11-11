@@ -8,8 +8,8 @@ namespace mkwvk {
 // (out of the box every feature is off: what the game does on its own. The ini beside the executable keeps a player's choices)
 struct Options {
     int framegen = 0;     // made frames: 0 off, 1 Auto (to the display's refresh), or 2 to 8 times the game's frames
-    int fgtype = 0;       // (recompzel) the Frame generation row's method: 0 RecompZel's own interpolation (or AMD FSR 3.1 at 2x), 1 NVIDIA DLSS
-                          // Frame Generation (vk_streamline.cpp: Streamline loaded with RX_VK_DLSSG=1; the row is then 2x and up)
+    int fgtype = 0;       // (recompzel) the Frame generation row's method: 0 RecompZel's own interpolation, 1 NVIDIA DLSS Frame Generation, 2 AMD FSR 3.1 (2x)
+                          // (DLSS: vk_streamline.cpp, the Streamline files beside the game or RX_VK_DLSSG=1; the row is then 2x and up)
     int pace = 0;         // frames shown on an even line (vk_framegen.cpp)
     int vsync = 0;        // (hookshot) V-Sync, the swapchain's present mode (vk_main.cpp create_swapchain, made again at once): 0 Auto
                           // (mailbox where the driver has it), 1 On (FIFO), 2 Off (immediate). RX_VK_FIFO / RX_VK_IMMEDIATE over it

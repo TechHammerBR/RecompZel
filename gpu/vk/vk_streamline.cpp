@@ -122,7 +122,13 @@ T* symbol(const char* name) {
 bool wanted() {
     if (S.wanted < 0) {
         const char* e = getenv("RX_VK_DLSSG");
-        S.wanted = e && e[0] == '1';
+        if (e && e[0]) {
+            S.wanted = e[0] == '1';   // (=1 asks for it, =0 never)
+        } else {
+            // By default whenever the Streamline files are beside the game (the launcher puts them there for RTX 40 and 50), so
+            // the Frame generation method row offers NVIDIA DLSS without an environment variable
+            S.wanted = GetFileAttributesW((exe_dir() / L"streamline" / L"sl.interposer.dll").c_str()) != INVALID_FILE_ATTRIBUTES;
+        }
     }
     return S.wanted == 1;
 }
