@@ -50,6 +50,7 @@ $STR['pt'] = @{
     mesh_fail = 'Nao consegui salvar: {0}'
     mesh_ok = 'Valor atual lido das opcoes do jogo.'
     up_t = 'Upload de texturas por quadro'
+    mem_t = 'Perfil de memoria (RAM e VRAM)'
     up_0 = 'Padrao do jogo (40 ms)'
     up_1 = '120 ms'
     up_2 = 'Sem adiamento (0 ms)'
@@ -200,6 +201,7 @@ $STR['en'] = @{
     mesh_fail = 'Could not save: {0}'
     mesh_ok = 'Current value read from the game options.'
     up_t = 'Texture upload per frame'
+    mem_t = 'Memory profile (RAM and VRAM)'
     up_0 = 'Game default (40 ms)'
     up_1 = '120 ms'
     up_2 = 'No deferral (0 ms)'
@@ -424,6 +426,8 @@ $xaml = @'
       </Border>
       <Border x:Name="tuneBox" Background="#1B2A25" BorderBrush="#2E4A40" BorderThickness="1" CornerRadius="3" Padding="16,10" Margin="0,8,0,0">
         <StackPanel>
+          <TextBlock x:Name="txtMemT" Foreground="#E6F2EC" FontSize="13"/>
+          <ComboBox x:Name="cbMem" Margin="0,6,0,8" Height="26"/>
           <TextBlock x:Name="txtUpT" Foreground="#E6F2EC" FontSize="13"/>
           <ComboBox x:Name="cbUpload" Margin="0,6,0,8" Height="26"/>
           <TextBlock x:Name="txtFgT" Foreground="#E6F2EC" FontSize="13"/>
@@ -513,7 +517,7 @@ $xaml = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
 try { if (Test-Path (Join-Path $PSScriptRoot 'recompzel.ico')) { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri](Join-Path $PSScriptRoot 'recompzel.ico')) } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','btnUpdate','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','btnUpdate','cbMem','txtMemT','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -528,6 +532,15 @@ $vramOptions = @(
     @{ Key = '';       Pt = '5 GB (economiza VRAM)'; Mb = 5120 },
     @{ Key = '';       Pt = '4 GB (economiza VRAM)'; Mb = 4096 },
     @{ Key = '';       Pt = '3 GB (economiza VRAM, texturas podem recarregar)'; Mb = 3072 }
+)
+# Perfil de memoria: junta as opcoes de economia num clique (o 'Padrao' nao muda nada e as caixas e o limite de VRAM abaixo continuam valendo).
+# Os valores sao conservadores e ainda estao sendo ajustados com medidas reais (Jogo agora: RAM/VRAM na linha de status).
+#   Vram = RX_VK_VRAM_MB (orcamento de texturas), Mirror = RX_VK_MIRROR_MB (copia da memoria do console na VRAM),
+#   Pool = RX_VK_TARGET_POOL_MB (alvos de renderizacao guardados), Tex = RX_VK_TEX_MAX_MB (maior textura), PCache = sem cache de pipelines
+$memProfiles = @(
+    @{ Key = '';  Pt = 'Padrao do jogo'; Vram = 0; Mirror = 0; Pool = 0; Tex = 0; PCache = $false },
+    @{ Key = '';  Pt = 'Equilibrado (economiza uns 1 a 2 GB)'; Vram = 6144; Mirror = 1536; Pool = 128; Tex = 0; PCache = $true },
+    @{ Key = '';  Pt = 'Economico (menos RAM e VRAM, pode recarregar texturas)'; Vram = 4096; Mirror = 1024; Pool = 64; Tex = 768; PCache = $true }
 )
 # Upload de texturas (RX_VK_UPLOAD_BUDGET_MS): 40 ms e o padrao do jogo; 0 = sem adiamento
 $uploadOptions = @(
@@ -566,7 +579,7 @@ function Apply-Language {
         if ($script:updateAvail) { $btnUpdate.Content = T 'upd_avail' } else { $btnUpdate.Content = T 'upd' }
         $btnUpdate.Tag = T 'upd_tip'
         $btnBuild.Tag = T 'build_tip'
-        $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtFgT.Text = T 'fg_t'
+        $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtMemT.Text = T 'mem_t'; $txtFgT.Text = T 'fg_t'
         $tbRam = New-Object System.Windows.Controls.TextBlock; $tbRam.Text = (T 'ram_save'); $tbRam.TextWrapping = 'Wrap'; $chkRam.Content = $tbRam; $chkRam.ToolTip = (T 'ram_tip')
         $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'; $chkDlss.Content = T 'dlss'; $chkDsr.Content = T 'dsr'
         $txtTechT.Text = T 'tech_t'; $txtTechIntro.Text = T 'tech_intro'; $ttlDsr.Text = T 'tn_dsr'; $ttlDlss.Text = T 'tn_dlss'; $ttlFsr.Text = T 'tn_fsr'; $btnTechAll.Content = T 'tech_all'; $chkSafe.Content = T 'safe'
@@ -575,6 +588,7 @@ function Apply-Language {
         if ($txtResumo.Tag -ne 'real') { $txtResumo.Text = T 'summary_ph' }
         Fill-Combo $cbVram (@($vramOptions | ForEach-Object { Opt-Label $_ }))
         Fill-Combo $cbUpload (@($uploadOptions | ForEach-Object { Opt-Label $_ }))
+        Fill-Combo $cbMem (@($memProfiles | ForEach-Object { Opt-Label $_ }))
         Fill-Combo $cbFg (@($fgOptions | ForEach-Object { Opt-Label $_ }))
         Fill-Combo $cbMesh (@($meshKeys | ForEach-Object { T $_ }))
         $script:defaultHelp = T 'help'
@@ -599,6 +613,7 @@ try {
         if ($c.lang -eq 'en') { $script:lang = 'en'; $cbLang.SelectedIndex = 1 }
         if ($c.vramIndex -ge 0 -and $c.vramIndex -lt $vramOptions.Count) { $cbVram.SelectedIndex = [int]$c.vramIndex }
         if ($c.uploadIndex -ge 0 -and $c.uploadIndex -lt $uploadOptions.Count) { $cbUpload.SelectedIndex = [int]$c.uploadIndex }
+        if ($c.memIndex -ge 0 -and $c.memIndex -lt $memProfiles.Count) { $cbMem.SelectedIndex = [int]$c.memIndex }
         if ($c.diag -eq $true) { $chkDiag.IsChecked = $true }
         if ($c.ramSave -eq $true) { $chkRam.IsChecked = $true }
         if ($c.fsr -eq $true) { $chkFsr.IsChecked = $true }
@@ -615,7 +630,7 @@ $cbFg.SelectedIndex = 0; $txtFgT.Visibility = 'Collapsed'; $cbFg.Visibility = 'C
 function Save-Settings {
     if ($script:loading) { return }
     try {
-        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; ramSave = [bool]$chkRam.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; lang = $script:lang } |
+        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; memIndex = $cbMem.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; ramSave = [bool]$chkRam.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; lang = $script:lang } |
             ConvertTo-Json | Set-Content $Cfg -Encoding ASCII
     } catch {}
 }
@@ -730,6 +745,7 @@ $cbGame.Add_SelectionChanged({
 })
 $cbVram.Add_SelectionChanged({ Save-Settings })
 $cbUpload.Add_SelectionChanged({ Save-Settings })
+$cbMem.Add_SelectionChanged({ Save-Settings })
 $cbFg.Add_SelectionChanged({ Save-Settings })
 $chkDiag.Add_Click({ Save-Settings })
 $chkRam.Add_Click({ Save-Settings })
@@ -1233,6 +1249,17 @@ $btnPlay.Add_Click({
     # com um limite de VRAM de 6 GB ou menos, o espelho de memoria do jogo (3 GB por padrao) tambem encolhe, a um quarto do limite
     if ($mb -gt 0 -and $mb -le 6144) { [Environment]::SetEnvironmentVariable('RX_VK_MIRROR_MB', [string][math]::Min(3072, [int]($mb / 4)), 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_MIRROR_MB', $null, 'Process') }
+    # perfil de memoria: so mexe no que o perfil escolhido define (o limite de VRAM escolhido acima, se houver, vale mais que o do perfil)
+    $mp = $memProfiles[[math]::Max(0, $cbMem.SelectedIndex)]
+    if ($mp.Vram -gt 0) {
+        if ($mb -le 0) { [Environment]::SetEnvironmentVariable('RX_VK_VRAM_MB', [string]$mp.Vram, 'Process') }
+        if ($mb -le 0 -or $mb -gt 6144) { [Environment]::SetEnvironmentVariable('RX_VK_MIRROR_MB', [string]$mp.Mirror, 'Process') }
+        [Environment]::SetEnvironmentVariable('RX_VK_TARGET_POOL_MB', [string]$mp.Pool, 'Process')
+        if ($mp.Tex -gt 0) { [Environment]::SetEnvironmentVariable('RX_VK_TEX_MAX_MB', [string]$mp.Tex, 'Process') } else { [Environment]::SetEnvironmentVariable('RX_VK_TEX_MAX_MB', $null, 'Process') }
+    } else {
+        [Environment]::SetEnvironmentVariable('RX_VK_TARGET_POOL_MB', $null, 'Process')
+        [Environment]::SetEnvironmentVariable('RX_VK_TEX_MAX_MB', $null, 'Process')
+    }
     $ms = $uploadOptions[$cbUpload.SelectedIndex].Ms
     if ($ms -ge 0) { [Environment]::SetEnvironmentVariable('RX_VK_UPLOAD_BUDGET_MS', [string]$ms, 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_UPLOAD_BUDGET_MS', $null, 'Process') }
@@ -1247,7 +1274,7 @@ $btnPlay.Add_Click({
         else { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', $null, 'Process') }
     }
     # economia de RAM: o jogo nao le o arquivo de cache de pipelines (mkw_vk_pipelines.bin, 1 a 3 GB) e nao o grava; o driver usa o cache dele
-    if ($chkRam.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_PCACHE_LOAD', '0', 'Process') }
+    if ($chkRam.IsChecked -or $mp.PCache) { [Environment]::SetEnvironmentVariable('RX_VK_PCACHE_LOAD', '0', 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_PCACHE_LOAD', $null, 'Process') }
     if ($chkDiag.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', 'da7a7ab28b8e73d9', 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', $null, 'Process') }
