@@ -11,7 +11,7 @@
 // makes no frame yet.
 #pragma once
 
-#include <vulkan/vulkan.h>
+#include "vk_internal.h"
 
 namespace mkwvk::slfg {
 
