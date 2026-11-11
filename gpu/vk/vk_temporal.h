@@ -28,6 +28,10 @@ bool temporal_wanted();       // (temporal_mode() != GAME)
 bool temporal_off();
 /// DLAA or FSR's native anti-aliasing: the 3D drawn at full scale, whatever the Render resolution row says
 bool temporal_full_scale();
+/// (recompzel) RX_VK_DLSS_LINEAR=1: NVIDIA DLSS takes linear scene light (the square of the network's perceptual
+/// colour) with the flags NX2navi hands it, IsHDR and the network's own exposure (vk_dlss.cpp). Averaging in the
+/// perceptual space darkens blended edges against a bright sky. Off by default until a run in the game compares the two
+bool temporal_linear_color();
 
 /// A draw into a scene-sized target (colour target 0 and the depth target), with the vertex stage's uniform buffer 3 at
 /// `camera` (its size): the camera of the frame, when that buffer holds one

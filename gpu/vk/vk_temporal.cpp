@@ -107,6 +107,14 @@ int temporal_mode() {
 bool temporal_wanted() { return temporal_mode() != ur::GAME; }
 bool temporal_off() { return opts.dlss == ur::OFF && temporal_mode() == ur::GAME; }
 bool temporal_full_scale() { return ur::full_scale(temporal_mode()); }
+// (recompzel) RX_VK_DLSS_LINEAR=1: NVIDIA DLSS takes linear scene light (the square of the network's perceptual colour)
+// with IsHDR and AutoExposure (vk_dlss.cpp), as NX2navi feeds DLSS (runtime/vk_dlaa.c, MIT). Averaging in the perceptual
+// space darkens blended edges against a bright sky (a dark rim, a halo). Only DLSS reads it: FSR 4 keeps the perceptual
+// inputs (temporal_upscale gates on the engine). Off by default until a run in the game compares the two
+bool temporal_linear_color() {
+    static const bool v = getenv("RX_VK_DLSS_LINEAR") && atoi(getenv("RX_VK_DLSS_LINEAR")) != 0;
+    return v;
+}
 
 namespace {
 
@@ -335,7 +343,7 @@ bool make_pipelines() {
     const VkDescriptorType prep_types[5] = {S, S, I, I, I}, out_types[2] = {S, I};
     if (!s.prep && !make_pipeline(DLSS_PREP_COMP_SPV, sizeof DLSS_PREP_COMP_SPV, prep_types, 5, 84, s.prep_set, s.prep_layout, s.prep))
         return false;
-    if (!s.out && !make_pipeline(DLSS_OUT_COMP_SPV, sizeof DLSS_OUT_COMP_SPV, out_types, 2, 8, s.out_set, s.out_layout, s.out))
+    if (!s.out && !make_pipeline(DLSS_OUT_COMP_SPV, sizeof DLSS_OUT_COMP_SPV, out_types, 2, 12, s.out_set, s.out_layout, s.out))
         return false;
     VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     si.magFilter = si.minFilter = VK_FILTER_NEAREST;
@@ -796,7 +804,7 @@ bool stretch(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImage
         ~Disturbed() { descriptors_disturbed(); }
     } disturbed;
     full_barrier(cmd);   // (the scene's colour, written before)
-    const int32_t pc[2] = {(int32_t)ow, (int32_t)oh};
+    const int32_t pc[3] = {(int32_t)ow, (int32_t)oh, 0};   // (the network's perceptual colour in: squared back to linear)
     const VkDescriptorImageInfo info[2] = {{s.linear, in_view, VK_IMAGE_LAYOUT_GENERAL},
                                            {VK_NULL_HANDLE, out_view, VK_IMAGE_LAYOUT_GENERAL}};
     VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
@@ -929,7 +937,10 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     const bool motion = !reset && dlss_math::reprojection(cam.current, previous, pc.reproject);
     if (!motion) reset = true;   // (without a valid reprojection, prior history has no mapping to this camera)
     pc.jitter[0] = cam.jitter[0], pc.jitter[1] = cam.jitter[1];
-    pc.size[0] = (int32_t)rw, pc.size[1] = (int32_t)rh, pc.flags = (motion ? 1 : 0) | (show_motion ? 2 : 0);
+    // (bit 3: linear scene light for NVIDIA DLSS, RX_VK_DLSS_LINEAR: temporal_linear_color)
+    const bool lin_color = temporal_linear_color() && engine.e == dlss_engine();
+    pc.size[0] = (int32_t)rw, pc.size[1] = (int32_t)rh,
+    pc.flags = (motion ? 1 : 0) | (show_motion ? 2 : 0) | (lin_color ? 8 : 0);
 
     const auto prep = [&] {
         const VkDescriptorImageInfo info[5] = {{s.point, in_view, VK_IMAGE_LAYOUT_GENERAL},
@@ -990,7 +1001,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     }
     full_barrier(cmd);
     {
-        const int32_t opc[2] = {(int32_t)ow, (int32_t)oh};
+        const int32_t opc[3] = {(int32_t)ow, (int32_t)oh, lin_color ? 1 : 0};   // (linear in: the engine's output is not squared)
         const VkDescriptorImageInfo info[2] = {{native ? s.linear : s.point, s.output.view, VK_IMAGE_LAYOUT_GENERAL},
                                                {VK_NULL_HANDLE, out_view, VK_IMAGE_LAYOUT_GENERAL}};
         VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
