@@ -30,13 +30,14 @@ $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'RecompZel'
 New-Item -ItemType Directory -Force -Path $menu | Out-Null
 Novo-Atalho (Join-Path $menu 'Zelda OoT (RecompZel).lnk')
 
-# Launcher (menu com Jogar, progresso e opcoes), se esta maquina tem o launcher.ps1 em C:\DEV
+# Launcher (menu com Jogar, progresso e opcoes): o de C:\DEV (layout do launcher) ou o da pasta deste script
 $launcher = 'C:\DEV\launcher.ps1'
+if (-not (Test-Path -LiteralPath $launcher)) { $launcher = Join-Path $PSScriptRoot 'launcher.ps1' }
 if (Test-Path -LiteralPath $launcher) {
     $b = $Sh.CreateShortcut((Join-Path $desktop 'RecompZel Launcher.lnk'))
     $b.TargetPath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
     $b.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
-    $b.WorkingDirectory = 'C:\DEV'
+    $b.WorkingDirectory = Split-Path $launcher -Parent
     $b.IconLocation = "$exe,0"
     $b.Description = 'Launcher do RecompZel'
     $b.Save()

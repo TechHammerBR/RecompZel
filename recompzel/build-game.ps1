@@ -10,17 +10,37 @@ $ErrorActionPreference = 'Continue'
 # 1) arquivo do jogo
 if (-not $Nup) {
     $dirs = @('Downloads', 'Desktop', 'Documents') | ForEach-Object { Join-Path $env:USERPROFILE $_ } | Where-Object { Test-Path $_ }
-    $Nup = Get-ChildItem -Path $dirs -Recurse -File -Filter '*.nup' -ErrorAction SilentlyContinue |
-           Where-Object { $_.Name -like '*0400486024DEC000*' } | Sort-Object Length -Descending |
-           Select-Object -First 1 -ExpandProperty FullName
+    $todos = @(Get-ChildItem -Path $dirs -Recurse -File -Filter '*.nup' -ErrorAction SilentlyContinue | Sort-Object Length -Descending)
+    # primeiro o que tem o ID do jogo (0400486024DEC000) no nome; se o arquivo foi renomeado, usa o maior .nup achado
+    $Nup = $todos | Where-Object { $_.Name -like '*0400486024DEC000*' } | Select-Object -First 1 -ExpandProperty FullName
+    if (-not $Nup -and $todos.Count -gt 0) {
+        $Nup = $todos[0].FullName
+        Write-Host "Aviso: nenhum .nup com o ID do Zelda OoT (0400486024DEC000) no nome. Vou tentar com o maior .nup achado:"
+        Write-Host "  $Nup"
+    }
+}
+if (-not $Nup -and [Environment]::UserInteractive) {
+    # nao achou nenhum: abre uma janela para voce escolher o arquivo
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        $dlg = New-Object System.Windows.Forms.OpenFileDialog
+        $dlg.Title = 'Escolha o arquivo do jogo (.nup, Zelda Ocarina of Time v131072)'
+        $dlg.Filter = 'Arquivo do jogo (*.nup)|*.nup|Todos os arquivos|*.*'
+        if ($dlg.ShowDialog() -eq 'OK') { $Nup = $dlg.FileName }
+    } catch {}
 }
 if (-not $Nup -or -not (Test-Path -LiteralPath $Nup)) {
     Write-Host 'Nao achei o arquivo do jogo (.nup, versao v131072). Rode de novo assim:'
     Write-Host '  .\build-game.ps1 -Nup "C:\caminho\The Legend of Zelda Ocarina of Time [0400486024DEC000][v131072].nup"'
     exit 2
 }
+# a versao vem no nome do arquivo; o build so aceita a v131072 e so reclamaria depois de minutos
+if ((Split-Path $Nup -Leaf) -match '\[v(\d+)\]' -and $Matches[1] -ne '131072') {
+    Write-Host "O arquivo e a versao v$($Matches[1]) do jogo. O RecompZel precisa da v131072. Use o .nup dessa versao." -ForegroundColor Red
+    exit 2
+}
 
-# 2) pastas: mantem o layout antigo (C:\DEV) se ele existir, senao usa uma pasta propria
+# 2) pastas: mantem o layout do launcher (C:\DEV) se ele existir, senao usa uma pasta propria
 if (-not $Out) {
     $Out = 'C:\Games\RecompZel'
     if (-not (Test-Path $Out) -and (Test-Path 'C:\Games\HookshotDev')) {   # pasta antiga: renomeie para RecompZel quando o jogo estiver fechado
@@ -28,7 +48,8 @@ if (-not $Out) {
         Write-Host 'Aviso: usando a pasta antiga C:\Games\HookshotDev. Renomeie para C:\Games\RecompZel quando o jogo estiver fechado.'
     }
 }
-$base = if (Test-Path 'C:\DEV') { 'C:\DEV' } else { Join-Path $env:LOCALAPPDATA 'RecompZel' }
+# C:\DEV so quando e o layout do launcher (C:\DEV\games.json); em qualquer outro PC usa %LOCALAPPDATA%\RecompZel
+$base = if (Test-Path 'C:\DEV\games.json') { 'C:\DEV' } else { Join-Path $env:LOCALAPPDATA 'RecompZel' }
 if (-not $Work) { $Work = Join-Path $base 'build-work' }
 if (-not $Log)  { $Log  = Join-Path $base 'build.log' }
 

@@ -45,8 +45,8 @@ powershell -ExecutionPolicy Bypass -File recompzel\instalar.ps1 -Nup "C:\caminho
 
 O build usa um compilador e ferramentas que são baixados por um instalador. Se o `INSTALAR-RECOMPZEL.bat` disser que as ferramentas não estão instaladas:
 
-- Baixe **`RecompZelBuilder.exe`** na aba [Releases](https://github.com/TechHammerBR/RecompZel/releases) deste repositório, rode uma vez e feche.
-- Enquanto este repositório não tiver uma release, o único jeito é rodar o `HookshotBuilder.exe` do projeto original **somente para baixar as ferramentas** (não use o jogo que ele gera). Esta observação sai daqui quando a release do RecompZel existir.
+- Baixe o **`HookshotBuilder.exe`** da release [nightly](https://github.com/TechHammerBR/RecompZel/releases/tag/nightly) **deste** repositório (ela é gerada a partir do código do RecompZel; o `INSTALAR-RECOMPZEL.bat` abre essa página sozinho). Rode uma vez, deixe terminar e feche. Ele só baixa as ferramentas; o jogo é construído pelo `INSTALAR-RECOMPZEL.bat`.
+- Não use o `HookshotBuilder.exe` do repositório original (NotRexed/Hookshot).
 
 Depois, abra o `INSTALAR-RECOMPZEL.bat` de novo.
 
@@ -69,6 +69,18 @@ Dentro do jogo, **Insert** abre o menu (idioma, qualidade, geração de quadros,
 | `nx2/` | Recompilador e gerador do jogo (`make_game.py`, `gen_lang.py`) |
 | `builder/` | Fontes do instalador gráfico, já com a marca RecompZel |
 | `docs/HOOKSHOT-README.md` | README original do Hookshot |
+
+## Erros comuns
+
+| Mensagem ou sintoma | O que fazer |
+|---|---|
+| "As ferramentas de compilação ainda não estão instaladas" | Faça a etapa **Ferramentas de compilação** acima e abra o instalador de novo |
+| "Não achei o arquivo do jogo" | Uma janela pede o arquivo. Ou rode `recompzel\instalar.ps1 -Nup "caminho\arquivo.nup"` |
+| "O arquivo é a versão vXXXX" | O RecompZel só aceita a v131072 do jogo (`[v131072]` no nome do `.nup`) |
+| Avisos de memória, espaço ou placa no começo | São só avisos. O build pede 16 GB de RAM, cerca de 60 GB livres e uma placa com Vulkan e mesh shaders |
+| O build fica minutos sem mexer | Normal. Ele leva de dezenas de minutos a mais de uma hora. O log fica em `%LOCALAPPDATA%\RecompZel\build.log` |
+
+O `requirements.txt` da raiz é só para quem desenvolve o código em Linux ou fora do instalador. Quem usa o `INSTALAR-RECOMPZEL.bat` não precisa dele: o build usa o Python que vem nas ferramentas.
 
 ## Problemas
 
