@@ -90,12 +90,25 @@ $STR['pt'] = @{
     safe_on = 'Ligado: o jogo abre sem DLSS, FSR 4 e Streamline, so com o upscaler e a geracao de quadros dele.'
     safe_off = 'Desligado. Ligue se o jogo travar, para testar sem as tecnologias acima.'
     help_tech = 'O launcher detecta a sua placa e so oferece o que ela suporta. Dentro do jogo (menu Insert, aba Graficos) voce escolhe o upscaler e o metodo de geracao de quadros.'
-    badge_ok = 'Pronto'
-    badge_off = 'Desligado'
+    badge_ok = 'Ativo'
+    badge_off = 'Nao incluido'
     badge_todo = 'Falta instalar'
     badge_no = 'Sem suporte'
     badge_exp = 'Experimental'
     badge_safe = 'Modo seguro'
+    tn_dsr = 'NVIDIA DLSS (reescalonamento e DLAA)'
+    tn_dlss = 'NVIDIA DLSS Frame Generation'
+    tn_fsr = 'AMD FSR 4'
+    tech_intro = 'Tudo que a sua placa suporta fica ativo. Depois e so escolher no jogo (menu Insert, aba Graficos): o Upscaler e o metodo de geracao de quadros.'
+    st_dsr_on = 'Ativo. No jogo, a linha Upscaler escolhe DLSS ou DLAA.'
+    st_dsr_todo = 'Ativado na proxima reconstrucao do jogo (uma vez; o launcher cuida disso).'
+    st_dlss_on = 'Ativo. No jogo, a linha Metodo de geracao de quadros escolhe o DLSS e a linha Geracao de quadros, o multiplicador.'
+    st_dlss_todo = 'Os componentes da NVIDIA (cerca de 276 MB) sao baixados uma vez, ao clicar em Jogar ou em Instalar tudo.'
+    st_fsr_on = 'Ativo. No jogo, a linha Upscaler escolhe o FSR 4.'
+    st_fsr_rebuild = 'Ativado na proxima reconstrucao do jogo (uma vez).'
+    st_fsr_todo = 'O componente do FSR 4 (cerca de 14 MB) e baixado uma vez, ao clicar em Jogar ou em Instalar tudo.'
+    st_fsr_other = 'Pensado para placas AMD e nao incluido nesta placa. O FSR 3.1 do proprio jogo continua no menu.'
+    st_safe = 'Modo seguro ligado: nao usado.'
     help_tune = 'Rodada 2: texturas ASTC novas ficam provisorias quando o carregamento passa do limite por quadro. Teste 120 ms ou Sem adiamento. O diagnostico registra o buffer sem conexao no log.'
     lbl_now = 'O que esta acontecendo agora'
     lbl_steps = 'Etapas'
@@ -210,12 +223,25 @@ $STR['en'] = @{
     safe_on = 'On: the game opens without DLSS, FSR 4 and Streamline, only with its own upscaler and frame generation.'
     safe_off = 'Off. Turn it on if the game crashes, to test without the technologies above.'
     help_tech = 'The launcher detects your GPU and only offers what it supports. Inside the game (Insert menu, Graphics tab) you pick the upscaler and the frame generation method.'
-    badge_ok = 'Ready'
-    badge_off = 'Off'
+    badge_ok = 'On'
+    badge_off = 'Not included'
     badge_todo = 'Needs install'
     badge_no = 'Not supported'
     badge_exp = 'Experimental'
     badge_safe = 'Safe mode'
+    tn_dsr = 'NVIDIA DLSS (upscaling and DLAA)'
+    tn_dlss = 'NVIDIA DLSS Frame Generation'
+    tn_fsr = 'AMD FSR 4'
+    tech_intro = 'Everything your GPU supports is on. Then just pick inside the game (Insert menu, Graphics tab): the Upscaler and the frame generation method.'
+    st_dsr_on = 'On. In the game, the Upscaler row picks DLSS or DLAA.'
+    st_dsr_todo = 'Turned on at the next rebuild of the game (once; the launcher handles it).'
+    st_dlss_on = 'On. In the game, the Frame generation method row picks DLSS and the Frame generation row the multiplier.'
+    st_dlss_todo = 'The NVIDIA components (about 276 MB) are downloaded once, when you click Play or Install everything.'
+    st_fsr_on = 'On. In the game, the Upscaler row picks FSR 4.'
+    st_fsr_rebuild = 'Turned on at the next rebuild of the game (once).'
+    st_fsr_todo = 'The FSR 4 component (about 14 MB) is downloaded once, when you click Play or Install everything.'
+    st_fsr_other = 'Made for AMD cards and not included on this card. The game''s own FSR 3.1 stays in the menu.'
+    st_safe = 'Safe mode on: not used.'
     help_tune = 'Round 2: new ASTC textures stay provisional when loading goes over the per-frame limit. Try 120 ms or No deferral. Diagnostics log the unbound buffer to the log.'
     lbl_now = 'What is happening now'
     lbl_steps = 'Steps'
@@ -370,11 +396,13 @@ $xaml = @'
         <StackPanel>
           <TextBlock x:Name="txtTechT" Foreground="#6FD3A0" FontSize="14" FontWeight="SemiBold"/>
           <TextBlock x:Name="txtGpu" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,4"/>
+          <TextBlock x:Name="txtTechIntro" Foreground="#E6F2EC" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,2"/>
           <Border Background="#14201C" BorderBrush="#2E4A40" BorderThickness="1" CornerRadius="3" Padding="10,8" Margin="0,6,0,0">
             <StackPanel>
               <DockPanel>
                 <TextBlock x:Name="badgeDsr" DockPanel.Dock="Right" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center" Margin="6,0,0,0"/>
-                <CheckBox x:Name="chkDsr" Foreground="#E6F2EC" FontSize="12"/>
+                <CheckBox x:Name="chkDsr" Visibility="Collapsed"/>
+                <TextBlock x:Name="ttlDsr" Foreground="#E6F2EC" FontSize="12"/>
               </DockPanel>
               <TextBlock x:Name="txtDsr" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
             </StackPanel>
@@ -383,7 +411,8 @@ $xaml = @'
             <StackPanel>
               <DockPanel>
                 <TextBlock x:Name="badgeDlss" DockPanel.Dock="Right" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center" Margin="6,0,0,0"/>
-                <CheckBox x:Name="chkDlss" Foreground="#E6F2EC" FontSize="12"/>
+                <CheckBox x:Name="chkDlss" Visibility="Collapsed"/>
+                <TextBlock x:Name="ttlDlss" Foreground="#E6F2EC" FontSize="12"/>
               </DockPanel>
               <TextBlock x:Name="txtDlss" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
             </StackPanel>
@@ -392,7 +421,8 @@ $xaml = @'
             <StackPanel>
               <DockPanel>
                 <TextBlock x:Name="badgeFsr" DockPanel.Dock="Right" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center" Margin="6,0,0,0"/>
-                <CheckBox x:Name="chkFsr" Foreground="#E6F2EC" FontSize="12"/>
+                <CheckBox x:Name="chkFsr" Visibility="Collapsed"/>
+                <TextBlock x:Name="ttlFsr" Foreground="#E6F2EC" FontSize="12"/>
               </DockPanel>
               <TextBlock x:Name="txtFsr" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
             </StackPanel>
@@ -443,7 +473,7 @@ $xaml = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
 try { if (Test-Path 'C:\DEV\recompzel.ico') { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]'C:\DEV\recompzel.ico') } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -492,7 +522,7 @@ function Apply-Language {
         $btnBuild.Tag = T 'build_tip'
         $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtFgT.Text = T 'fg_t'
         $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'; $chkDlss.Content = T 'dlss'; $chkDsr.Content = T 'dsr'
-        $txtTechT.Text = T 'tech_t'; $btnTechAll.Content = T 'tech_all'; $chkSafe.Content = T 'safe'
+        $txtTechT.Text = T 'tech_t'; $txtTechIntro.Text = T 'tech_intro'; $ttlDsr.Text = T 'tn_dsr'; $ttlDlss.Text = T 'tn_dlss'; $ttlFsr.Text = T 'tn_fsr'; $btnTechAll.Content = T 'tech_all'; $chkSafe.Content = T 'safe'
         $lblNow.Text = T 'lbl_now'; $lblSteps.Text = T 'lbl_steps'; $lblNext.Text = T 'lbl_next'
         $lblNotes.Text = T 'lbl_notes'; $lblSummary.Text = T 'lbl_summary'
         if ($txtResumo.Tag -ne 'real') { $txtResumo.Text = T 'summary_ph' }
@@ -532,6 +562,7 @@ try {
 } catch {}
 $script:loading = $false
 Apply-Language
+$cbFg.SelectedIndex = 0; $txtFgT.Visibility = 'Collapsed'; $cbFg.Visibility = 'Collapsed'   # (o metodo e o multiplicador ficam no menu do jogo)
 
 function Save-Settings {
     if ($script:loading) { return }
@@ -663,9 +694,6 @@ $cbLang.Add_SelectionChanged({
     Apply-Language
     Save-Settings
     Update-View
-    Update-Fsr-Text
-    Update-Dlss-Text
-    Update-Dsr-Text
     Update-Tech
     Refresh-Mesh
 })
@@ -760,12 +788,7 @@ function Test-FsrDll {
     try { return ((Get-FileHash -Path $f -Algorithm SHA256).Hash -ieq $Fsr4vkSha) } catch { return $false }
 }
 
-function Update-Fsr-Text {
-    if (-not [bool]$chkFsr.IsChecked) { $txtFsr.Text = T 'fsr_off'; return }
-    if (-not (Test-FsrBuilt)) { $txtFsr.Text = T 'fsr_rebuild'; return }
-    if (-not (Test-FsrDll)) { $txtFsr.Text = T 'fsr_dl'; return }
-    $txtFsr.Text = T 'fsr_ready'
-}
+function Update-Fsr-Text { Update-Tech }   # (o painel Tecnologias de imagem cuida dos textos)
 
 # ---------- NVIDIA DLSS, reescalonamento (opcional, RTX) ----------
 # O motor ja tem o DLSS (gpu/vk/vk_dlss.cpp), mas so quando o jogo e construido com o SDK da NVIDIA (build-game.ps1 -Dlss) e o
@@ -783,13 +806,7 @@ function Test-DsrGpu {
     return $script:dsrGpu
 }
 function Test-DsrBuilt { return (Test-Path (Join-Path (Get-OutDir) 'ngx\nvngx_dlss.dll')) }
-function Update-Dsr-Text {
-    if (-not (Test-DsrGpu)) { $chkDsr.IsEnabled = $false; $chkDsr.IsChecked = $false; $txtDsr.Text = T 'dsr_nogpu'; return }
-    $chkDsr.IsEnabled = $true
-    if (-not [bool]$chkDsr.IsChecked) { $txtDsr.Text = T 'dsr_off'; return }
-    if (-not (Test-DsrBuilt)) { $txtDsr.Text = T 'dsr_rebuild'; return }
-    $txtDsr.Text = T 'dsr_ready'
-}
+function Update-Dsr-Text { Update-Tech }   # (o painel Tecnologias de imagem cuida dos textos)
 # Os argumentos para abrir o build-game.ps1: com -Dlss quando a caixa do DLSS esta marcada
 function Get-BuildArgs([string]$buildPath) {
     $a = @('-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $buildPath)
@@ -854,13 +871,7 @@ function Test-DlssFilesNow {
     }
     return $true
 }
-function Update-Dlss-Text {
-    if (-not (Test-DlssGpu)) { $chkDlss.IsEnabled = $false; $chkDlss.IsChecked = $false; $txtDlss.Text = T 'dlss_nogpu'; return }
-    $chkDlss.IsEnabled = $true
-    if (-not [bool]$chkDlss.IsChecked) { $txtDlss.Text = T 'dlss_off'; return }
-    if (-not (Test-DlssFiles)) { $txtDlss.Text = T 'dlss_dl'; return }
-    $txtDlss.Text = T 'dlss_ready'
-}
+function Update-Dlss-Text { Update-Tech }   # (o painel Tecnologias de imagem cuida dos textos)
 
 # Baixa e instala se faltar. Retorna $true quando os 6 arquivos estao la e conferidos.
 function Install-Dlss {
@@ -1235,27 +1246,38 @@ function Set-Badge($tb, [string]$key, [string]$hex) {
     $tb.Text = T $key
     $tb.Foreground = Get-Brush $hex
 }
+$script:fsrOk = $false; $script:fsrOkAt = [datetime]::MinValue
+function Test-FsrReady {
+    if (([datetime]::Now - $script:fsrOkAt).TotalSeconds -lt 10) { return $script:fsrOk }
+    $script:fsrOk = [bool](Test-FsrDll); $script:fsrOkAt = [datetime]::Now
+    return $script:fsrOk
+}
+# Tudo que a placa suporta fica ativo (as caixas ficam escondidas e seguem a placa); o usuario escolhe dentro do jogo. Modo seguro: nada.
 function Update-Tech {
     $green = '#6FD3A0'; $amber = '#E3B65B'; $grey = '#8FA89C'; $red = '#D9826B'
     $names = @(Get-GpuNames)
     if ($names.Count -gt 0) { $txtGpu.Text = ((T 'tech_gpu') -f ($names -join ' / ')) } else { $txtGpu.Text = ((T 'tech_gpu') -f (T 'tech_gpu_none')) }
     $safe = [bool]$chkSafe.IsChecked
     $txtSafe.Text = if ($safe) { T 'safe_on' } else { T 'safe_off' }
+    $hasDsr = Test-DsrGpu; $hasDlss = Test-DlssGpu; $hasFsr = Test-FsrGpu
+    $chkDsr.IsChecked = ((-not $safe) -and $hasDsr)
+    $chkDlss.IsChecked = ((-not $safe) -and $hasDlss)
+    $chkFsr.IsChecked = ((-not $safe) -and $hasFsr)
     if ($safe) {
         foreach ($b in @($badgeDsr, $badgeDlss, $badgeFsr)) { Set-Badge $b 'badge_safe' $grey }
+        foreach ($t in @($txtDsr, $txtDlss, $txtFsr)) { $t.Text = T 'st_safe' }
         return
     }
-    if (-not (Test-DsrGpu)) { Set-Badge $badgeDsr 'badge_no' $red }
-    elseif (-not [bool]$chkDsr.IsChecked) { Set-Badge $badgeDsr 'badge_off' $grey }
-    elseif (Test-DsrBuilt) { Set-Badge $badgeDsr 'badge_ok' $green }
-    else { Set-Badge $badgeDsr 'badge_todo' $amber }
-    if (-not (Test-DlssGpu)) { Set-Badge $badgeDlss 'badge_no' $red }
-    elseif (-not [bool]$chkDlss.IsChecked) { Set-Badge $badgeDlss 'badge_off' $grey }
-    elseif (Test-DlssFiles) { Set-Badge $badgeDlss 'badge_ok' $green }
-    else { Set-Badge $badgeDlss 'badge_todo' $amber }
-    if (-not [bool]$chkFsr.IsChecked) { if (Test-FsrGpu) { Set-Badge $badgeFsr 'badge_off' $grey } else { Set-Badge $badgeFsr 'badge_exp' $amber } }
-    elseif ((Test-FsrBuilt) -and (Test-FsrDll)) { Set-Badge $badgeFsr 'badge_ok' $green }
-    else { Set-Badge $badgeFsr 'badge_todo' $amber }
+    if (-not $hasDsr) { Set-Badge $badgeDsr 'badge_no' $red; $txtDsr.Text = T 'dsr_nogpu' }
+    elseif (Test-DsrBuilt) { Set-Badge $badgeDsr 'badge_ok' $green; $txtDsr.Text = T 'st_dsr_on' }
+    else { Set-Badge $badgeDsr 'badge_todo' $amber; $txtDsr.Text = T 'st_dsr_todo' }
+    if (-not $hasDlss) { Set-Badge $badgeDlss 'badge_no' $red; $txtDlss.Text = T 'dlss_nogpu' }
+    elseif (Test-DlssFiles) { Set-Badge $badgeDlss 'badge_ok' $green; $txtDlss.Text = T 'st_dlss_on' }
+    else { Set-Badge $badgeDlss 'badge_todo' $amber; $txtDlss.Text = T 'st_dlss_todo' }
+    if (-not $hasFsr) { Set-Badge $badgeFsr 'badge_off' $grey; $txtFsr.Text = T 'st_fsr_other' }
+    elseif (-not (Test-FsrBuilt)) { Set-Badge $badgeFsr 'badge_todo' $amber; $txtFsr.Text = T 'st_fsr_rebuild' }
+    elseif (Test-FsrReady) { Set-Badge $badgeFsr 'badge_ok' $green; $txtFsr.Text = T 'st_fsr_on' }
+    else { Set-Badge $badgeFsr 'badge_todo' $amber; $txtFsr.Text = T 'st_fsr_todo' }
 }
 # Um so consentimento para tudo que a placa suporta: marca as caixas, baixa os componentes (Install-Dlss e Install-Fsr nao perguntam de novo)
 function Install-AllTech {
@@ -1285,19 +1307,16 @@ function Install-AllTech {
         $script:loading = $false
         $script:techConsent = $false
     }
-    Update-Fsr-Text; Update-Dlss-Text; Update-Dsr-Text; Update-Tech
+    Update-Tech
     $rebuild = ($doDsr -and -not (Test-DsrBuilt)) -or ($doFsr -and -not (Test-FsrBuilt))
     if ($bad) { $txtHelp.Text = T 'tech_fail' }
     elseif ($rebuild) { $txtHelp.Text = T 'tech_done_rebuild' }
     else { $txtHelp.Text = T 'tech_done' }
 }
 $btnTechAll.Add_Click({ Install-AllTech })
-$timer.Add_Tick({ Update-View; Check-Game; Update-Fsr-Text; Update-Dlss-Text; Update-Dsr-Text; Update-Tech })
+$timer.Add_Tick({ Update-View; Check-Game; Update-Tech })
 $timer.Start()
 Update-View
-Update-Fsr-Text
-Update-Dlss-Text
-Update-Dsr-Text
 Update-Tech
 Refresh-Mesh
 Update-Shortcuts
