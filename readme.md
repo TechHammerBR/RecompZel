@@ -63,7 +63,7 @@ Dentro do jogo, **Insert** abre o menu (idioma, qualidade, geração de quadros,
 | Caminho | O que é |
 |---|---|
 | `INSTALAR-RECOMPZEL.bat` | Instala e cria o atalho. É o que o usuário final usa |
-| `recompzel/` | Nossas ferramentas: `instalar.ps1`, `build-game.ps1`, `post-install.ps1`, `launcher.ps1`, `atualizar-fork.ps1`, `enviar-github.ps1` |
+| `recompzel/` | Nossas ferramentas: `instalar.ps1`, `build-game.ps1`, `post-install.ps1`, `launcher.ps1`, `atualizar-fork.ps1` |
 | `gpu/vk/` | Backend Vulkan. `vk_lang.h` é o motor de tradução do menu |
 | `assets/lang/pt-BR.tsv` | Dicionário do menu em português (editável) |
 | `nx2/` | Recompilador e gerador do jogo (`make_game.py`, `gen_lang.py`) |

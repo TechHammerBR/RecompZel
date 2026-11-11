@@ -25,8 +25,6 @@ $STR['pt'] = @{
     folder_tip = 'Abre a pasta onde o jogo foi montado.'
     report = 'Copiar relatorio para suporte'
     report_tip = 'Copia o final do registro do build. Cole numa conversa para pedir ajuda.'
-    git = 'Enviar alteracoes ao GitHub'
-    git_tip = 'Copia as ferramentas do projeto para o repositorio e envia tudo ao GitHub. Use depois de qualquer mudanca.'
     vram_t = 'Memoria de video para texturas'
     vram_d = 'Padrao do jogo (70% da VRAM, ate 6 GB)'
     vram_tip = 'Quanta memoria da placa de video o jogo pode usar para texturas. Valores maiores ajudam nas texturas embaralhadas, se a placa tiver folga. Padrao: o jogo decide.'
@@ -122,8 +120,6 @@ $STR['en'] = @{
     folder_tip = 'Opens the folder where the game was built.'
     report = 'Copy report for support'
     report_tip = 'Copies the end of the build log. Paste it into a chat to ask for help.'
-    git = 'Send changes to GitHub'
-    git_tip = 'Copies the project tools into the repository and sends everything to GitHub. Use it after any change.'
     vram_t = 'Video memory for textures'
     vram_d = 'Game default (70% of VRAM, up to 6 GB)'
     vram_tip = 'How much graphics card memory the game may use for textures. Larger values help with scrambled textures, if the card has room. Default: the game decides.'
@@ -297,7 +293,6 @@ $xaml = @'
       <Button x:Name="btnBuild" Style="{StaticResource Row}"/>
       <Button x:Name="btnFolder" Style="{StaticResource Row}"/>
       <Button x:Name="btnReport" Style="{StaticResource Row}"/>
-      <Button x:Name="btnGit" Style="{StaticResource Row}"/>
       <Border x:Name="vramBox" Background="#1B2A25" BorderBrush="#2E4A40" BorderThickness="1" CornerRadius="3" Padding="16,10">
         <StackPanel>
           <TextBlock x:Name="txtVramT" Foreground="#E6F2EC" FontSize="13"/>
@@ -364,7 +359,7 @@ $xaml = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
 try { if (Test-Path 'C:\DEV\recompzel.ico') { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]'C:\DEV\recompzel.ico') } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','btnGit','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','chkDlss','txtDlss','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','chkDlss','txtDlss','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -410,7 +405,6 @@ function Apply-Language {
         $btnPlay.Content = T 'play';   $btnPlay.Tag = T 'play_tip'
         $btnFolder.Content = T 'folder'; $btnFolder.Tag = T 'folder_tip'
         $btnReport.Content = T 'report'; $btnReport.Tag = T 'report_tip'
-        $btnGit.Content = T 'git';     $btnGit.Tag = T 'git_tip'
         $btnBuild.Tag = T 'build_tip'
         $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtFgT.Text = T 'fg_t'
         $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'; $chkDlss.Content = T 'dlss'
@@ -547,7 +541,7 @@ $cbLang.Add_SelectionChanged({
 })
 
 # ---------- Ajuda ao passar o mouse ----------
-foreach ($b in @($btnPlay, $btnBuild, $btnFolder, $btnReport, $btnGit)) {
+foreach ($b in @($btnPlay, $btnBuild, $btnFolder, $btnReport)) {
     $b.Add_MouseEnter({ param($s, $e) $txtHelp.Text = [string]$s.Tag })
     $b.Add_MouseLeave({ $txtHelp.Text = $script:defaultHelp })
 }
@@ -901,12 +895,6 @@ $btnBuild.Add_Click({
             [System.Windows.MessageBox]::Show(((T 'e_script') -f $s), 'RecompZel') | Out-Null
         }
     }
-})
-
-$btnGit.Add_Click({
-    $s = 'C:\DEV\enviar-github.ps1'
-    if (Test-Path $s) { Start-Process powershell.exe -ArgumentList '-NoExit','-ExecutionPolicy','Bypass','-File',$s }
-    else { [System.Windows.MessageBox]::Show(((T 'e_script2') -f $s), 'RecompZel') | Out-Null }
 })
 
 $btnReport.Add_Click({
