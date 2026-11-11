@@ -1404,7 +1404,10 @@ $btnUpdate.Add_Click({
         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
         $tmp = Join-Path $env:TEMP 'RecompZel-Launcher-novo.exe'
         Invoke-WebRequest -UseBasicParsing -Uri ($UpdBase + '/RecompZel-Launcher.exe') -OutFile $tmp
-        $want = ((Invoke-WebRequest -UseBasicParsing -Uri ($UpdBase + '/RecompZel-Launcher.exe.sha256')).Content).Trim().Split(' ')[0]
+        # (o GitHub entrega o ativo como application/octet-stream: no PowerShell 5.1 o .Content vem como byte[], sem .Trim())
+        $resp = Invoke-WebRequest -UseBasicParsing -Uri ($UpdBase + '/RecompZel-Launcher.exe.sha256')
+        $shaTxt = if ($resp.Content -is [byte[]]) { [Text.Encoding]::ASCII.GetString($resp.Content) } else { [string]$resp.Content }
+        $want = $shaTxt.Trim().Split(' ')[0]
         if ((Get-FileHash -Path $tmp -Algorithm SHA256).Hash -ine $want) { throw 'arquivo baixado nao confere (hash)' }
         $srcOk = Update-GameSource
         if ($srcOk) { [System.Windows.MessageBox]::Show($win, (T 'upd_src_ok'), 'RecompZel') | Out-Null }
