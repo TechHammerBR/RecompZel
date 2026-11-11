@@ -53,6 +53,7 @@ $STR['pt'] = @{
     diag = 'Registrar diagnostico (buffer sem conexao)'
     ram_save = 'Economizar RAM (nao carrega o cache de shaders: 1 a 3 GB a menos; a abertura demora uns segundos a mais)'
     ram_tip = 'RX_VK_PCACHE_LOAD=0'
+    mem_now = 'Jogo agora: RAM {0}, VRAM {1}'
     fsr = 'Usar AMD FSR 4 (mais quadros por segundo)'
     fsr_off = 'Desligado. Se ligar, o launcher cuida do resto.'
     fsr_rebuild = 'O jogo sera reconstruido uma vez, com FSR 4, ao clicar em Jogar.'
@@ -195,6 +196,7 @@ $STR['en'] = @{
     diag = 'Log diagnostics (unbound buffer)'
     ram_save = 'Save RAM (does not load the shader cache: 1 to 3 GB less; the start takes a few seconds longer)'
     ram_tip = 'RX_VK_PCACHE_LOAD=0'
+    mem_now = 'Game now: RAM {0}, VRAM {1}'
     fsr = 'Use AMD FSR 4 (higher frame rate)'
     fsr_off = 'Off. If you turn it on, the launcher handles the rest.'
     fsr_rebuild = 'The game will be rebuilt once, with FSR 4, when you click Play.'
@@ -1166,6 +1168,7 @@ function Update-View {
     if ($stage -eq 'compile' -and $eta -ge 0) {
         $parts += ((T 'eta_pre') + (Format-Min $eta) + (T 'eta_post'))
     }
+    if ($script:memText) { $parts += $script:memText }
     $txtTime.Text = ($parts -join '  |  ')
 
     $txtS1.Text = ((T 's1') -f (Get-Step $readPct 'read' $stage), $readPct)
@@ -1210,6 +1213,9 @@ $btnPlay.Add_Click({
     $mb = $vramOptions[$cbVram.SelectedIndex].Mb
     if ($mb -gt 0) { [Environment]::SetEnvironmentVariable('RX_VK_VRAM_MB', [string]$mb, 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_VRAM_MB', $null, 'Process') }
+    # com um limite de VRAM de 6 GB ou menos, o espelho de memoria do jogo (3 GB por padrao) tambem encolhe, a um quarto do limite
+    if ($mb -gt 0 -and $mb -le 6144) { [Environment]::SetEnvironmentVariable('RX_VK_MIRROR_MB', [string][math]::Min(3072, [int]($mb / 4)), 'Process') }
+    else { [Environment]::SetEnvironmentVariable('RX_VK_MIRROR_MB', $null, 'Process') }
     $ms = $uploadOptions[$cbUpload.SelectedIndex].Ms
     if ($ms -ge 0) { [Environment]::SetEnvironmentVariable('RX_VK_UPLOAD_BUDGET_MS', [string]$ms, 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_UPLOAD_BUDGET_MS', $null, 'Process') }
@@ -1292,7 +1298,30 @@ $btnPlay.Add_Click({
 # ---------- Atualizacao automatica ----------
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(2)
+# Enquanto o jogo roda, mostra a memoria dele (RAM e VRAM, com o pico): serve para ver o que o jogo usa de verdade e comparar as opcoes de economia
+$script:memTick = 0; $script:memText = ''; $script:memPeakRam = 0.0; $script:memPeakVram = 0.0
+function Sample-GameMem {
+    $p = $script:gameProc
+    if ($null -eq $p) { $script:memText = ''; return }
+    try {
+        if ($p.HasExited) { $script:memText = ''; return }
+        $script:memTick++
+        if ($script:memTick % 3 -ne 1) { return }   # (a cada 6 s: amostrar o contador da GPU custa)
+        $p.Refresh()
+        $ram = [double]$p.PrivateMemorySize64 / 1GB
+        $vram = -1.0
+        try {
+            $c = Get-Counter -Counter ('\GPU Process Memory(pid_{0}_*)\Dedicated Usage' -f $p.Id) -ErrorAction Stop
+            $vram = (($c.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum) / 1GB
+        } catch {}
+        if ($ram -gt $script:memPeakRam) { $script:memPeakRam = $ram }
+        if ($vram -gt $script:memPeakVram) { $script:memPeakVram = $vram }
+        $vtxt = if ($vram -ge 0) { ('{0:N1} GB (pico {1:N1})' -f $vram, $script:memPeakVram) } else { '?' }
+        $script:memText = ((T 'mem_now') -f ('{0:N1} GB (pico {1:N1})' -f $ram, $script:memPeakRam), $vtxt)
+    } catch { $script:memText = '' }
+}
 function Check-Game {
+    Sample-GameMem
     if ($null -eq $script:gameProc) { return }
     try { if (-not $script:gameProc.HasExited) { return } } catch { $script:gameProc = $null; return }
     $script:gameProc = $null
