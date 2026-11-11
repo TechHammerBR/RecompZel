@@ -475,6 +475,22 @@ function Test-GameRunning {
     if ($script:gameProc) { try { if (-not $script:gameProc.HasExited) { return $true } } catch {} }
     return [bool](Get-Process -Name 'RecompZel', 'hookshot' -ErrorAction SilentlyContinue)
 }
+function Set-DsrChoice([bool]$on) {
+    # dlss= no hookshot_options.ini: 0 jogo, 1 DLSS, 2 DLAA. Marcada: so sai do 0 (mantem a escolha do menu, DLSS ou DLAA); desmarcada: volta ao 0
+    $p = Get-IniPath
+    if (-not (Test-Path -LiteralPath $p) -or (Test-GameRunning)) { return }
+    try {
+        $raw = [IO.File]::ReadAllText($p)
+        $cur = 0
+        if ($raw -match '(?m)^\s*dlss\s*=\s*(\d+)') { $cur = [int]$Matches[1] }
+        $want = $cur
+        if ($on -and $cur -lt 1) { $want = 1 } elseif ((-not $on) -and $cur -ge 1 -and $cur -le 2) { $want = 0 }
+        if ($want -eq $cur) { return }
+        if ($raw -match '(?m)^\s*dlss\s*=') { $new = [regex]::Replace($raw, '(?m)^(\s*dlss\s*=\s*)\d+', ('${1}' + $want)) }
+        else { $nl = if ($raw.Contains("`r`n")) { "`r`n" } else { "`n" }; if (-not $raw.EndsWith("`n")) { $raw += $nl }; $new = $raw + 'dlss=' + $want + $nl }
+        [IO.File]::WriteAllText($p, $new)
+    } catch {}
+}
 function Read-Mesh {
     $p = Get-IniPath
     if (-not (Test-Path -LiteralPath $p)) { return $null }
@@ -655,7 +671,7 @@ function Update-Fsr-Text {
 # ---------- NVIDIA DLSS, reescalonamento (opcional, RTX) ----------
 # O motor ja tem o DLSS (gpu/vk/vk_dlss.cpp), mas so quando o jogo e construido com o SDK da NVIDIA (build-game.ps1 -Dlss) e o
 # componente nvngx_dlss.dll fica em <pasta do jogo>\ngx. O SDK e o componente sao da NVIDIA (licenca NVIDIA RTX SDKs, so para placas
-# NVIDIA): o build baixa e confere cada arquivo; nada disso fica no repositorio. RX_VK_DLSS=1 escolhe o DLSS na hora de jogar.
+# NVIDIA): o build baixa e confere cada arquivo; nada disso fica no repositorio. a caixa so poe dlss=1 no hookshot_options.ini (o menu do jogo escolhe DLSS ou DLAA).
 $script:dsrGpu = $null
 function Test-DsrGpu {
     if ($null -ne $script:dsrGpu) { return $script:dsrGpu }
@@ -1021,6 +1037,7 @@ $btnPlay.Add_Click({
     # DLSS (reescalonamento): so liga quando o jogo foi construido com o SDK da NVIDIA (nvngx_dlss.dll em ngx); senao oferece reconstruir
     $useDsr = $false
     [Environment]::SetEnvironmentVariable('RX_VK_DLSS', $null, 'Process')
+    if (-not $chkDsr.IsChecked) { Set-DsrChoice $false }
     if ($chkDsr.IsChecked -and (Test-DsrGpu)) {
         if (-not (Test-DsrBuilt)) {
             if ([System.Windows.MessageBox]::Show((T 'dsr_q'), 'RecompZel', 'YesNo', 'Question') -eq 'Yes') {
@@ -1033,7 +1050,7 @@ $btnPlay.Add_Click({
             }
         } else {
             $useDsr = $true
-            [Environment]::SetEnvironmentVariable('RX_VK_DLSS', '1', 'Process')
+            Set-DsrChoice $true
         }
         Update-Dsr-Text
     }
