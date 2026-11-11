@@ -17,7 +17,9 @@ FsrWhy fsr4_why();
 /// Loads AMD's library once and asks it for an FSR 4 upscaler for this device, so fsr4_why knows before the first upscale
 /// (the menu, when it opens). Nothing in a build without FSR, or before the device is made
 void fsr4_probe();
-/// (linux) a Vulkan FSR 4 library is there and records with descriptor buffers: the device has to enable them
+/// A "direct" Vulkan FSR 4 library is there (Linux's fsr4-vk, or fsr4vk's amd_fidelityfx_upscaler_vk.dll on Windows with no AMD
+/// loader beside it): it records with descriptor buffers and wants mutable descriptor types and compute shader derivatives, so the
+/// device has to enable them
 bool fsr4_wants_descriptor_buffer();
 /// FSR 4 as the temporal upscaler's engine (FSR 4 and its native AA on the Upscaler row); nullptr in a build without it
 const TemporalEngine* fsr4_engine();

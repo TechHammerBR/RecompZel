@@ -1,0 +1,3 @@
+RecompZel: ferramentas do projeto (launcher, build, medicao de rodadas, atalhos).
+Estes arquivos sao copiados de C:\DEV por enviar-github.ps1. Edite la e rode o script para atualizar aqui.
+Componentes de terceiros (por exemplo o fsr4vk, GPLv3) nunca ficam neste repositorio: o launcher baixa e confere o hash.

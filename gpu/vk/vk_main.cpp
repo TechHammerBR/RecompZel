@@ -213,6 +213,15 @@ bool pick_device() {
     return true;
 }
 
+// (recompzel) VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR, spelled here so an older Vulkan header does not stop the build
+// (the layout is the header's: sType, pNext, the quads and the linear bit; 1000511000 is its structure type)
+struct ComputeDerivativesFeatures {
+    VkStructureType sType = (VkStructureType)1000511000;
+    void* pNext = nullptr;
+    VkBool32 computeDerivativeGroupQuads = VK_FALSE;
+    VkBool32 computeDerivativeGroupLinear = VK_FALSE;
+};
+
 bool create_device() {
     uint32_t n = 0;
     vkEnumerateDeviceExtensionProperties(dev.physical, nullptr, &n, nullptr);
@@ -278,8 +287,15 @@ bool create_device() {
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
     optional(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, dev.swap_mutable);   // (hookshot: the overlays, vk_imgui.cpp)
     dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
-    bool fsr_descriptor_buffer = false;   // (hookshot, linux: only with a Vulkan FSR 4 library beside the game, vk_fsr4.cpp)
-    if (fsr4_wants_descriptor_buffer()) optional(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, fsr_descriptor_buffer);
+    bool fsr_descriptor_buffer = false;   // (hookshot: only with a Vulkan FSR 4 library that exports the FSR API itself beside the game, vk_fsr4.cpp)
+    bool fsr_mutable = false, fsr_derivatives = false;   // (recompzel: the other two extensions fsr4vk asks for)
+    if (fsr4_wants_descriptor_buffer()) {
+        optional(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME, fsr_descriptor_buffer);
+        optional("VK_EXT_mutable_descriptor_type", fsr_mutable);
+        optional("VK_KHR_compute_shader_derivatives", fsr_derivatives);
+        logf("vk: FSR 4 library there: descriptor buffer %s, mutable descriptor type %s, compute shader derivatives %s",
+             fsr_descriptor_buffer ? "yes" : "NO", fsr_mutable ? "yes" : "NO", fsr_derivatives ? "yes" : "NO");
+    }
     reflex_device_extensions(want, exts);   // (hookshot: NVIDIA Reflex's, vk_reflex.cpp)
     antilag_device_extensions(want, exts);   // (hookshot: AMD Anti-Lag 2's, vk_antilag.cpp)
 
@@ -363,6 +379,10 @@ bool create_device() {
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     if (fsr_descriptor_buffer) *tail = &descriptor_buffer, tail = &descriptor_buffer.pNext;
+    VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mutable_descriptor{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT};
+    if (fsr_mutable) *tail = &mutable_descriptor, tail = &mutable_descriptor.pNext;
+    ComputeDerivativesFeatures derivatives;
+    if (fsr_derivatives) *tail = &derivatives, tail = &derivatives.pNext;
     reflex_device_features(tail);   // (present ids, when NVIDIA Reflex's extensions are there)
     antilag_device_features(tail);   // (AMD Anti-Lag 2's, when its extension is there)
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
