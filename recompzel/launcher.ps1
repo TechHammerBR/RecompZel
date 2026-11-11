@@ -51,6 +51,8 @@ $STR['pt'] = @{
     fg_1 = 'AMD FSR 3.1 (so 2x)'
     fg_2 = 'Desligado (sem geracao de quadros)'
     diag = 'Registrar diagnostico (buffer sem conexao)'
+    ram_save = 'Economizar RAM (nao carrega o cache de shaders: 1 a 3 GB a menos; a abertura demora uns segundos a mais)'
+    ram_tip = 'RX_VK_PCACHE_LOAD=0'
     fsr = 'Usar AMD FSR 4 (mais quadros por segundo)'
     fsr_off = 'Desligado. Se ligar, o launcher cuida do resto.'
     fsr_rebuild = 'O jogo sera reconstruido uma vez, com FSR 4, ao clicar em Jogar.'
@@ -191,6 +193,8 @@ $STR['en'] = @{
     fg_1 = 'AMD FSR 3.1 (2x only)'
     fg_2 = 'Off (no frame generation)'
     diag = 'Log diagnostics (unbound buffer)'
+    ram_save = 'Save RAM (does not load the shader cache: 1 to 3 GB less; the start takes a few seconds longer)'
+    ram_tip = 'RX_VK_PCACHE_LOAD=0'
     fsr = 'Use AMD FSR 4 (higher frame rate)'
     fsr_off = 'Off. If you turn it on, the launcher handles the rest.'
     fsr_rebuild = 'The game will be rebuilt once, with FSR 4, when you click Play.'
@@ -407,6 +411,7 @@ $xaml = @'
           <ComboBox x:Name="cbUpload" Margin="0,6,0,8" Height="26"/>
           <TextBlock x:Name="txtFgT" Foreground="#E6F2EC" FontSize="13"/>
           <ComboBox x:Name="cbFg" Margin="0,6,0,8" Height="26"/>
+          <CheckBox x:Name="chkRam" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkDiag" Foreground="#E6F2EC" FontSize="12"/>
         </StackPanel>
       </Border>
@@ -491,7 +496,7 @@ $xaml = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
 try { if (Test-Path (Join-Path $PSScriptRoot 'recompzel.ico')) { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri](Join-Path $PSScriptRoot 'recompzel.ico')) } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -501,7 +506,11 @@ $vramOptions = @(
     @{ Key = 'vram_d'; Pt = 'Padrao do jogo (70% da VRAM, ate 6 GB)'; Mb = 0 },
     @{ Key = '';       Pt = '8 GB';  Mb = 8192 },
     @{ Key = '';       Pt = '10 GB'; Mb = 10240 },
-    @{ Key = '';       Pt = '12 GB'; Mb = 12288 }
+    @{ Key = '';       Pt = '12 GB'; Mb = 12288 },
+    @{ Key = '';       Pt = '6 GB (economiza VRAM)'; Mb = 6144 },
+    @{ Key = '';       Pt = '5 GB (economiza VRAM)'; Mb = 5120 },
+    @{ Key = '';       Pt = '4 GB (economiza VRAM)'; Mb = 4096 },
+    @{ Key = '';       Pt = '3 GB (economiza VRAM, texturas podem recarregar)'; Mb = 3072 }
 )
 # Upload de texturas (RX_VK_UPLOAD_BUDGET_MS): 40 ms e o padrao do jogo; 0 = sem adiamento
 $uploadOptions = @(
@@ -539,6 +548,7 @@ function Apply-Language {
         $btnReport.Content = T 'report'; $btnReport.Tag = T 'report_tip'
         $btnBuild.Tag = T 'build_tip'
         $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtFgT.Text = T 'fg_t'
+        $tbRam = New-Object System.Windows.Controls.TextBlock; $tbRam.Text = (T 'ram_save'); $tbRam.TextWrapping = 'Wrap'; $chkRam.Content = $tbRam; $chkRam.ToolTip = (T 'ram_tip')
         $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'; $chkDlss.Content = T 'dlss'; $chkDsr.Content = T 'dsr'
         $txtTechT.Text = T 'tech_t'; $txtTechIntro.Text = T 'tech_intro'; $ttlDsr.Text = T 'tn_dsr'; $ttlDlss.Text = T 'tn_dlss'; $ttlFsr.Text = T 'tn_fsr'; $btnTechAll.Content = T 'tech_all'; $chkSafe.Content = T 'safe'
         $lblNow.Text = T 'lbl_now'; $lblSteps.Text = T 'lbl_steps'; $lblNext.Text = T 'lbl_next'
@@ -571,6 +581,7 @@ try {
         if ($c.vramIndex -ge 0 -and $c.vramIndex -lt $vramOptions.Count) { $cbVram.SelectedIndex = [int]$c.vramIndex }
         if ($c.uploadIndex -ge 0 -and $c.uploadIndex -lt $uploadOptions.Count) { $cbUpload.SelectedIndex = [int]$c.uploadIndex }
         if ($c.diag -eq $true) { $chkDiag.IsChecked = $true }
+        if ($c.ramSave -eq $true) { $chkRam.IsChecked = $true }
         if ($c.fsr -eq $true) { $chkFsr.IsChecked = $true }
         if ($c.dlss -eq $true) { $chkDlss.IsChecked = $true }
         if ($c.dsr -eq $true) { $chkDsr.IsChecked = $true }
@@ -585,7 +596,7 @@ $cbFg.SelectedIndex = 0; $txtFgT.Visibility = 'Collapsed'; $cbFg.Visibility = 'C
 function Save-Settings {
     if ($script:loading) { return }
     try {
-        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; lang = $script:lang } |
+        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; ramSave = [bool]$chkRam.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; lang = $script:lang } |
             ConvertTo-Json | Set-Content $Cfg -Encoding ASCII
     } catch {}
 }
@@ -702,6 +713,7 @@ $cbVram.Add_SelectionChanged({ Save-Settings })
 $cbUpload.Add_SelectionChanged({ Save-Settings })
 $cbFg.Add_SelectionChanged({ Save-Settings })
 $chkDiag.Add_Click({ Save-Settings })
+$chkRam.Add_Click({ Save-Settings })
 $chkFsr.Add_Click({ Save-Settings; Update-Fsr-Text; Update-Tech })
 $chkDlss.Add_Click({ Save-Settings; Set-FgChoice ([bool]$chkDlss.IsChecked); Update-Dlss-Text; Update-Tech })
 $chkDsr.Add_Click({ Save-Settings; Update-Dsr-Text; Update-Tech })
@@ -1211,6 +1223,9 @@ $btnPlay.Add_Click({
         if ($fgSel.Fsr) { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', '1', 'Process') }
         else { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', $null, 'Process') }
     }
+    # economia de RAM: o jogo nao le o arquivo de cache de pipelines (mkw_vk_pipelines.bin, 1 a 3 GB) e nao o grava; o driver usa o cache dele
+    if ($chkRam.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_PCACHE_LOAD', '0', 'Process') }
+    else { [Environment]::SetEnvironmentVariable('RX_VK_PCACHE_LOAD', $null, 'Process') }
     if ($chkDiag.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', 'da7a7ab28b8e73d9', 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', $null, 'Process') }
     # FSR 4: so liga quando o jogo foi construido com ele e o componente esta instalado e conferido
