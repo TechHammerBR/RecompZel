@@ -11,6 +11,12 @@ $base = Join-Path $env:LOCALAPPDATA 'RecompZel'
 $versions = Join-Path $base 'tools'
 $downloads = Join-Path $base 'downloads'
 
+# O launcher le este arquivo e mostra o progresso na janela dele: <porcentagem>|<texto em portugues>|<texto em ingles>
+$statusFile = Join-Path $base 'tools-status.txt'
+function Set-Status([double]$pct, [string]$pt, [string]$en) {
+    try { New-Item -ItemType Directory -Force -Path $base | Out-Null; Set-Content -LiteralPath $statusFile -Value ('{0}|{1}|{2}' -f [int]$pct, $pt, $en) -Encoding ASCII } catch {}
+}
+
 function Get-WithRetry([string]$url, [string]$outFile) {
     for ($i = 1; $i -le 4; $i++) {
         try { Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $outFile; return }
@@ -18,63 +24,72 @@ function Get-WithRetry([string]$url, [string]$outFile) {
     }
 }
 
-Write-Host 'Instalando as ferramentas de compilacao do RecompZel (so uma vez, uns 400 MB)...'
-try { $raw = (Invoke-WebRequest -UseBasicParsing -Uri $ListUrl).Content }
-catch { throw ('Nao consegui ler a lista de ferramentas em ' + $ListUrl + '. Verifique a internet e tente de novo. Detalhe: ' + $_.Exception.Message) }
-if ($raw -is [byte[]]) { $raw = [Text.Encoding]::UTF8.GetString($raw) }
+try {
+    Write-Host 'Instalando as ferramentas de compilacao do RecompZel (so uma vez, uns 400 MB)...'
+    try { $raw = (Invoke-WebRequest -UseBasicParsing -Uri $ListUrl).Content }
+    catch { throw ('Nao consegui ler a lista de ferramentas em ' + $ListUrl + '. Verifique a internet e tente de novo. Detalhe: ' + $_.Exception.Message) }
+    if ($raw -is [byte[]]) { $raw = [Text.Encoding]::UTF8.GetString($raw) }
 
-# linhas: tag <versao>  |  part <sha256> <bytes> <pasta> <pasta no zip ou -> <novo nome ou -> <url>
-$tag = $null
-$parts = @()
-foreach ($line in ($raw -split "`n")) {
-    $w = $line.Trim() -split '\s+'
-    if ($w.Count -ge 2 -and $w[0] -eq 'tag') { $tag = $w[1] }
-    elseif ($w.Count -eq 7 -and $w[0] -eq 'part') {
-        $parts += [pscustomobject]@{ Sha = $w[1]; Size = [int64]$w[2]; Dest = $w[3]; From = $w[4]; To = $w[5]; Url = $w[6] }
-    }
-}
-if (-not $tag -or $parts.Count -eq 0) { throw 'A lista de ferramentas veio vazia ou num formato inesperado.' }
-$parts = @($parts | Where-Object { $_.Url -notmatch 'HookshotBuilder-dotnet-' })   # (o .NET so serve ao Builder grafico)
-
-$final = Join-Path $versions $tag
-$work = $final + '.part'
-New-Item -ItemType Directory -Force -Path $versions, $downloads | Out-Null
-if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
-if (Test-Path -LiteralPath $final) { Remove-Item -LiteralPath $final -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $work | Out-Null
-
-$n = 0
-foreach ($p in $parts) {
-    $n++
-    $zip = Join-Path $downloads ($p.Sha + '.zip')
-    $ok = (Test-Path -LiteralPath $zip) -and ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ieq $p.Sha)
-    if (-not $ok) {
-        Write-Host ('Baixando parte {0} de {1} ({2} MB)...' -f $n, $parts.Count, [math]::Round($p.Size / 1MB))
-        $tmp = $zip + '.part'
-        Get-WithRetry $p.Url $tmp
-        if ((Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash -ine $p.Sha) {
-            Remove-Item -LiteralPath $tmp -Force
-            throw ('A parte ' + $n + ' baixou errada (o hash nao confere). Tente de novo.')
+    # linhas: tag <versao>  |  part <sha256> <bytes> <pasta> <pasta no zip ou -> <novo nome ou -> <url>
+    $tag = $null
+    $parts = @()
+    foreach ($line in ($raw -split "`n")) {
+        $w = $line.Trim() -split '\s+'
+        if ($w.Count -ge 2 -and $w[0] -eq 'tag') { $tag = $w[1] }
+        elseif ($w.Count -eq 7 -and $w[0] -eq 'part') {
+            $parts += [pscustomobject]@{ Sha = $w[1]; Size = [int64]$w[2]; Dest = $w[3]; From = $w[4]; To = $w[5]; Url = $w[6] }
         }
-        Move-Item -LiteralPath $tmp -Destination $zip -Force
     }
-    Write-Host ('Extraindo parte {0} de {1}...' -f $n, $parts.Count)
-    $dest = if ($p.Dest -eq '.') { $work } else { Join-Path $work ($p.Dest -replace '/', '\') }
-    New-Item -ItemType Directory -Force -Path $dest | Out-Null
-    & (Join-Path $env:WINDIR 'System32\tar.exe') -xf $zip -C $dest
-    if ($LASTEXITCODE -ne 0) { throw ('O tar.exe do Windows falhou na parte ' + $n + ' (codigo ' + $LASTEXITCODE + ').') }
-    if ($p.From -ne '-' -and $p.To -ne '-') {
-        $from = Join-Path $dest $p.From
-        $to = Join-Path $dest $p.To
-        if (-not (Test-Path -LiteralPath $to)) { Move-Item -LiteralPath $from -Destination $to }
-    }
-}
+    if (-not $tag -or $parts.Count -eq 0) { throw 'A lista de ferramentas veio vazia ou num formato inesperado.' }
+    $parts = @($parts | Where-Object { $_.Url -notmatch 'HookshotBuilder-dotnet-' })   # (o .NET so serve ao Builder grafico)
 
-$py = Join-Path $work 'HookshotBuilder\tools\python\python.exe'
-if (-not (Test-Path -LiteralPath $py)) {
-    throw ('O Python nao apareceu depois de extrair (o antivirus pode ter removido). Libere a pasta ' + $base + ' no antivirus e tente de novo.')
+    $final = Join-Path $versions $tag
+    $work = $final + '.part'
+    New-Item -ItemType Directory -Force -Path $versions, $downloads | Out-Null
+    if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+    if (Test-Path -LiteralPath $final) { Remove-Item -LiteralPath $final -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $work | Out-Null
+
+    $n = 0
+    $totalBytes = [double](($parts | Measure-Object -Property Size -Sum).Sum)
+    $doneBytes = 0.0
+    foreach ($p in $parts) {
+        $n++
+        $zip = Join-Path $downloads ($p.Sha + '.zip')
+        $ok = (Test-Path -LiteralPath $zip) -and ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ieq $p.Sha)
+        if (-not $ok) {
+            Write-Host ('Baixando parte {0} de {1} ({2} MB)...' -f $n, $parts.Count, [math]::Round($p.Size / 1MB))
+            Set-Status (100 * $doneBytes / $totalBytes) ('Baixando as ferramentas: parte {0} de {1} ({2} MB). So na primeira vez.' -f $n, $parts.Count, [math]::Round($p.Size / 1MB)) ('Downloading the tools: part {0} of {1} ({2} MB). First time only.' -f $n, $parts.Count, [math]::Round($p.Size / 1MB))
+            $tmp = $zip + '.part'
+            Get-WithRetry $p.Url $tmp
+            if ((Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash -ine $p.Sha) {
+                Remove-Item -LiteralPath $tmp -Force
+                throw ('A parte ' + $n + ' baixou errada (o hash nao confere). Tente de novo.')
+            }
+            Move-Item -LiteralPath $tmp -Destination $zip -Force
+        }
+        Write-Host ('Extraindo parte {0} de {1}...' -f $n, $parts.Count)
+        Set-Status (100 * ($doneBytes + $p.Size * 0.6) / $totalBytes) ('Extraindo as ferramentas: parte {0} de {1}.' -f $n, $parts.Count) ('Unpacking the tools: part {0} of {1}.' -f $n, $parts.Count)
+        $dest = if ($p.Dest -eq '.') { $work } else { Join-Path $work ($p.Dest -replace '/', '\') }
+        New-Item -ItemType Directory -Force -Path $dest | Out-Null
+        & (Join-Path $env:WINDIR 'System32\tar.exe') -xf $zip -C $dest
+        if ($LASTEXITCODE -ne 0) { throw ('O tar.exe do Windows falhou na parte ' + $n + ' (codigo ' + $LASTEXITCODE + ').') }
+        if ($p.From -ne '-' -and $p.To -ne '-') {
+            $from = Join-Path $dest $p.From
+            $to = Join-Path $dest $p.To
+            if (-not (Test-Path -LiteralPath $to)) { Move-Item -LiteralPath $from -Destination $to }
+        }
+        $doneBytes += $p.Size
+    }
+
+    $py = Join-Path $work 'HookshotBuilder\tools\python\python.exe'
+    if (-not (Test-Path -LiteralPath $py)) {
+        throw ('O Python nao apareceu depois de extrair (o antivirus pode ter removido). Libere a pasta ' + $base + ' no antivirus e tente de novo.')
+    }
+    Move-Item -LiteralPath $work -Destination $final
+    Set-Content -LiteralPath (Join-Path $final 'installed.txt') -Value $tag
+    Remove-Item -LiteralPath $downloads -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host 'Ferramentas instaladas.' -ForegroundColor Green
+} finally {
+    Remove-Item -LiteralPath $statusFile -Force -ErrorAction SilentlyContinue
 }
-Move-Item -LiteralPath $work -Destination $final
-Set-Content -LiteralPath (Join-Path $final 'installed.txt') -Value $tag
-Remove-Item -LiteralPath $downloads -Recurse -Force -ErrorAction SilentlyContinue
-Write-Host 'Ferramentas instaladas.' -ForegroundColor Green

@@ -987,6 +987,23 @@ function Format-Min([double]$sec) {
     return ('{0}h{1:00}' -f [int][math]::Floor($m / 60), ($m % 60))
 }
 
+# Enquanto o install-tools.ps1 baixa as ferramentas, mostra o progresso dele aqui (ele escreve %LOCALAPPDATA%\RecompZel\tools-status.txt)
+function Show-ToolsProgress {
+    $f = Join-Path $env:LOCALAPPDATA 'RecompZel\tools-status.txt'
+    if (-not (Test-Path -LiteralPath $f)) { return }
+    try {
+        if (((Get-Date) - (Get-Item -LiteralPath $f).LastWriteTime).TotalMinutes -gt 15) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue; return }
+        $p = (Get-Content -LiteralPath $f -Raw).Trim().Split('|')
+        if ($p.Count -lt 3) { return }
+        $pct = [double]$p[0]
+        $txtPct.Text = ('{0}%' -f [int][math]::Floor($pct))
+        $pbTotal.Value = $pct
+        if ($script:lang -eq 'en') { $txtStatus.Text = 'Installing the tools'; $txtNow.Text = $p[2]; $txtNext.Text = 'Then the game build starts by itself.' }
+        else { $txtStatus.Text = 'Instalando as ferramentas'; $txtNow.Text = $p[1]; $txtNext.Text = 'Depois o build do jogo comeca sozinho.' }
+        $txtStatus.Foreground = '#6FD3A0'
+    } catch {}
+}
+
 function Update-View {
     $g = $script:g
     $lines = Read-LogLines
@@ -1318,7 +1335,7 @@ function Install-AllTech {
     else { $txtHelp.Text = T 'tech_done' }
 }
 $btnTechAll.Add_Click({ Install-AllTech })
-$timer.Add_Tick({ Update-View; Check-Game; Update-Tech })
+$timer.Add_Tick({ Update-View; Show-ToolsProgress; Check-Game; Update-Tech })
 $timer.Start()
 Update-View
 Update-Tech
