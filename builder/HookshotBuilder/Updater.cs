@@ -16,7 +16,7 @@ static class Updater
 {
     const string Latest = "https://api.github.com/repos/TechHammerBR/RecompZel/releases/latest";
     const string Asset = "HookshotBuilder.zip";
-    const string SetupAsset = "HookshotBuilder.exe";            // (the setup, builder/setup/setup.c: a release holds it and its list)
+    const string SetupAsset = "RecompZelBuilder.exe";            // (the setup, builder/setup/setup.c: a release holds it and its list)
     const string SetupList = "hookshot-setup.txt";              // (scripts/make_setup_parts.py)
     static readonly TimeSpan[] RetryDelays = { TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(6), TimeSpan.FromSeconds(12), TimeSpan.FromSeconds(20) };
 
@@ -162,7 +162,7 @@ static class Updater
         return null;
     }
 
-    /// The latest release's setup (HookshotBuilder.exe) downloaded and started with args: it installs the new builder (only the
+    /// The latest release's setup (RecompZelBuilder.exe) downloaded and started with args: it installs the new builder (only the
     /// parts that changed) and starts it with the same args; this one closes. (no args: the new builder opens as it does) A tag of
     /// another track (or a release asked for by a switch of track): that release's setup, told to install it (--tag)
     public static async Task RunLatestSetup(MainWindow w, IEnumerable<string> args, string? tag = null, bool named = false)

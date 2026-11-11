@@ -733,7 +733,7 @@ public partial class MainWindow : Window
                 try { await Updater.RunLatestSetup(this, Array.Empty<string>(), updateTarget, Switching); }
                 catch (Exception ex)
                 {
-                    MessageBox.Show(this, ex.Message + " You can also download HookshotBuilder.exe from the releases page.", "RecompZel");
+                    MessageBox.Show(this, ex.Message + " You can also download RecompZelBuilder.exe from the releases page.", "RecompZel");
                     RefreshMode();
                 }
                 return;

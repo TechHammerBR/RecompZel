@@ -27,7 +27,7 @@ $MARK
 
 | On | Download |
 |---|---|
-| Windows | \`HookshotBuilder.exe\`: instalador das ferramentas de compilacao do RecompZel (so na primeira vez) |
+| Windows | \`RecompZelBuilder.exe\`: instalador das ferramentas de compilacao do RecompZel (so na primeira vez) |
 | Linux, Steam Deck | $appimage |
 
 Voce precisa do seu proprio arquivo do jogo. \`hookshot-setup.txt\`, \`hookshot-linux.txt\` e o \`.zsync\` sao dos atualizadores, nao baixe. Para jogar, use o \`RecompZel-Launcher.exe\` da release [RecompZel Launcher](https://github.com/$GH_REPO/releases/tag/launcher). Para conferir um download: \`sha256sum -c --ignore-missing SHA256SUMS\`, or \`gh attestation verify <file> -R $GH_REPO\`.
@@ -37,7 +37,7 @@ EOF
 links() {   # tag -> big links to the Windows setup and the Linux AppImage on the release (what is there of them)
     local names exe appimage base="https://github.com/$GH_REPO/releases/download/$1"
     names=$(gh release view "$1" --json assets --jq '.assets[].name')
-    exe=$(grep -xF HookshotBuilder.exe <<<"$names" || true)
+    exe=$(grep -xF RecompZelBuilder.exe <<<"$names" || true)
     appimage=$(grep -E '\.AppImage$' <<<"$names" | head -n1 || true)
     [[ -n $exe || -n $appimage ]] || return 0
     echo "$LINKS"

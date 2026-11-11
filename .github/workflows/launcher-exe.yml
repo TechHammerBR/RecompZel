@@ -64,7 +64,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="**Comece por aqui.** Baixe o RecompZel-Launcher.exe, de duplo clique e siga o painel (escolha o seu .nup, Reconstruir o jogo e Jogar). Na primeira vez as ferramentas de compilacao sao necessarias: baixe o HookshotBuilder.exe da release [RecompZel Builder](https://github.com/${GITHUB_REPOSITORY}/releases/tag/nightly), rode uma vez e feche. Voce precisa do seu proprio arquivo do jogo (.nup). Refeito automaticamente a cada mudanca em recompzel/. Commit ${GITHUB_SHA::7}."
+          notes="**Comece por aqui.** Baixe o RecompZel-Launcher.exe, de duplo clique e siga o painel (escolha o seu .nup, Reconstruir o jogo e Jogar). Na primeira vez as ferramentas de compilacao sao necessarias: baixe o RecompZelBuilder.exe da release [RecompZel Builder](https://github.com/${GITHUB_REPOSITORY}/releases/tag/nightly), rode uma vez e feche. Voce precisa do seu proprio arquivo do jogo (.nup). Refeito automaticamente a cada mudanca em recompzel/. Commit ${GITHUB_SHA::7}."
           if gh release view launcher >/dev/null 2>&1; then
             gh release edit launcher --notes "$notes" --latest=false
           else

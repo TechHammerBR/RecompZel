@@ -43,7 +43,7 @@ $STR['pt'] = @{
     up_1 = '120 ms'
     up_2 = 'Sem adiamento (0 ms)'
     fg_t = 'Metodo de geracao de quadros'
-    fg_0 = 'Hookshot (padrao, 2x a 8x)'
+    fg_0 = 'RecompZel (padrao, 2x a 8x)'
     fg_1 = 'AMD FSR 3.1 (so 2x)'
     fg_2 = 'Desligado (sem geracao de quadros)'
     diag = 'Registrar diagnostico (buffer sem conexao)'
@@ -176,7 +176,7 @@ $STR['en'] = @{
     up_1 = '120 ms'
     up_2 = 'No deferral (0 ms)'
     fg_t = 'Frame generation method'
-    fg_0 = 'Hookshot (default, 2x to 8x)'
+    fg_0 = 'RecompZel (default, 2x to 8x)'
     fg_1 = 'AMD FSR 3.1 (2x only)'
     fg_2 = 'Off (no frame generation)'
     diag = 'Log diagnostics (unbound buffer)'
@@ -491,9 +491,9 @@ $uploadOptions = @(
     @{ Key = 'up_1'; Pt = '120 ms'; Ms = 120 },
     @{ Key = 'up_2'; Pt = 'Sem adiamento (0 ms)'; Ms = 0 }
 )
-# Metodo de geracao de quadros: o do Hookshot (padrao), o FSR 3.1 (RX_VK_FSR_FG=1, so 2x) ou desligado
+# Metodo de geracao de quadros: o do RecompZel (padrao), o FSR 3.1 (RX_VK_FSR_FG=1, so 2x) ou desligado
 $fgOptions = @(
-    @{ Key = 'fg_0'; Pt = 'Hookshot (padrao, 2x a 8x)'; Fsr = $false; Off = $false },
+    @{ Key = 'fg_0'; Pt = 'RecompZel (padrao, 2x a 8x)'; Fsr = $false; Off = $false },
     @{ Key = 'fg_1'; Pt = 'AMD FSR 3.1 (so 2x)'; Fsr = $true; Off = $false },
     @{ Key = 'fg_2'; Pt = 'Desligado (sem geracao de quadros)'; Fsr = $false; Off = $true }
 )

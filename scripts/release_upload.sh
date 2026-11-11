@@ -60,7 +60,8 @@ $("$(dirname "$0")/release_files.sh" table nightly)"
     gh release view nightly --json assets --jq '.assets[].name' | while read -r old; do
         case $old in
             Hookshot-*-x86_64.AppImage | Hookshot-*-x86_64.AppImage.zsync) want="Hookshot-.*-x86_64\\.AppImage${old##*.AppImage}" ;;
-            Hookshot-*-Windows-x64.zip) want='Hookshot-.*-Windows-x64\.zip' ;;
+            Hookshot-*-Windows-x64.zip | RecompZel-*-Windows-x64.zip) want='RecompZel-.*-Windows-x64\.zip' ;;
+            HookshotBuilder.exe) want='RecompZelBuilder\.exe' ;;
             *) continue ;;
         esac
         printf '%s\n' "${new[@]}" | grep -qxF "$old" && continue

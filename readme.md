@@ -45,8 +45,8 @@ powershell -ExecutionPolicy Bypass -File recompzel\instalar.ps1 -Nup "C:\caminho
 
 O build usa um compilador e ferramentas que são baixados por um instalador. Se o `INSTALAR-RECOMPZEL.bat` disser que as ferramentas não estão instaladas:
 
-- Baixe o **`HookshotBuilder.exe`** da release [nightly](https://github.com/TechHammerBR/RecompZel/releases/tag/nightly) **deste** repositório (ela é gerada a partir do código do RecompZel; o `INSTALAR-RECOMPZEL.bat` abre essa página sozinho). Rode uma vez, deixe terminar e feche. Ele só baixa as ferramentas; o jogo é construído pelo `INSTALAR-RECOMPZEL.bat`.
-- Não use o `HookshotBuilder.exe` do repositório original (NotRexed/Hookshot).
+- Baixe o **`RecompZelBuilder.exe`** da release [RecompZel Builder](https://github.com/TechHammerBR/RecompZel/releases/tag/nightly) **deste** repositório (ela é gerada a partir do código do RecompZel; o `INSTALAR-RECOMPZEL.bat` abre essa página sozinho). Rode uma vez, deixe terminar e feche. Ele só baixa as ferramentas; o jogo é construído pelo `INSTALAR-RECOMPZEL.bat`.
+- Não use o instalador do repositório original (NotRexed/Hookshot).
 
 Depois, abra o `INSTALAR-RECOMPZEL.bat` de novo.
 

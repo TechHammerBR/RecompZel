@@ -34,7 +34,7 @@ try { . (Join-Path $PSScriptRoot 'env-recompzel.ps1') } catch {
     Write-Host ''
     $url = 'https://github.com/TechHammerBR/RecompZel/releases/tag/nightly'
     Write-Host 'Falta instalar as ferramentas de compilacao (so uma vez):'
-    Write-Host "  1) Baixe o HookshotBuilder.exe em $url"
+    Write-Host "  1) Baixe o RecompZelBuilder.exe em $url"
     Write-Host '     (e o instalador gerado a partir deste repositorio; nao use o do projeto original)'
     Write-Host '  2) Rode, deixe terminar e feche.'
     Write-Host '  3) Abra INSTALAR-RECOMPZEL.bat de novo.'
