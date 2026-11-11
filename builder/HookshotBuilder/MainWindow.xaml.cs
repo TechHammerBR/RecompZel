@@ -47,6 +47,10 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // (the texts the window sets itself, in Portuguese when the language is Portuguese: Strings.Translate)
+        var localizer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+        localizer.Tick += (_, _) => { if (original.Count > 0 || lang.Code.StartsWith("pt", StringComparison.OrdinalIgnoreCase)) LocalizeTree(this); };
+        localizer.Start();
         OutPath.Text = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Games", "RecompZel");
         LanguageBox.ItemsSource = Strings.All;
         LanguageBox.SelectedItem = lang;
@@ -697,6 +701,39 @@ public partial class MainWindow : Window
             }
         }
         catch (Exception) { }
+    }
+
+    // What the window shows, as English and as shown: a text the code sets again is translated again, and a language change redoes them all
+    readonly Dictionary<object, (string En, string Shown)> original = new();
+
+    void Localize(object element, string current, Action<string> set)
+    {
+        if (string.IsNullOrEmpty(current)) return;
+        if (original.TryGetValue(element, out var o) && current == o.Shown)
+        {
+            var now = Strings.Translate(lang, o.En);
+            if (now != o.Shown) { set(now); original[element] = (o.En, now); }
+            return;
+        }
+        var translated = Strings.Translate(lang, current);
+        if (translated != current) { original[element] = (current, translated); set(translated); }
+        else original.Remove(element);
+    }
+
+    void LocalizeTree(DependencyObject parent)
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(parent))
+        {
+            if (child is TextBlock tb)
+            {
+                if (tb.Inlines.Count <= 1) Localize(tb, tb.Text, v => tb.Text = v);
+                else LocalizeTree(tb);
+                continue;
+            }
+            if (child is System.Windows.Documents.Run run) { Localize(run, run.Text, v => run.Text = v); continue; }
+            if (child is ContentControl cc && cc.Content is string text) Localize(cc, text, v => cc.Content = v);
+            if (child is DependencyObject d) LocalizeTree(d);
+        }
     }
 
     void LanguageChanged(object sender, SelectionChangedEventArgs e)

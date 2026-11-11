@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace HookshotBuilder;
 
@@ -170,5 +171,137 @@ static class Strings
         if (name.StartsWith("es-") && name != "es-ES") return All.First(l => l.Code == "es-419");
         if (name.StartsWith("pt")) return All.First(l => l.Code == "pt-BR");
         return All.FirstOrDefault(l => l.Code == c.TwoLetterISOLanguageName) ?? All[0];
+    }
+
+    // ---- Portuguese (Brazil) for the texts the window sets itself (the XAML and the code), apart from the table above.
+    // The window translates what it shows through Translate (MainWindow.Localize): exact texts first, then patterns for the ones with numbers in them.
+    static readonly Dictionary<string, string> PtExact = new()
+    {
+        ["Starting…"] = "Iniciando…",
+        ["Build your game"] = "Monte o seu jogo",
+        ["Pick your game files and where the game goes. RecompZel does the rest, once."] = "Escolha os arquivos do jogo e onde ele vai ficar. O RecompZel faz o resto, uma vez só.",
+        ["FOUND ON THIS PC"] = "ENCONTRADO NESTE PC",
+        ["Not listed?"] = "Não apareceu?",
+        ["Browse…"] = "Procurar…",
+        [" · or drop the file on this window · "] = " · ou solte o arquivo nesta janela · ",
+        ["romfs and exefs folders"] = "pastas romfs e exefs",
+        ["INSTALL THE GAME TO"] = "INSTALAR O JOGO EM",
+        ["Change"] = "Alterar",
+        ["Default"] = "Padrão",
+        ["Automatic"] = "Automático",
+        ["GAME LANGUAGE"] = "IDIOMA",
+        ["BUILD WORKERS"] = "PROCESSOS DO BUILD",
+        ["BUILD MEMORY (GB)"] = "MEMÓRIA DO BUILD (GB)",
+        ["UPDATE TRACK"] = "CANAL DE ATUALIZAÇÃO",
+        ["Prepare shaders now"] = "Preparar os shaders agora",
+        ["NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)"] = "NVIDIA DLSS (baixa o SDK da NVIDIA, sob a licença da NVIDIA)",
+        ["For NVIDIA RTX graphics cards. NVIDIA's files stay on this PC: never share a game folder built with them."] = "Para placas de vídeo NVIDIA RTX. Os arquivos da NVIDIA ficam neste PC: nunca compartilhe uma pasta de jogo montada com eles.",
+        ["AMD FSR 4 (downloads AMD's runtime under AMD's license)"] = "AMD FSR 4 (baixa o runtime da AMD, sob a licença da AMD)",
+        ["For AMD Radeon graphics cards. It is chosen in the game's Insert menu, as the Upscaler."] = "Para placas de vídeo AMD Radeon. É escolhido no menu do jogo (tecla Insert), em Upscaler.",
+        ["About 45 min"] = "Cerca de 45 min",
+        ["Build the game"] = "Montar o jogo",
+        ["Building your game"] = "Montando o seu jogo",
+        ["Show details"] = "Mostrar detalhes",
+        ["Hide details"] = "Ocultar detalhes",
+        ["Cancel"] = "Cancelar",
+        ["Your game is ready"] = "Seu jogo está pronto",
+        ["Your game is updated"] = "Seu jogo foi atualizado",
+        ["Play"] = "Jogar",
+        ["Open folder"] = "Abrir pasta",
+        ["Desktop shortcut"] = "Atalho na área de trabalho",
+        ["Start menu entry"] = "Entrada no menu Iniciar",
+        ["Free up space"] = "Liberar espaço",
+        ["Freeing…"] = "Liberando…",
+        ["Show folder"] = "Mostrar pasta",
+        ["Checking for updates…"] = "Verificando atualizações…",
+        ["Update"] = "Atualizar",
+        ["Update builder"] = "Atualizar o Builder",
+        ["Open the game folder"] = "Abrir a pasta do jogo",
+        ["The build stopped"] = "O build parou",
+        ["The update stopped"] = "A atualização parou",
+        ["The update could not be downloaded"] = "Não foi possível baixar a atualização",
+        ["Nothing was changed in your game folder."] = "Nada foi alterado na pasta do jogo.",
+        ["Your current game is unchanged and still plays."] = "Seu jogo atual não foi alterado e continua funcionando.",
+        ["Copy for a bug report"] = "Copiar para relatar o erro",
+        ["Copied"] = "Copiado",
+        ["Back"] = "Voltar",
+        ["Repair"] = "Reparar",
+        ["The build tools need repairing"] = "As ferramentas de build precisam de reparo",
+        ["Your antivirus removed part of the build tools"] = "O seu antivírus removeu parte das ferramentas de build",
+        ["What went wrong"] = "O que deu errado",
+        ["Getting the update…"] = "Baixando a atualização…",
+        ["Getting the new builder…"] = "Baixando o novo Builder…",
+        ["Starting RecompZel…"] = "Iniciando o RecompZel…",
+        ["Looking for your game files…"] = "Procurando os arquivos do jogo…",
+        ["No game files found yet"] = "Nenhum arquivo do jogo encontrado ainda",
+        ["Found 1 game file"] = "1 arquivo do jogo encontrado",
+        ["Update available"] = "Atualização disponível",
+        ["Your game is up to date"] = "Seu jogo está atualizado",
+        ["Could not check for updates (GitHub did not answer)"] = "Não foi possível verificar atualizações (o GitHub não respondeu)",
+        ["Up to date with this builder (GitHub did not answer)"] = "Atualizado com este Builder (o GitHub não respondeu)",
+        ["Up to date"] = "Atualizado",
+        ["Read your game files"] = "Ler os arquivos do jogo",
+        ["Read the game files kept in the folder"] = "Ler os arquivos do jogo guardados na pasta",
+        ["Translate the game to PC code"] = "Traduzir o jogo para código de PC",
+        ["Compile"] = "Compilar",
+        ["Compile changed files"] = "Compilar os arquivos que mudaram",
+        ["Put the game together"] = "Montar o jogo",
+        ["Swap in the new game"] = "Trocar pelo jogo novo",
+        ["Prepare the shaders"] = "Preparar os shaders",
+        ["Estimating…"] = "Estimando…",
+        ["Working…"] = "Trabalhando…",
+        ["Nothing else to install: RecompZel's own build tools are here, downloaded and checked by its setup."] = "Nada mais para instalar: as ferramentas de build do RecompZel estão aqui, baixadas e conferidas pelo instalador.",
+        ["RecompZel's build tools are missing from its folder. Press Build and RecompZel offers to download them again."] = "As ferramentas de build do RecompZel não estão na pasta dele. Aperte Montar o jogo e o RecompZel oferece baixá-las de novo.",
+        ["Needs 45 GB"] = "Precisa de 45 GB",
+        ["Less than a minute left"] = "Falta menos de um minuto",
+        ["About a minute left"] = "Falta cerca de um minuto",
+        ["Choose where the game goes"] = "Escolha onde o jogo vai ficar",
+    };
+
+    static readonly (Regex Pattern, string To)[] PtPatterns =
+    {
+        (new Regex(@"^Found (\d+) game files$"), @"$1 arquivos do jogo encontrados"),
+        (new Regex(@"^RecompZel (.+) is available\. Your game is (.+): Update builds it again from the game files kept in its folder, compiling only what changed\.$"), @"O RecompZel $1 está disponível. Seu jogo é o $2: Atualizar refaz o jogo com os arquivos guardados na pasta dele, compilando só o que mudou."),
+        (new Regex(@"^Your game is (.+), as this builder\. GitHub did not answer, so newer versions could not be checked\.$"), @"Seu jogo é o $1, igual a este Builder. O GitHub não respondeu, então não deu para verificar versões mais novas."),
+        (new Regex(@"^(.+) is the latest version\. Pick game files below only to build it again from scratch\.$"), @"$1 é a versão mais recente. Escolha os arquivos do jogo abaixo só para montá-lo de novo do zero."),
+        (new Regex(@"^RecompZel Builder (.+) is available \(this one is (.+)\): update it first, then build\.$"), @"O RecompZel Builder $1 está disponível (este é o $2): atualize-o primeiro e depois monte o jogo."),
+        (new Regex(@"^Update available: (.+)$"), @"Atualização disponível: $1"),
+        (new Regex(@"^(.+) is out: build this folder again with the RecompZel Builder to get it$"), @"$1 saiu: monte esta pasta de novo com o RecompZel Builder para recebê-la"),
+        (new Regex(@"^Needs 45 GB · (.+) has (\d+) GB free$"), @"Precisa de 45 GB · $1 tem $2 GB livres"),
+        (new Regex(@"^Build files: about (.+), kept in (.+) so that updates are quick \(HOOKSHOT_KEEP_BUILD_FILES\)\."), @"Arquivos do build: cerca de $1, guardados em $2 para as atualizações serem rápidas."),
+        (new Regex(@"^Build files: about (.+) in (.+) while it builds; when the game is ready about 1 GB stays \(the compiled code\) so that updates compile only what changed\."), @"Arquivos do build: cerca de $1 em $2 durante o build; quando o jogo fica pronto, cerca de 1 GB permanece (o código compilado) para as atualizações compilarem só o que mudou."),
+        (new Regex(@" (\S+) has only (.+) free\.$"), @" $1 tem só $2 livres."),
+        (new Regex(@"^RecompZel Builder keeps (.+) on this PC \((.+)\)\. (.+) of it only makes the next update quicker and can be freed: your game keeps playing, and the next update then takes about as long as this build\.$"), @"O RecompZel Builder guarda $1 neste PC ($2). $3 disso só deixa a próxima atualização mais rápida e pode ser liberado: o seu jogo continua funcionando, e a próxima atualização leva quase o mesmo tempo deste build."),
+        (new Regex(@"^RecompZel Builder keeps (.+) on this PC \((.+)\): the builder itself\.$"), @"O RecompZel Builder guarda $1 neste PC ($2): o próprio Builder."),
+        (new Regex(@" \((.+) could not be deleted: a file is in use\. Close the game and the builder, and delete the folder's contents by hand\.\)"), @" ($1 não puderam ser apagados: há um arquivo em uso. Feche o jogo e o Builder e apague o conteúdo da pasta à mão.)"),
+        (new Regex(@"Antivirus programs sometimes flag unsigned developer tools by mistake\."), @"Programas antivírus às vezes marcam por engano ferramentas de desenvolvedor sem assinatura."),
+        (new Regex(@"Open Windows Security → Protection history, and restore the removed files\."), @"Abra a Segurança do Windows → Histórico de proteção e restaure os arquivos removidos."),
+        (new Regex(@"Or add (.+) to its exclusions\."), @"Ou adicione $1 às exclusões dele."),
+        (new Regex(@"Then press Repair: RecompZel downloads the tools again from their official releases and checks each one\."), @"Depois aperte Reparar: o RecompZel baixa as ferramentas de novo das versões oficiais e confere cada uma."),
+        (new Regex(@"About (\d+) h (\d+) min left"), @"Faltam cerca de $1 h $2 min"),
+        (new Regex(@"About (\d+) minutes left"), @"Faltam cerca de $1 min"),
+        (new Regex(@"^Compiling (\d+:\d+)"), @"Compilando $1"),
+        (new Regex(@"Usually about 45 minutes"), @"Normalmente cerca de 45 minutos"),
+        (new Regex(@" · your PC stays usable"), @" · o PC continua utilizável"),
+        (new Regex(@"\. Your current game stays as it is until the new one is complete\."), @". Seu jogo atual continua como está até o novo ficar pronto."),
+        (new Regex(@"^Built in "), @"Montado em "),
+        (new Regex(@"^Updated in "), @"Atualizado em "),
+        (new Regex(@" \(compiled in "), @" (compilado em "),
+        (new Regex(@" · last time "), @" · da última vez "),
+        (new Regex(@"about the same"), @"quase igual"),
+        (new Regex(@" faster\)"), @" mais rápido)"),
+        (new Regex(@" slower\)"), @" mais lento)"),
+        (new Regex(@"(\d+) minutes\b"), @"$1 minutos"),
+        (new Regex(@"(\d+) seconds\b"), @"$1 segundos"),
+    };
+
+    /// The text in the language, when it is Portuguese; any other language keeps the English (what the table above has, it shows already)
+    public static string Translate(Language l, string en)
+    {
+        if (string.IsNullOrEmpty(en) || !l.Code.StartsWith("pt", StringComparison.OrdinalIgnoreCase)) return en;
+        if (PtExact.TryGetValue(en, out var hit)) return hit;
+        var s = en;
+        foreach (var (pattern, to) in PtPatterns) s = pattern.Replace(s, to);
+        return s;
     }
 }
