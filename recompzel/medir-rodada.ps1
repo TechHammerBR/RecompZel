@@ -8,7 +8,7 @@ param([string]$Log, [switch]$Comparar, [string]$Saida)
 
 $inv = [Globalization.CultureInfo]::InvariantCulture
 function Num($s) { return [double]::Parse($s, $inv) }
-$Dir = 'C:\DEV\rodadas'
+$Dir = Join-Path $PSScriptRoot 'rodadas'
 
 function Ler([string]$caminho) {
     $r = [ordered]@{

@@ -1,13 +1,17 @@
 # launcher.ps1  -  RecompZel Launcher v3 (original, feito para o nosso projeto)
-# Uso: powershell -ExecutionPolicy Bypass -File C:\DEV\launcher.ps1
+# Uso: powershell -ExecutionPolicy Bypass -File launcher.ps1   (ou o RecompZel-Launcher.exe)
 # Le o build.log e a pasta de trabalho. Nao apaga nada. Reconstruir pede confirmacao.
-# Idioma: Portugues (Brasil) ou English, no canto superior esquerdo. Perfis de jogos: C:\DEV\games.json.
+# Idioma: Portugues (Brasil) ou English, no canto superior esquerdo. Perfis de jogos: games.json, na pasta do launcher.
 # A pasta do jogo e C:\Games\RecompZel. Se ainda existir so a antiga (C:\Games\HookshotDev), ela continua sendo usada.
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
-$ProfilesPath = 'C:\DEV\games.json'
-$Cfg          = 'C:\DEV\launcher-settings.json'
+# Os scripts ficam onde este esta (C:\DEV no PC do desenvolvedor, %LOCALAPPDATA%\RecompZel para quem usa o .exe); os dados (perfil, logs, rodadas)
+# ficam na mesma pasta, exceto quando o launcher roda de dentro do repositorio (pasta recompzel): ai vao para %LOCALAPPDATA%\RecompZel.
+$AppDir       = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Join-Path $env:LOCALAPPDATA 'RecompZel' } else { $PSScriptRoot }
+New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
+$ProfilesPath = Join-Path $AppDir 'games.json'
+$Cfg          = Join-Path $AppDir 'launcher-settings.json'
 $W = @{ read = 15; lift = 10; compile = 60; finish = 15 }   # pesos do percentual total
 $script:lang = 'pt'
 
@@ -143,7 +147,7 @@ $STR['pt'] = @{
     e_script = 'Nao achei o script de build: {0}'
     e_script2 = 'Nao achei o script: {0}'
     rep_copied = 'Relatorio copiado. Cole na conversa com Ctrl+V.'
-    started = 'Jogo iniciado. Ao fechar o jogo, o log desta rodada e salvo em C:\DEV\rodadas.'
+    started = 'Jogo iniciado. Ao fechar o jogo, o log desta rodada e salvo na pasta rodadas do launcher.'
     saved = 'Rodada salva: {0}'
 }
 $STR['en'] = @{
@@ -276,7 +280,7 @@ $STR['en'] = @{
     e_script = 'Could not find the build script: {0}'
     e_script2 = 'Could not find the script: {0}'
     rep_copied = 'Report copied. Paste it into the chat with Ctrl+V.'
-    started = 'Game started. When you close it, this round''s log is saved in C:\DEV\rodadas.'
+    started = 'Game started. When you close it, this round''s log is saved in the launcher''s rodadas folder.'
     saved = 'Round saved: {0}'
 }
 
@@ -295,10 +299,10 @@ if (-not (Test-Path $ProfilesPath)) {
             id          = 'zelda-oot'
             name        = 'Zelda: Ocarina of Time'
             subtitle    = 'Switch 2, recompilado para PC'
-            logPath     = 'C:\DEV\build.log'
-            workDir     = 'C:\DEV\build-work'
+            logPath     = (Join-Path $AppDir 'build.log')
+            workDir     = (Join-Path $AppDir 'build-work')
             outDir      = 'C:\Games\RecompZel'
-            buildScript = 'C:\DEV\build-game.ps1'
+            buildScript = (Join-Path $PSScriptRoot 'build-game.ps1')
             totalFiles  = 186583
             needs       = 'Voce precisa do seu proprio arquivo do jogo (.nup). Nada e baixado da internet.'
         }
@@ -472,7 +476,7 @@ $xaml = @'
 
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
-try { if (Test-Path 'C:\DEV\recompzel.ico') { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]'C:\DEV\recompzel.ico') } } catch {}
+try { if (Test-Path (Join-Path $PSScriptRoot 'recompzel.ico')) { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri](Join-Path $PSScriptRoot 'recompzel.ico')) } } catch {}
 foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
@@ -740,7 +744,7 @@ function Find-GameExe {
 # ---------- Atalhos: cria os que faltam e garante o icone do RecompZel e o exe novo (roda ao abrir o launcher) ----------
 function Update-Shortcuts {
     try {
-        $ico = 'C:\DEV\recompzel.ico'
+        $ico = Join-Path $PSScriptRoot 'recompzel.ico'
         $iconOk = Test-Path -LiteralPath $ico
         $desk = [Environment]::GetFolderPath('Desktop')
         $sh = New-Object -ComObject WScript.Shell
@@ -758,8 +762,8 @@ function Update-Shortcuts {
                 if ($isGame) { $l.Description = 'Zelda Ocarina of Time recompilado (RecompZel)' }
                 else {
                     $l.TargetPath = $ps
-                    $l.Arguments = '-ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\DEV\launcher.ps1"'
-                    $l.WorkingDirectory = 'C:\DEV'
+                    $l.Arguments = ('-ExecutionPolicy Bypass -WindowStyle Hidden -File "' + (Join-Path $PSScriptRoot 'launcher.ps1') + '"')
+                    $l.WorkingDirectory = $PSScriptRoot
                     $l.Description = 'Launcher do RecompZel'
                 }
                 $dirty = $true
@@ -1194,7 +1198,7 @@ function Check-Game {
     try { if (-not $script:gameProc.HasExited) { return } } catch { $script:gameProc = $null; return }
     $script:gameProc = $null
     try {
-        $dir = 'C:\DEV\rodadas'
+        $dir = Join-Path $AppDir 'rodadas'
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         $n = @(Get-ChildItem $dir -Filter 'rodada-*.txt' -ErrorAction SilentlyContinue).Count + 2
         $name = ('rodada-{0:00}-{1}' -f $n, (Get-Date -Format 'yyyyMMdd-HHmmss'))
@@ -1209,7 +1213,7 @@ function Check-Game {
             $txtNotas.Text = ''
             try {
                 $res = Join-Path $dir ($name + '-resumo.txt')
-                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\DEV\medir-rodada.ps1' -Log $arq -Saida $res | Out-Null
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'medir-rodada.ps1') -Log $arq -Saida $res | Out-Null
                 if (Test-Path $res) { $txtResumo.Tag = 'real'; $txtResumo.Text = ((Get-Content $res | Select-Object -First 12) -join [Environment]::NewLine) }
             } catch {}
             $ini = Join-Path $script:gameOut 'hookshot_options.ini'

@@ -1,7 +1,28 @@
 # Prepara o ambiente de build usando as ferramentas que o HookshotBuilder ja instalou.
 # Nao e para rodar sozinho: os outros scripts chamam este com ". $PSScriptRoot\env-recompzel.ps1"
 # Repo = a pasta do repositorio. Se este script esta em <repo>\recompzel, usa <repo>; senao (copia em C:\DEV) usa C:\DEV\RecompZel.
-$Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Split-Path $PSScriptRoot -Parent } else { 'C:\DEV\RecompZel' }
+# O codigo-fonte: <repo>\recompzel\ (clone ou ZIP); senao C:\DEV\RecompZel (layout antigo) ou %LOCALAPPDATA%\RecompZel\RecompZel;
+# se nao existe em lugar nenhum (quem usa so o RecompZel-Launcher.exe), baixa o codigo do GitHub (so o projeto, sem dados do jogo).
+$Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Split-Path $PSScriptRoot -Parent }
+        elseif (Test-Path 'C:\DEV\RecompZel\nx2\make_game.py') { 'C:\DEV\RecompZel' }
+        else { Join-Path $env:LOCALAPPDATA 'RecompZel\RecompZel' }
+if (-not (Test-Path (Join-Path $Repo 'nx2\make_game.py'))) {
+    Write-Host "Baixando o codigo do RecompZel do GitHub (uma vez) para $Repo ..."
+    $tmp = Join-Path $env:TEMP ('recompzel-src-' + [guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+        $zip = Join-Path $tmp 'src.zip'
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/TechHammerBR/RecompZel/archive/refs/heads/main.zip' -OutFile $zip
+        Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
+        $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
+        New-Item -ItemType Directory -Force -Path (Split-Path $Repo -Parent) | Out-Null
+        if (Test-Path $Repo) { Remove-Item -LiteralPath $Repo -Recurse -Force }
+        Move-Item -LiteralPath $inner.FullName -Destination $Repo
+    } catch {
+        throw "Nao consegui baixar o codigo do RecompZel (https://github.com/TechHammerBR/RecompZel). Baixe o ZIP do repositorio, extraia e rode o INSTALAR-RECOMPZEL.bat. Detalhe: $($_.Exception.Message)"
+    } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+}
 $ver = Get-ChildItem "$env:LOCALAPPDATA\HookshotBuilder\versions" -Directory -ErrorAction SilentlyContinue |
        Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $ver) { throw "As ferramentas de compilacao ainda nao estao instaladas ($env:LOCALAPPDATA\HookshotBuilder\versions). O instalador explica como instala-las." }

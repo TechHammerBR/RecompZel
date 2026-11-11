@@ -48,8 +48,8 @@ if (-not $Out) {
         Write-Host 'Aviso: usando a pasta antiga C:\Games\HookshotDev. Renomeie para C:\Games\RecompZel quando o jogo estiver fechado.'
     }
 }
-# C:\DEV so quando e o layout do launcher (C:\DEV\games.json); em qualquer outro PC usa %LOCALAPPDATA%\RecompZel
-$base = if (Test-Path 'C:\DEV\games.json') { 'C:\DEV' } else { Join-Path $env:LOCALAPPDATA 'RecompZel' }
+# mesma regra do launcher: a pasta dos scripts (C:\DEV no PC do desenvolvedor, %LOCALAPPDATA%\RecompZel com o .exe); rodando de dentro do repositorio, %LOCALAPPDATA%\RecompZel
+$base = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Join-Path $env:LOCALAPPDATA 'RecompZel' } else { $PSScriptRoot }
 if (-not $Work) { $Work = Join-Path $base 'build-work' }
 if (-not $Log)  { $Log  = Join-Path $base 'build.log' }
 

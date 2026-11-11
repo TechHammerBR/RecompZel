@@ -10,7 +10,9 @@ using System.Windows.Forms;
 
 static class LauncherStub
 {
-    const string Dir = @"C:\DEV";
+    // Pasta do launcher: C:\DEV se ja e o layout do desenvolvedor (tem games.json la), senao %LOCALAPPDATA%\RecompZel (nao precisa de permissao em C:\).
+    static readonly string Dir = File.Exists(@"C:\DEV\games.json") ? @"C:\DEV" : Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RecompZel");
 
     static bool SameBytes(byte[] a, byte[] b)
     {
@@ -62,7 +64,7 @@ static class LauncherStub
         catch (Exception e)
         {
             MessageBox.Show("Nao foi possivel abrir o RecompZel Launcher.\n\n" + e.Message +
-                "\n\nA pasta C:\\DEV precisa poder ser criada e gravada.", "RecompZel",
+                "\n\nA pasta " + Dir + " precisa poder ser criada e gravada.", "RecompZel",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 1;
         }

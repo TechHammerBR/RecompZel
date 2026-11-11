@@ -6,9 +6,9 @@
 
 param([switch]$Watch, [int]$Interval = 10)
 
-$Log      = 'C:\DEV\build.log'
-$Work     = 'C:\DEV\build-work'
-$Report   = 'C:\DEV\progress-report.txt'
+$Log      = Join-Path $PSScriptRoot 'build.log'
+$Work     = Join-Path $PSScriptRoot 'build-work'
+$Report   = Join-Path $PSScriptRoot 'progress-report.txt'
 
 # Pesos de cada etapa no total (soma 100). Ajuste se medir tempos reais.
 $W = @{ read = 15; lift = 10; compile = 60; finish = 15 }
