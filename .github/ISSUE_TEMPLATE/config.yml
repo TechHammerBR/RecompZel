@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Newest release
-    url: https://github.com/NotRexed/Hookshot/releases/latest
-    about: Every release includes all the fixes before it. Try the newest before reporting.
+    url: https://github.com/TechHammerBR/RecompZel/releases/latest
+    about: Every release includes all the fixes before it. Check it before opening an issue.
   - name: Issue guidelines
-    url: https://github.com/NotRexed/Hookshot/issues/159
+    url: https://github.com/TechHammerBR/RecompZel/blob/main/CONTRIBUTING.md
     about: What to check before opening an issue.
