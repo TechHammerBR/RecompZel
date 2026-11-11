@@ -1,6 +1,6 @@
 # DLSS Frame Generation (RecompZel)
 
-Estado: **fase 1**. O jogo carrega o NVIDIA Streamline e diz no log se a sua placa roda DLSS-G. Ainda **não gera frames**.
+Estado: **fase 2, primeira versão (ainda sem teste na prática)**. O jogo carrega o NVIDIA Streamline, usa o Reflex e os marcadores de latência do Streamline, marca a profundidade e os vetores de movimento do DLSS a cada frame e liga o DLSS-G. Precisa do DLSS (reescalonamento) ligado: é dele que vêm a profundidade e o movimento.
 
 O código (`gpu/vk/vk_streamline.cpp`) foi escrito a partir dos guias públicos da NVIDIA (Streamline, licença MIT). Nenhum código de
 outro projeto foi copiado.
@@ -25,8 +25,17 @@ Sem `RX_VK_DLSSG=1` nada disto roda e o jogo se comporta como antes.
 | `DLSS-G state: ... up to N generated frames` | Quantos frames ele gera entre dois renderizados (0: ainda não informou) |
 | `does not run on this GPU or driver` | Placa abaixo da RTX 40, driver antigo ou agendamento de GPU acelerado por hardware desligado |
 
-## Fase 2 (a fazer)
+## Fase 2: o que o código faz
 
-Marcar profundidade e vetores de movimento a cada frame (o renderer já os tem para o FSR 3.1, `vk_fsr3_inputs.cpp`), enviar a
-câmera, usar o Reflex do Streamline em vez do `vk_reflex.cpp`, ligar o DLSS-G e deixar o Streamline inserir os frames no
-`present` (o `vk_framegen.cpp` não gera frame próprio enquanto o DLSS-G roda).
+- `vk_streamline.cpp`: depois do dispositivo, acha as funções por frame (token, constantes, tags, marcadores PCL, Reflex, opções do DLSS-G). Se faltar alguma, o log diz qual e nada muda.
+- `vk_reflex.cpp`: com o DLSS-G ativo, o Reflex próprio (VK_NV_low_latency2) fica de fora e os mesmos pontos do `present` mandam os marcadores ao Streamline (fim da simulação, início e fim do envio, início e fim do present, e, depois do present, o sono do Reflex e o novo token).
+- `vk_temporal.cpp`: depois de cada avaliação do DLSS, a profundidade (R32F, não invertida) e o movimento (RG16F, pixels de render, rumo ao frame anterior) vão ao Streamline com as constantes da câmera (projeção, jitter, `mvecScale`, `cameraMotionIncluded`).
+- Cada `present`: DLSS-G ligado (`eOn`, 1 frame gerado) se o frame tem as entradas, desligado se não (menus, carregamento).
+- `vk_framegen.cpp`: a interpolação própria fica desligada enquanto o DLSS-G roda.
+- Linhas do log: `Reflex and DLSS-G are on the renderer's frames now`, `DLSS-G is given the scene's depth and motion`, e a cada 300 frames `DLSS-G over the last 300 frames: ... status ... frames presented`.
+
+## Limites conhecidos desta versão
+
+- As matrizes entre frames são identidade (o renderer só conhece a projeção): o Streamline usa o movimento do buffer. A direção do movimento (rumo ao frame anterior) e a convenção da projeção ainda não foram confirmadas na prática.
+- Sem imagem sem HUD: o DLSS-G interpola o frame final, com o HUD.
+- Só RTX 40 (2x). 3x e 4x exigem RTX 50.

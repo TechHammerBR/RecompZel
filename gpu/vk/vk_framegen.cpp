@@ -24,6 +24,7 @@
 #include "vk_fsr3fi.h"
 #include "vk_menu.h"
 #include "vk_present_rect.h"
+#include "vk_streamline.h"   // (recompzel: DLSS-G makes the frames while it runs)
 #include "vk_texture.h"
 
 #include "shaders/fg_copy_comp_spv.h"
@@ -506,7 +507,7 @@ bool framegen_wanted(int menu_value, int allow) {
 
 bool framegen_on() {
     static const int allow = !getenv("RX_VK_FRAMEGEN") || atoi(getenv("RX_VK_FRAMEGEN")) != 0;
-    return framegen_wanted(opts.framegen, allow) && !dev.offscreen && !fg.failed;
+    return framegen_wanted(opts.framegen, allow) && !dev.offscreen && !fg.failed && !slfg::active();
 }
 
 // Ultrawide's menus (the Insert menu's Ultrawide menus): which of nx2/oot_wide.py's keep-list screens keep the whole picture, told

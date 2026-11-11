@@ -59,6 +59,7 @@
 #include "vk_fsr3.h"   // (fsr3_wanted: AMD FSR 3.1 upscales with inputs of its own)
 #include "vk_fsr4.h"
 #include "vk_menu.h"
+#include "vk_streamline.h"   // (recompzel: DLSS Frame Generation takes the depth and motion from here)
 #include "vk_texture.h"
 
 #include "shaders/dlss_actor_frag_spv.h"
@@ -974,6 +975,18 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
         logf("vk: %s: its evaluation failed: the game's upscale from now on", engine.e->name);
         engine.failed = true;
         return false;   // (the network writes its output over whatever the evaluation did)
+    }
+    if (slfg::active()) {   // (recompzel: the same depth and motion are DLSS-G's inputs for this frame's present)
+        slfg::FrameInputs gi;
+        gi.depth = f.depth.image, gi.depth_view = f.depth.view, gi.depth_format = f.depth.format;
+        gi.depth_w = f.depth.width, gi.depth_h = f.depth.height;
+        gi.motion = f.motion.image, gi.motion_view = f.motion.view, gi.motion_format = f.motion.format;
+        gi.motion_w = f.motion.width, gi.motion_h = f.motion.height;
+        gi.render_w = rw, gi.render_h = rh;
+        gi.jitter[0] = f.jitter[0], gi.jitter[1] = f.jitter[1];
+        gi.near_z = f.near_z, gi.far_z = f.far_z, gi.fov_y = f.fov_y;
+        gi.reset = f.reset;
+        slfg::frame_inputs(gi);
     }
     full_barrier(cmd);
     {
