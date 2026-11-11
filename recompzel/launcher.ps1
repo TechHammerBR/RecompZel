@@ -133,6 +133,9 @@ $STR['pt'] = @{
     now_lift = 'Convertendo o codigo do Switch 2 para codigo de PC. E uma etapa rapida.'
     now_compile = 'Transformando esse codigo em programa. E a etapa mais longa e deixa o processador bem ocupado.'
     now_finish = 'Finalizando: juntando as pecas e preparando os efeitos graficos.'
+    now_shaders = 'Preparando os efeitos graficos (shaders) da sua placa de video. Leva alguns minutos, so desta vez.'
+    st_shaders = 'Preparando os shaders'
+    next_shaders = 'Quando terminar, o botao Jogar liga sozinho. A janela do build fecha sozinha.'
     next_build = 'Nao precisa fazer nada. Pode deixar esta janela aberta e usar o PC normalmente.'
     act_pre = 'Ultima atividade ha '
     act_post = ''
@@ -270,6 +273,9 @@ $STR['en'] = @{
     now_lift = 'Converting the Switch 2 code into PC code. This is a quick step.'
     now_compile = 'Turning that code into a program. This is the longest step and keeps the processor busy.'
     now_finish = 'Finishing: putting the pieces together and preparing the graphics effects.'
+    now_shaders = 'Preparing the graphics effects (shaders) for your video card. It takes a few minutes, this time only.'
+    st_shaders = 'Preparing the shaders'
+    next_shaders = 'When it ends, the Play button turns on by itself. The build window closes by itself.'
     next_build = 'You do not need to do anything. Leave this window open and use the PC normally.'
     act_pre = 'Last activity '
     act_post = ' ago'
@@ -734,10 +740,15 @@ function Read-LogLines {
     $p = [string]$script:g.logPath
     if (-not (Test-Path $p)) { return @() }
     try {
+        # economia: se o log nao mudou desde a ultima leitura (mesmo tamanho e hora), devolve o que ja leu
+        $fi = Get-Item -LiteralPath $p
+        $key = ('{0}|{1}|{2}' -f $p, $fi.Length, $fi.LastWriteTimeUtc.Ticks)
+        if ($script:logKey -eq $key -and $null -ne $script:logLines) { return $script:logLines }
         $fs = [System.IO.File]::Open($p, 'Open', 'Read', 'ReadWrite')
         $sr = New-Object System.IO.StreamReader($fs)
         $txt = $sr.ReadToEnd(); $sr.Close(); $fs.Close()
-        return $txt -split "`r?`n"
+        $script:logLines = $txt -split "`r?`n"; $script:logKey = $key
+        return $script:logLines
     } catch { return @() }
 }
 
@@ -797,7 +808,13 @@ function Test-FsrBuilt { return (Test-Path (Join-Path (Get-OutDir) '.hookshot_fs
 function Test-FsrDll {
     $f = Join-Path (Get-FsrDir) $Fsr4vkName
     if (-not (Test-Path $f)) { return $false }
-    try { return ((Get-FileHash -Path $f -Algorithm SHA256).Hash -ieq $Fsr4vkSha) } catch { return $false }
+    try {
+        # economia: o hash so e refeito quando o arquivo muda (e chamado a cada atualizacao da tela)
+        $fi = Get-Item -LiteralPath $f
+        $k = ('{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks)
+        if ($script:fsrDllKey -ne $k) { $script:fsrDllKey = $k; $script:fsrDllOk = ((Get-FileHash -Path $f -Algorithm SHA256).Hash -ieq $Fsr4vkSha) }
+        return $script:fsrDllOk
+    } catch { return $false }
 }
 
 function Update-Fsr-Text { Update-Tech }   # (o painel Tecnologias de imagem cuida dos textos)
@@ -850,6 +867,7 @@ function Start-GameBuild([string]$buildPath) {
     try { Set-Content -LiteralPath $NupMemo -Value $nup -Encoding UTF8 } catch {}
     $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
     $a = Get-BuildArgs $buildPath
+    [Environment]::SetEnvironmentVariable('RZ_PAUSE', '1', 'Process')   # (build-game.ps1: a janela espera Enter so se der erro)
     $a += @('-Nup', ('"' + $nup + '"'))   # (aspas: o caminho pode ter espacos)
     Start-Process powershell.exe -ArgumentList $a
     return $true
@@ -857,7 +875,7 @@ function Start-GameBuild([string]$buildPath) {
 
 # Os argumentos para abrir o build-game.ps1: com -Dlss quando a caixa do DLSS esta marcada
 function Get-BuildArgs([string]$buildPath) {
-    $a = @('-NoExit', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $buildPath + '"'))
+    $a = @('-ExecutionPolicy', 'Bypass', '-File', ('"' + $buildPath + '"'))
     if ($chkDsr.IsChecked -and (Test-DsrGpu)) { $a += '-Dlss' }
     return $a
 }
@@ -1052,9 +1070,10 @@ function Update-View {
     $g = $script:g
     $lines = Read-LogLines
     $stage = 'inicio'; $totalFiles = [int]$g.totalFiles; $filesDone = 0
-    $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $done = $false
+    $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $done = $false; $shEnd = $false
     foreach ($l in $lines) {
-        if ($l -match '^@@stage\s+(\S+)') { $stage = $Matches[1] }
+        if ($l -match '^@@stage\s+(\S+)') { $stage = $Matches[1]; if ($stage -eq 'shaders') { $shEnd = $false; $prog = -1 } }
+        if ($l -match '^(done shaders|the shaders were not prepared now|\[script\] codigo de saida)') { $shEnd = $true }
         if ($l -match 'title 1 .*romfs\s+(\d+)\s+files') { $totalFiles = [int]$Matches[1] }
         if ($l -match '^\s*[\d\.]+\s+MiB written \((\d+) files completed\)') { $filesDone = [int]$Matches[1] }
         if ($l -match '^done:\s+(\d+)\s+files written') { $filesDone = [int]$Matches[1] }
@@ -1065,6 +1084,9 @@ function Update-View {
         if ($l -match '(?i)^@@done|^@@stage\s+done|^the build took|build complete|build finished') { $done = $true }
     }
     $script:lastErrLines = $err
+    # a preparacao dos shaders vem depois de "the build took": enquanto roda, ainda nao esta pronto (o log termina com done shaders ou com o aviso de que ficou para o 1o inicio)
+    $shRunning = ($stage -eq 'shaders') -and -not $shEnd -and ($err.Count -eq 0)
+    if ($shRunning) { $done = $false }
 
     $later = $stage -notin @('inicio','read','lift','compile')
     $readPct = 0
@@ -1076,13 +1098,13 @@ function Update-View {
     if ($prog -ge 0) { $compPct = [math]::Min(100, 100.0 * $prog) }
     if ($later) { $compPct = 100 }
     $script:lastCount = [int][math]::Round($compPct / 100.0 * $planTotal)
-    $finPct = 0; if ($done) { $finPct = 100 } elseif ($later) { $finPct = 50 }
+    $finPct = 0; if ($done) { $finPct = 100 } elseif ($shRunning) { $finPct = 50 + 50 * [math]::Max(0, [math]::Min(1, $prog)) } elseif ($later) { $finPct = 50 }
 
     $total = ($readPct*$W.read + $liftPct*$W.lift + $compPct*$W.compile + $finPct*$W.finish) / 100.0
     if ($done) { $total = 100 }
 
     $exe = Find-GameExe
-    $ready = ($null -ne $exe) -and ($done -or ((($err.Count -eq 0)) -and $later))
+    $ready = ($null -ne $exe) -and (-not $shRunning) -and ($done -or ((($err.Count -eq 0)) -and $later))
 
     # textos gerais (o texto do jogo vem do games.json em portugues; em ingles usa o da tabela para o Zelda)
     $isZ = ([string]$g.id -eq 'zelda-oot')
@@ -1100,6 +1122,10 @@ function Update-View {
         $txtStatus.Text = T 'st_ready'; $txtStatus.Foreground = '#6FD3A0'
         $txtNow.Text = T 'now_ready'
         $txtNext.Text = T 'next_ready'
+    } elseif ($shRunning) {
+        $txtStatus.Text = T 'st_shaders'; $txtStatus.Foreground = '#6FD3A0'
+        $txtNow.Text = T 'now_shaders'
+        $txtNext.Text = T 'next_shaders'
     } elseif ($stage -eq 'inicio') {
         $txtStatus.Text = T 'st_none'; $txtStatus.Foreground = '#8FA89C'
         if ($script:lang -eq 'en' -and $isZ) { $txtNow.Text = T 'needs' } else { $txtNow.Text = [string]$g.needs }
@@ -1376,7 +1402,13 @@ function Install-AllTech {
     else { $txtHelp.Text = T 'tech_done' }
 }
 $btnTechAll.Add_Click({ Install-AllTech })
-$timer.Add_Tick({ Update-View; Show-ToolsProgress; Check-Game; Update-Tech })
+# O painel de tecnologias muda raramente: atualiza a cada 5 ticks (10 s), e na hora quando o usuario mexe (os botoes chamam Update-Tech)
+$script:techTick = 0
+$timer.Add_Tick({
+    Update-View; Show-ToolsProgress; Check-Game
+    $script:techTick++
+    if ($script:techTick -ge 5) { $script:techTick = 0; Update-Tech }
+})
 $timer.Start()
 Update-View
 Update-Tech

@@ -4,6 +4,9 @@
 # Ao terminar com sucesso, cria o atalho na area de trabalho (post-install.ps1).
 param([string]$Nup, [string]$Out, [string]$Work, [string]$Log, [switch]$Dlss)
 $ErrorActionPreference = 'Continue'
+# Aberto pelo launcher (RZ_PAUSE=1) a janela fecha sozinha quando da certo; se falhar, espera um Enter para dar tempo de ler o erro.
+function Pause-Fechar { if ($env:RZ_PAUSE -eq '1') { Read-Host 'Pressione Enter para fechar esta janela' | Out-Null } }
+trap { Write-Host ('ERRO: ' + $_) -ForegroundColor Red; Pause-Fechar; exit 1 }
 . (Join-Path $PSScriptRoot 'env-recompzel.ps1')
 [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal'   # o PC continua utilizavel durante o build
 
@@ -38,16 +41,19 @@ if (-not $Nup -and [Environment]::UserInteractive) {
 }
 if ($informado -and -not (Test-Path -LiteralPath $Nup)) {
     Write-Host "O arquivo informado nao existe: $Nup" -ForegroundColor Red
+    Pause-Fechar
     exit 2
 }
 if (-not $Nup -or -not (Test-Path -LiteralPath $Nup)) {
     Write-Host 'Nao achei o arquivo do jogo (.nup, versao v131072). Rode de novo assim:'
     Write-Host '  .\build-game.ps1 -Nup "C:\caminho\The Legend of Zelda Ocarina of Time [0400486024DEC000][v131072].nup"'
+    Pause-Fechar
     exit 2
 }
 # a versao vem no nome do arquivo; o build so aceita a v131072 e so reclamaria depois de minutos
 if ((Split-Path $Nup -Leaf) -match '\[v(\d+)\]' -and $Matches[1] -ne '131072') {
     Write-Host "O arquivo e a versao v$($Matches[1]) do jogo. O RecompZel precisa da v131072. Use o .nup dessa versao." -ForegroundColor Red
+    Pause-Fechar
     exit 2
 }
 
@@ -91,4 +97,5 @@ Add-Content -Path $Log -Value "`r`n[script] codigo de saida $code, $min minutos"
 if ($code -eq 0 -and (Test-Path -LiteralPath (Join-Path $Out 'RecompZel.exe'))) {
     & (Join-Path $PSScriptRoot 'post-install.ps1') -GameDir $Out
 }
+if ($code -ne 0) { Pause-Fechar }
 exit $code
