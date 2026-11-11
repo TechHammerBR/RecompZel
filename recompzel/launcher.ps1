@@ -696,7 +696,24 @@ $SlFiles = [ordered]@{
     'nvngx_dlssg.dll'   = '8d59d49b36410dd6b62fef2503a5871d347415bd85d943fa0848563a95dd50c7'
 }
 
+# O DLSS (reescalonamento) e o Frame Generation precisam rodar juntos: a Streamline ja inicia o NGX da NVIDIA com a pasta streamline, entao o
+# nvngx_dlss.dll (o mesmo arquivo do pacote da NVIDIA) precisa estar la tambem, senao o DLSS some do menu (FeatureInitResult 0xbad00004).
+$SlSrName = 'nvngx_dlss.dll'
+$SlSrSha  = 'd00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e'
 function Get-SlDir { return (Join-Path (Get-OutDir) 'streamline') }
+# Copia o nvngx_dlss.dll do build com DLSS (pasta ngx) para a pasta streamline, conferindo o hash. Retorna $true quando ficou la.
+function Ensure-SlSr {
+    $dst = Join-Path (Get-SlDir) $SlSrName
+    try {
+        if ((Test-Path $dst) -and ((Get-FileHash -Path $dst -Algorithm SHA256).Hash -ieq $SlSrSha)) { return $true }
+        $src = Join-Path (Get-OutDir) ('ngx\' + $SlSrName)
+        if ((Test-Path $src) -and ((Get-FileHash -Path $src -Algorithm SHA256).Hash -ieq $SlSrSha)) {
+            Copy-Item $src $dst -Force
+            return $true
+        }
+    } catch {}
+    return $false
+}
 $script:dlssGpu = $null
 function Test-DlssGpu {
     if ($null -ne $script:dlssGpu) { return $script:dlssGpu }
@@ -757,8 +774,15 @@ function Install-Dlss {
         }
         $lic = $zipObj.Entries | Where-Object { $_.FullName -eq 'bin/x64/nvngx_dlss.license.txt' } | Select-Object -First 1
         if ($null -ne $lic) { [System.IO.Compression.ZipFileExtensions]::ExtractToFile($lic, (Join-Path $x 'NVIDIA-RTX-SDKs-LICENSE.txt'), $true) }
+        $srEntry = $zipObj.Entries | Where-Object { $_.FullName -eq ('bin/x64/' + $SlSrName) } | Select-Object -First 1
+        if ($null -ne $srEntry) {
+            $srOut = Join-Path $x $SlSrName
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($srEntry, $srOut, $true)
+            if ((Get-FileHash -Path $srOut -Algorithm SHA256).Hash -ine $SlSrSha) { Remove-Item $srOut -Force }
+        }
         $dest = Get-SlDir
         New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        if (Test-Path (Join-Path $x $SlSrName)) { Copy-Item (Join-Path $x $SlSrName) (Join-Path $dest $SlSrName) -Force }
         foreach ($k in $SlFiles.Keys) { Copy-Item (Join-Path $x $k) (Join-Path $dest $k) -Force }
         if (Test-Path (Join-Path $x 'NVIDIA-RTX-SDKs-LICENSE.txt')) { Copy-Item (Join-Path $x 'NVIDIA-RTX-SDKs-LICENSE.txt') $dest -Force }
         Set-Content -Path (Join-Path $dest 'SOURCE.txt') -Value ('Streamline 2.14.16, official NVIDIA package: ' + $SlUrl) -Encoding ASCII
@@ -1020,6 +1044,7 @@ $btnPlay.Add_Click({
     if ($chkDlss.IsChecked -and (Test-DlssGpu)) {
         if (Install-Dlss) {
             $useDlss = $true
+            [void](Ensure-SlSr)
             [Environment]::SetEnvironmentVariable('RX_VK_DLSSG', '1', 'Process')
         }
         Update-Dlss-Text
