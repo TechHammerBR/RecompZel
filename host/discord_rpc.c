@@ -35,8 +35,8 @@
 
 #include "../gpu/vk/vk_api.h"
 
-#define HOOKSHOT_DISCORD_APP_ID_DEFAULT "1569529153349357731"   /* (the Hookshot application's id, digits) */
-#define HOOKSHOT_DISCORD_IMAGE_DEFAULT "hookshot"     /* (its large-image art asset key) */
+#define HOOKSHOT_DISCORD_APP_ID_DEFAULT ""   /* (RecompZel has no Discord application of its own yet: empty = no status. Set discord_app_id= in hookshot_options.ini to use one) */
+#define HOOKSHOT_DISCORD_IMAGE_DEFAULT "recompzel"     /* (its large-image art asset key) */
 
 void hos_log(const char *fmt, ...);
 int rx_option(int id, int otherwise);
@@ -225,8 +225,8 @@ static int send_activity(Ipc p, long long started) {
     version[strcspn(version, " +")] = 0;   /* ("v2.0.12 (source ...)": the release alone) */
     snprintf(json, sizeof json,
              "{\"cmd\":\"SET_ACTIVITY\",\"nonce\":\"%u\",\"args\":{\"pid\":%lu,\"activity\":{\"details\":\"Ocarina of Time\","
-             "\"state\":\"Hookshot %s\",\"timestamps\":{\"start\":%lld},\"assets\":{\"large_image\":\"%s\",\"large_text\":"
-             "\"Hookshot %s\"}}}}",
+             "\"state\":\"RecompZel %s\",\"timestamps\":{\"start\":%lld},\"assets\":{\"large_image\":\"%s\",\"large_text\":"
+             "\"RecompZel %s\"}}}}",
              ++nonce, process_id(), version, started, HOOKSHOT_DISCORD_IMAGE_DEFAULT, version);
     if (!write_frame(p, OP_FRAME, json)) return 0;
     uint32_t op = 0;

@@ -774,7 +774,7 @@ Row rows[] = {
      "What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).", hn_mic, false,
      true},
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
-     "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
+     "Shows \"Playing RecompZel\" and the time played in your Discord status, while Discord runs on this PC. Needs a Discord application id (discord_app_id= in hookshot_options.ini); empty by default.", nullptr, false,
      true},
     {TAB_GAMEPLAY, "Language", &opts.language, 0, 2, 1, tx_language,
      "The language of this menu, the FPS counter and the start-up screen. Auto follows the language of Windows.", nullptr,
@@ -1882,7 +1882,7 @@ void draw_options(ui::Ctx& c) {
     }
     {   // (which build, at the banner's left, so a report can say it without opening the log; the release alone when the whole
         // line would run into the tabs)
-        std::string ver = std::string("Hookshot ") + HOOKSHOT_VERSION;
+        std::string ver = std::string("RecompZel ") + HOOKSHOT_VERSION;
         const float room = (c.w - total) * 0.5f - 60 * s - c.safe, px = 15 * s;
         const auto width = [&](float p) { return ui::size_of(c.f.body, p, ver.c_str()).x; };
         if (width(px) > room && ver.find(" (") != std::string::npos) ver.resize(ver.find(" ("));

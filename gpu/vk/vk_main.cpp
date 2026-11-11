@@ -22,6 +22,7 @@
 #include "vk_menu.h"
 #include "vk_dlss.h"
 #include "vk_fsr4.h"
+#include "vk_streamline.h"   // (recompzel) NVIDIA Streamline, opt-in with RX_VK_DLSSG=1
 #include "vk_reflex.h"
 #include "vk_antilag.h"
 #include "vk_progress.h"
@@ -46,6 +47,8 @@ bool load_global() {
     if (!m) return false;
     get_instance_proc = (PFN_vkGetInstanceProcAddr)(void*)GetProcAddress(m, "vkGetInstanceProcAddr");
     if (!get_instance_proc) return false;
+    // (recompzel) With RX_VK_DLSSG=1 the instance, device and swapchain calls go through Streamline's interposer (vk_streamline.h)
+    if (mkwvk::slfg::early()) get_instance_proc = mkwvk::slfg::instance_proc();
 #define VKX_LOAD(f) f = (PFN_##f)get_instance_proc(nullptr, #f);
     VKX_GLOBAL(VKX_LOAD)
 #undef VKX_LOAD
@@ -503,6 +506,7 @@ bool create_device() {
 
 
     load_device(dev.device);
+    mkwvk::slfg::device_ready(dev.physical);   // (recompzel) says in the log whether DLSS Frame Generation can run here; nothing without RX_VK_DLSSG=1
     vkGetDeviceQueue(dev.device, dev.queue_family, 0, &dev.queue);
     dev.present_queue = VK_NULL_HANDLE;
     dev.present_family = dev.queue_family;

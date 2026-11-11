@@ -56,6 +56,17 @@ $STR['pt'] = @{
     fsr_ready = 'Pronto. O FSR 4 sera usado ao clicar em Jogar.'
     fsr_q = 'O FSR 4 precisa de um componente de terceiros (fsr4vk, licenca GPLv3, cerca de 14 MB).{n}{n}Ele nao e da AMD nem nosso: vem do GitHub (0xCydral/bloodborne_pc) e o launcher confere o arquivo antes de usar.{n}{n}Baixar agora? Se escolher Nao, o jogo abre sem FSR 4.'
     fsr_dling = 'Baixando o componente do FSR 4...'
+    dlss = 'Usar NVIDIA DLSS Frame Generation (RTX 40/50)'
+    dlss_off = 'Desligado. Se ligar, o launcher baixa os componentes da NVIDIA e cuida do resto.'
+    dlss_dl = 'Ao clicar em Jogar, baixa os componentes da NVIDIA (cerca de 276 MB, so na primeira vez).'
+    dlss_ready = 'Pronto. O DLSS Frame Generation sera usado ao clicar em Jogar.'
+    dlss_nogpu = 'Nao encontrei uma NVIDIA RTX serie 40 ou 50 neste PC. O DLSS Frame Generation nao funciona nesta placa.'
+    dlss_q = 'O DLSS Frame Generation precisa de componentes da NVIDIA (Streamline 2.14.16: 6 arquivos, uso so em placas NVIDIA, licenca NVIDIA RTX SDKs).{n}{n}Eles nao sao nossos: o launcher baixa o pacote oficial do GitHub da NVIDIA (cerca de 276 MB), extrai so esses 6 arquivos e confere cada um antes de usar.{n}{n}Baixar agora? Se escolher Nao, o jogo abre sem DLSS Frame Generation.'
+    dlss_dling = 'Baixando o pacote da NVIDIA (276 MB), aguarde...'
+    dlss_done = 'Componentes do DLSS Frame Generation instalados.'
+    dlss_fail = 'Nao consegui instalar o DLSS Frame Generation: {0}{n}{n}O jogo abre sem ele.'
+    dlss_e_pkg = 'o pacote nao tem o arquivo esperado: {0}'
+    dlss_e_hash = 'o arquivo {0} nao confere com o esperado (hash diferente)'
     fsr_done = 'Componente do FSR 4 instalado.'
     fsr_fail = 'Nao consegui instalar o FSR 4: {0}{n}{n}O jogo abre sem FSR 4.'
     fsr_e_pkg = 'o pacote nao tem o componente esperado'
@@ -142,6 +153,17 @@ $STR['en'] = @{
     fsr_ready = 'Ready. FSR 4 will be used when you click Play.'
     fsr_q = 'FSR 4 needs a third-party component (fsr4vk, GPLv3 license, about 14 MB).{n}{n}It is neither AMD''s nor ours: it comes from GitHub (0xCydral/bloodborne_pc) and the launcher checks the file before using it.{n}{n}Download now? If you choose No, the game opens without FSR 4.'
     fsr_dling = 'Downloading the FSR 4 component...'
+    dlss = 'Use NVIDIA DLSS Frame Generation (RTX 40/50)'
+    dlss_off = 'Off. If you turn it on, the launcher downloads the NVIDIA components and handles the rest.'
+    dlss_dl = 'When you click Play, it downloads the NVIDIA components (about 276 MB, first time only).'
+    dlss_ready = 'Ready. DLSS Frame Generation will be used when you click Play.'
+    dlss_nogpu = 'No NVIDIA RTX 40 or 50 series card found in this PC. DLSS Frame Generation does not work on this card.'
+    dlss_q = 'DLSS Frame Generation needs NVIDIA components (Streamline 2.14.16: 6 files, NVIDIA GPUs only, NVIDIA RTX SDKs license).{n}{n}They are not ours: the launcher downloads the official package from NVIDIA''s GitHub (about 276 MB), extracts only those 6 files and checks each one before using it.{n}{n}Download now? If you choose No, the game opens without DLSS Frame Generation.'
+    dlss_dling = 'Downloading the NVIDIA package (276 MB), please wait...'
+    dlss_done = 'DLSS Frame Generation components installed.'
+    dlss_fail = 'Could not install DLSS Frame Generation: {0}{n}{n}The game opens without it.'
+    dlss_e_pkg = 'the package does not contain the expected file: {0}'
+    dlss_e_hash = 'the file {0} does not match the expected one (different hash)'
     fsr_done = 'FSR 4 component installed.'
     fsr_fail = 'Could not install FSR 4: {0}{n}{n}The game opens without FSR 4.'
     fsr_e_pkg = 'the package does not contain the expected component'
@@ -298,6 +320,8 @@ $xaml = @'
           <CheckBox x:Name="chkDiag" Foreground="#E6F2EC" FontSize="12"/>
           <CheckBox x:Name="chkFsr" Foreground="#E6F2EC" FontSize="12" Margin="0,8,0,0"/>
           <TextBlock x:Name="txtFsr" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
+          <CheckBox x:Name="chkDlss" Foreground="#E6F2EC" FontSize="12" Margin="0,8,0,0"/>
+          <TextBlock x:Name="txtDlss" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
         </StackPanel>
       </Border>
     </StackPanel>
@@ -340,7 +364,7 @@ $xaml = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
 try { if (Test-Path 'C:\DEV\recompzel.ico') { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]'C:\DEV\recompzel.ico') } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','btnGit','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','btnGit','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','chkDlss','txtDlss','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -389,7 +413,7 @@ function Apply-Language {
         $btnGit.Content = T 'git';     $btnGit.Tag = T 'git_tip'
         $btnBuild.Tag = T 'build_tip'
         $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtFgT.Text = T 'fg_t'
-        $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'
+        $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'; $chkDlss.Content = T 'dlss'
         $lblNow.Text = T 'lbl_now'; $lblSteps.Text = T 'lbl_steps'; $lblNext.Text = T 'lbl_next'
         $lblNotes.Text = T 'lbl_notes'; $lblSummary.Text = T 'lbl_summary'
         if ($txtResumo.Tag -ne 'real') { $txtResumo.Text = T 'summary_ph' }
@@ -421,6 +445,7 @@ try {
         if ($c.uploadIndex -ge 0 -and $c.uploadIndex -lt $uploadOptions.Count) { $cbUpload.SelectedIndex = [int]$c.uploadIndex }
         if ($c.diag -eq $true) { $chkDiag.IsChecked = $true }
         if ($c.fsr -eq $true) { $chkFsr.IsChecked = $true }
+        if ($c.dlss -eq $true) { $chkDlss.IsChecked = $true }
         if ($c.fgIndex -ge 0 -and $c.fgIndex -lt $fgOptions.Count) { $cbFg.SelectedIndex = [int]$c.fgIndex }
     }
 } catch {}
@@ -430,7 +455,7 @@ Apply-Language
 function Save-Settings {
     if ($script:loading) { return }
     try {
-        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; fsr = [bool]$chkFsr.IsChecked; lang = $script:lang } |
+        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; lang = $script:lang } |
             ConvertTo-Json | Set-Content $Cfg -Encoding ASCII
     } catch {}
 }
@@ -509,6 +534,7 @@ $cbUpload.Add_SelectionChanged({ Save-Settings })
 $cbFg.Add_SelectionChanged({ Save-Settings })
 $chkDiag.Add_Click({ Save-Settings })
 $chkFsr.Add_Click({ Save-Settings; Update-Fsr-Text })
+$chkDlss.Add_Click({ Save-Settings; Update-Dlss-Text })
 $cbLang.Add_SelectionChanged({
     if ($script:loading) { return }
     if ($cbLang.SelectedIndex -eq 1) { $script:lang = 'en' } else { $script:lang = 'pt' }
@@ -516,6 +542,7 @@ $cbLang.Add_SelectionChanged({
     Save-Settings
     Update-View
     Update-Fsr-Text
+    Update-Dlss-Text
     Refresh-Mesh
 })
 
@@ -612,6 +639,110 @@ function Update-Fsr-Text {
     if (-not (Test-FsrBuilt)) { $txtFsr.Text = T 'fsr_rebuild'; return }
     if (-not (Test-FsrDll)) { $txtFsr.Text = T 'fsr_dl'; return }
     $txtFsr.Text = T 'fsr_ready'
+}
+
+# ---------- NVIDIA DLSS Frame Generation (opcional, so RTX 40/50) ----------
+# O motor (vk_streamline.cpp) carrega a Streamline da NVIDIA de <pasta do jogo>\streamline quando RX_VK_DLSSG=1. Os 6 arquivos
+# sao da NVIDIA (Streamline 2.14.16, licenca NVIDIA RTX SDKs, so para placas NVIDIA): nao vao no repositorio. O launcher baixa o
+# pacote oficial uma vez, extrai so eles e confere o hash de cada um.
+$SlUrl = 'https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.14.16/streamline-sdk-v2.14.16.zip'
+$SlFiles = [ordered]@{
+    'sl.interposer.dll' = 'b1d7395aebd7b9722841d64dcf7433680020b6a8e421f851c16d5ba0c2182edf'
+    'sl.common.dll'     = '38eea3b4209afc455636ea372b5933d65fcc13becec6c84d101dcfc4d8648f75'
+    'sl.dlss_g.dll'     = '3ed9538df724993bea8a050195a6a78b9c8c8a566d5b05ade477aab3c390e90f'
+    'sl.pcl.dll'        = '5698c38e722318681f215c9fe68e45b9bedd51378acc699d8eee26e961e57770'
+    'sl.reflex.dll'     = '443577e869352436ff7ec8f4d9c90418d3e95368436ce219261e0f4f07a38122'
+    'nvngx_dlssg.dll'   = '8d59d49b36410dd6b62fef2503a5871d347415bd85d943fa0848563a95dd50c7'
+}
+
+function Get-SlDir { return (Join-Path (Get-OutDir) 'streamline') }
+$script:dlssGpu = $null
+function Test-DlssGpu {
+    if ($null -ne $script:dlssGpu) { return $script:dlssGpu }
+    try {
+        $names = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | ForEach-Object { [string]$_.Name })
+        $script:dlssGpu = $false
+        foreach ($n in $names) { if ($n -match 'NVIDIA' -and $n -match 'RTX\s*[45]\d{3}') { $script:dlssGpu = $true } }
+    } catch { $script:dlssGpu = $true }   # (nao deu para ler as placas: deixa tentar)
+    return $script:dlssGpu
+}
+$script:dlssOk = $false; $script:dlssOkAt = [datetime]::MinValue
+function Test-DlssFiles {
+    if (([datetime]::Now - $script:dlssOkAt).TotalSeconds -lt 10) { return $script:dlssOk }
+    $script:dlssOk = Test-DlssFilesNow; $script:dlssOkAt = [datetime]::Now
+    return $script:dlssOk
+}
+function Test-DlssFilesNow {
+    $d = Get-SlDir
+    foreach ($k in $SlFiles.Keys) {
+        $f = Join-Path $d $k
+        if (-not (Test-Path $f)) { return $false }
+        try { if ((Get-FileHash -Path $f -Algorithm SHA256).Hash -ine $SlFiles[$k]) { return $false } } catch { return $false }
+    }
+    return $true
+}
+function Update-Dlss-Text {
+    if (-not (Test-DlssGpu)) { $chkDlss.IsEnabled = $false; $chkDlss.IsChecked = $false; $txtDlss.Text = T 'dlss_nogpu'; return }
+    $chkDlss.IsEnabled = $true
+    if (-not [bool]$chkDlss.IsChecked) { $txtDlss.Text = T 'dlss_off'; return }
+    if (-not (Test-DlssFiles)) { $txtDlss.Text = T 'dlss_dl'; return }
+    $txtDlss.Text = T 'dlss_ready'
+}
+
+# Baixa e instala se faltar. Retorna $true quando os 6 arquivos estao la e conferidos.
+function Install-Dlss {
+    if (Test-DlssFiles) { return $true }
+    if ([System.Windows.MessageBox]::Show((T 'dlss_q'), 'RecompZel', 'YesNo', 'Question') -ne 'Yes') { return $false }
+    $tmp = Join-Path $env:TEMP ('recompzel-sl-' + [guid]::NewGuid().ToString('N'))
+    $zipObj = $null
+    try {
+        $txtHelp.Text = T 'dlss_dling'
+        $win.Dispatcher.Invoke([action]{}, 'Render')
+        New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $ProgressPreference = 'SilentlyContinue'
+        $zip = Join-Path $tmp 'streamline.zip'
+        Invoke-WebRequest -Uri $SlUrl -OutFile $zip -UseBasicParsing
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zipObj = [System.IO.Compression.ZipFile]::OpenRead($zip)
+        $x = Join-Path $tmp 'x'
+        New-Item -ItemType Directory -Path $x -Force | Out-Null
+        foreach ($k in $SlFiles.Keys) {
+            $entry = $zipObj.Entries | Where-Object { $_.FullName -eq ('bin/x64/' + $k) } | Select-Object -First 1
+            if ($null -eq $entry) { throw ((T 'dlss_e_pkg') -f $k) }
+            $out = Join-Path $x $k
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $out, $true)
+            if ((Get-FileHash -Path $out -Algorithm SHA256).Hash -ine $SlFiles[$k]) { throw ((T 'dlss_e_hash') -f $k) }
+        }
+        $lic = $zipObj.Entries | Where-Object { $_.FullName -eq 'bin/x64/nvngx_dlss.license.txt' } | Select-Object -First 1
+        if ($null -ne $lic) { [System.IO.Compression.ZipFileExtensions]::ExtractToFile($lic, (Join-Path $x 'NVIDIA-RTX-SDKs-LICENSE.txt'), $true) }
+        $dest = Get-SlDir
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        foreach ($k in $SlFiles.Keys) { Copy-Item (Join-Path $x $k) (Join-Path $dest $k) -Force }
+        if (Test-Path (Join-Path $x 'NVIDIA-RTX-SDKs-LICENSE.txt')) { Copy-Item (Join-Path $x 'NVIDIA-RTX-SDKs-LICENSE.txt') $dest -Force }
+        Set-Content -Path (Join-Path $dest 'SOURCE.txt') -Value ('Streamline 2.14.16, official NVIDIA package: ' + $SlUrl) -Encoding ASCII
+        $script:dlssOkAt = [datetime]::MinValue
+        $txtHelp.Text = T 'dlss_done'
+        return $true
+    } catch {
+        [System.Windows.MessageBox]::Show(((T 'dlss_fail') -f $_.Exception.Message), 'RecompZel') | Out-Null
+        return $false
+    } finally {
+        if ($null -ne $zipObj) { $zipObj.Dispose() }
+        Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# hookshot_env.txt vale mais que o ambiente: tira dele o RX_VK_DLSSG de testes manuais, para o launcher mandar
+function Clear-DlssEnvFile {
+    try {
+        $f = Join-Path (Get-OutDir) 'hookshot_env.txt'
+        if (Test-Path $f) {
+            $lines = @(Get-Content $f)
+            $keep = @($lines | Where-Object { $_ -notmatch '^\s*RX_VK_DLSSG\s*=' })
+            if ($keep.Count -ne $lines.Count) { Set-Content -Path $f -Value $keep -Encoding ASCII }
+        }
+    } catch {}
 }
 
 # Baixa o componente se faltar. Retorna $true quando ele esta pronto.
@@ -828,9 +959,20 @@ $btnPlay.Add_Click({
         }
         Update-Fsr-Text
     }
+    # DLSS Frame Generation: so liga com os 6 arquivos da NVIDIA instalados e conferidos
+    $useDlss = $false
+    Clear-DlssEnvFile
+    [Environment]::SetEnvironmentVariable('RX_VK_DLSSG', '0', 'Process')
+    if ($chkDlss.IsChecked -and (Test-DlssGpu)) {
+        if (Install-Dlss) {
+            $useDlss = $true
+            [Environment]::SetEnvironmentVariable('RX_VK_DLSSG', '1', 'Process')
+        }
+        Update-Dlss-Text
+    }
     # a nota da rodada fica sempre em portugues (e lida pelo medir-rodada.ps1)
     $meshNow = Read-Mesh
-    $script:roundNote = ('VRAM={0} UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5}' -f $vramOptions[$cbVram.SelectedIndex].Pt, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow)
+    $script:roundNote = ('VRAM={0} UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6}' -f $vramOptions[$cbVram.SelectedIndex].Pt, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss)
     $script:gameOut = Get-OutDir
     $script:gameProc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
     $txtHelp.Text = T 'started'
@@ -869,10 +1011,11 @@ function Check-Game {
     } catch {}
     Refresh-Mesh
 }
-$timer.Add_Tick({ Update-View; Check-Game; Update-Fsr-Text })
+$timer.Add_Tick({ Update-View; Check-Game; Update-Fsr-Text; Update-Dlss-Text })
 $timer.Start()
 Update-View
 Update-Fsr-Text
+Update-Dlss-Text
 Refresh-Mesh
 Update-Shortcuts
 

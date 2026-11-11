@@ -952,6 +952,10 @@ def main():
         imgui_deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (imgui, os.path.join(imgui, "backends"), zstd)
                               for f in sorted(os.listdir(d)) if f.endswith(".h"))
         imgui_users = ("vk_imgui.cpp", "vk_menu.cpp")
+        # (recompzel) NVIDIA Streamline's public headers (third_party/streamline, MIT): only vk_streamline.cpp sees them
+        sl_inc = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "streamline", "include"))
+        sl_flags = ["-I" + sl_inc]
+        sl_deps = tree_headers(sl_inc)
         for f in ("imgui.cpp", "imgui_draw.cpp", "imgui_tables.cpp", "imgui_widgets.cpp", "backends/imgui_impl_vulkan.cpp"):
             vk_jobs.append((cxx, os.path.join(imgui, *f.split("/")),
                             os.path.join(obj_dir, "vk_imgui_" + os.path.basename(f)[:-4] + ".o"), vflags + imgui_flags, imgui_deps))
@@ -976,10 +980,12 @@ def main():
                             ([stamp_def] if os.path.basename(src) == "vk_menu.cpp" else []) +
                             (ngx_flags if os.path.basename(src) == "vk_dlss.cpp" else []) +
                             (imgui_flags if os.path.basename(src) in imgui_users else []) +
-                            (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []),
+                            (fsr_flags if os.path.basename(src) == "vk_fsr4.cpp" else []) +
+                            (sl_flags if os.path.basename(src) == "vk_streamline.cpp" else []),
                             vk_lib_deps if lib else vdeps + (logo_text if os.path.basename(src) == "vk_imgui.cpp" else b"") +
                             (ngx_deps if os.path.basename(src) == "vk_dlss.cpp" else b"") +
-                            (imgui_deps if os.path.basename(src) in imgui_users else b"")))
+                            (imgui_deps if os.path.basename(src) in imgui_users else b"") +
+                            (sl_deps if os.path.basename(src) == "vk_streamline.cpp" else b"")))
         if NGX_SDK and not LINUX and toolchain.mingw():
             # (llvm-mingw: NVIDIA's static library was built with Microsoft's compiler for its static runtime (/MT). What it asks
             # of that runtime: the C parts as for the static FFmpeg (host/mingw_msvc_shims.c), the C++ ones in vk_ngx_msvc_rt.cpp)

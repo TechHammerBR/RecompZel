@@ -29,19 +29,19 @@ game data, leave it out.
 
 What to work on first, and the steps from claiming a problem to its release, are in the [workflow](docs/workflow.md):
 priorities by severity and by how many players run the affected hardware, and the hardware tiers a change must not
-break. Claim in Discord #dev-work before you start.
+break. Say so on the issue before you start.
 
 | | What |
 |---|---|
 | **Test on other hardware** | NVIDIA cards are the most tested; the README's [status table](readme.md#project-status) says what works where, and [tested configurations](docs/tested-configurations.md) lists the runs behind it (build, hardware, driver, where, fps). Reports from AMD and Intel cards, other NVIDIA drivers, other distributions and SteamOS are useful even when everything works: add a row there. |
 | **Play further** | The tested area is the start of the game. Reaching new areas, cutscenes, menus and items finds problems the developer has not seen. |
-| **Report what is broken** | Use the [issue forms](https://github.com/NotRexed/Hookshot/issues/new/choose): game problem, build problem or idea. Include the version, your hardware, where you were and `hookshot_log.txt`. |
+| **Report what is broken** | Use the [issue forms](https://github.com/TechHammerBR/RecompZel/issues/new/choose): game problem, build problem or idea. Include the version, your hardware, where you were and `hookshot_log.txt`. |
 | **Send a fix** | Fork, fix, test, open a pull request. Small, focused changes are easiest to review and merge. |
 | **Improve the docs** | The README, the development guide and the design notes are part of the project. Corrections and clearer steps are welcome. |
 
 ## Before you open an issue or a PR
 
-- Try the [newest release](https://github.com/NotRexed/Hookshot/releases/latest) first. It includes every fix before it.
+- Try the [newest release](https://github.com/TechHammerBR/RecompZel/releases/latest) first. It includes every fix before it.
 - Search the open issues. If yours is already there, add your details instead of opening another.
 - English, please.
 - One topic per issue or pull request. Do not mix a fix with a refactor or a batch of unrelated changes.
@@ -304,10 +304,8 @@ NVIDIA's DLSS SDK is not one of them: it is never in the repository, and nothing
 
 ## Where to talk
 
-- **Issues:** [use the forms](https://github.com/NotRexed/Hookshot/issues/new/choose).
-- **Discord:** https://discord.gg/EajnD2AJD9. Use the `hookshot-discussion` channel; the server is mainly for
-  web ports, and that channel is where Hookshot talk belongs.
-- **Newest release:** https://github.com/NotRexed/Hookshot/releases/latest.
+- **Issues:** [use the forms](https://github.com/TechHammerBR/RecompZel/issues/new/choose).
+- **Newest release:** https://github.com/TechHammerBR/RecompZel/releases/latest.
 
 Thanks for testing, reporting and sending fixes. Every report from a different GPU and every area played further than
 before moves the port forward.

@@ -265,7 +265,7 @@ Text size	Tamanho do texto
 How large the text of dialogue, Navi and signs is drawn.	O tamanho do texto de diálogos, da Navi e de placas.
 What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).	O que a ocarina ouve quando a opção de microfone do jogo está ligada (tocar um instrumento ou cantarolar).
 Discord status	Status do Discord
-Shows "Playing Hookshot" and the time played in your Discord status, while Discord runs on this PC.	Mostra «Jogando Hookshot» e o tempo de jogo no seu status do Discord, enquanto o Discord roda neste PC.
+Shows "Playing RecompZel" and the time played in your Discord status, while Discord runs on this PC. Needs a Discord application id (discord_app_id= in hookshot_options.ini); empty by default.	Mostra «Jogando RecompZel» e o tempo de jogo no seu status do Discord, enquanto o Discord estiver aberto neste PC. Precisa de um id de aplicativo do Discord (discord_app_id= em hookshot_options.ini); vazio por padrão.
 Controller in background	Controle em segundo plano
 Whether the controller plays the game while another window has the focus.	Se o controle joga o jogo enquanto outra janela está em foco.
 Mouse camera	Câmera com mouse
