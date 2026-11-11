@@ -41,12 +41,12 @@ if [[ $tag == nightly ]]; then
         gh api -X POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/nightly -f sha="$sha" >/dev/null
     fi
     date=$(gh api "repos/$GH_REPO/commits/$sha" --jq .commit.committer.date)
-    notes="The latest development build: main at $sha ($date), made by CI on every push to main.
+    notes="**Esta pagina so serve para instalar as ferramentas de compilacao do RecompZel, uma vez.** Para jogar, baixe o **RecompZel-Launcher.exe** na release [RecompZel Launcher](https://github.com/$GH_REPO/releases/tag/launcher).
 
-It is untested and may break your saves or settings. For playing, use the [latest release](https://github.com/$GH_REPO/releases/latest).
+Versao de desenvolvimento: main em $sha ($date), gerada pelo CI a cada push para main. Nao e testada para jogar.
 
 $("$(dirname "$0")/release_files.sh" table nightly)"
-    title="Latest development build"
+    title="RecompZel Builder (ferramentas de compilacao)"
     if gh release view nightly >/dev/null 2>&1; then
         gh release edit nightly --prerelease --latest=false --title "$title" --notes "$notes" >/dev/null
     else

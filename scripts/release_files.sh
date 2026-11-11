@@ -23,14 +23,14 @@ table() {
     [[ $1 =~ ^v[0-9] ]] && appimage="\`Hookshot-$1-x86_64.AppImage\`"
     cat <<EOF
 $MARK
-### Which file do I download?
+### Qual arquivo baixar?
 
 | On | Download |
 |---|---|
-| Windows | \`HookshotBuilder.exe\`, the setup |
+| Windows | \`HookshotBuilder.exe\`: instalador das ferramentas de compilacao do RecompZel (so na primeira vez) |
 | Linux, Steam Deck | $appimage |
 
-You need your own copy of the game. \`hookshot-setup.txt\`, \`hookshot-linux.txt\` and the \`.zsync\` are for the updaters. To check a download: \`sha256sum -c --ignore-missing SHA256SUMS\`, or \`gh attestation verify <file> -R $GH_REPO\`.
+Voce precisa do seu proprio arquivo do jogo. \`hookshot-setup.txt\`, \`hookshot-linux.txt\` e o \`.zsync\` sao dos atualizadores, nao baixe. Para jogar, use o \`RecompZel-Launcher.exe\` da release [RecompZel Launcher](https://github.com/$GH_REPO/releases/tag/launcher). Para conferir um download: \`sha256sum -c --ignore-missing SHA256SUMS\`, or \`gh attestation verify <file> -R $GH_REPO\`.
 EOF
 }
 
@@ -41,7 +41,7 @@ links() {   # tag -> big links to the Windows setup and the Linux AppImage on th
     appimage=$(grep -E '\.AppImage$' <<<"$names" | head -n1 || true)
     [[ -n $exe || -n $appimage ]] || return 0
     echo "$LINKS"
-    if [[ -n $exe ]]; then echo "## [⬇ Download for Windows]($base/$exe)"; fi
+    if [[ -n $exe ]]; then echo "## [⬇ Baixar o instalador das ferramentas (Windows, so na primeira vez)]($base/$exe)"; fi
     if [[ -n $appimage ]]; then echo "## [⬇ Download for Linux / Steam Deck]($base/$appimage)"; fi
     echo
     echo '---'
