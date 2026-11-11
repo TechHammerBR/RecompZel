@@ -12,6 +12,13 @@ static class LauncherStub
 {
     const string Dir = @"C:\DEV";
 
+    static bool SameBytes(byte[] a, byte[] b)
+    {
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+        return true;
+    }
+
     [STAThread]
     static int Main(string[] args)
     {
@@ -26,9 +33,19 @@ static class LauncherStub
                 string dest = Path.Combine(Dir, file);
                 // games.json guarda o perfil do usuario (caminhos); so e criado se ainda nao existe.
                 if (file.Equals("games.json", StringComparison.OrdinalIgnoreCase) && File.Exists(dest)) continue;
+                byte[] data;
                 using (var src = asm.GetManifestResourceStream(name))
-                using (var dst = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.Read))
-                    src.CopyTo(dst);
+                using (var ms = new MemoryStream())
+                {
+                    src.CopyTo(ms);
+                    data = ms.ToArray();
+                }
+                // ja esta igual: nao mexe (o launcher aberto pode estar usando o arquivo, como o icone)
+                try { if (File.Exists(dest) && File.ReadAllBytes(dest).Length == data.Length && SameBytes(File.ReadAllBytes(dest), data)) continue; }
+                catch (IOException) { }
+                try { File.WriteAllBytes(dest, data); }
+                catch (IOException) { if (!File.Exists(dest)) throw; }                // em uso por outro processo: usa o que ja esta la
+                catch (UnauthorizedAccessException) { if (!File.Exists(dest)) throw; }
             }
             var psi = new ProcessStartInfo
             {
