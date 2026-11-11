@@ -2,7 +2,8 @@
 # Uso: powershell -ExecutionPolicy Bypass -File C:\DEV\criar-atalhos.ps1
 
 $Desktop = [Environment]::GetFolderPath('Desktop')
-$GameDir = 'C:\Games\HookshotDev'
+$GameDir = 'C:\Games\RecompZel'
+if (-not (Test-Path $GameDir) -and (Test-Path 'C:\Games\HookshotDev')) { $GameDir = 'C:\Games\HookshotDev' }   # (pasta antiga, ate renomear)
 $GameExe = Join-Path $GameDir 'RecompZel.exe'
 if (-not (Test-Path $GameExe)) { $GameExe = Join-Path $GameDir 'hookshot.exe' }   # (build antigo, antes do exe proprio)
 $Launcher = 'C:\DEV\launcher.ps1'

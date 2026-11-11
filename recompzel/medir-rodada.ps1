@@ -89,7 +89,7 @@ if ($Comparar) {
 } else {
     if (-not $Log) {
         $ult = Get-ChildItem $Dir -Filter 'rodada-*.txt' -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
-        if ($ult) { $Log = $ult.FullName } else { $Log = 'C:\Games\HookshotDev\hookshot_log.txt' }
+        if ($ult) { $Log = $ult.FullName } else { $gd = 'C:\Games\RecompZel'; if (-not (Test-Path $gd)) { $gd = 'C:\Games\HookshotDev' }; $Log = Join-Path $gd 'hookshot_log.txt' }
     }
     if (-not (Test-Path $Log)) { Write-Host "Nao achei o log: $Log"; exit 1 }
     $out = Resumo (Ler $Log)

@@ -1,5 +1,5 @@
 # Compila o jogo a partir do seu .nup, usando as ferramentas do HookshotBuilder.
-# Saida do jogo:  C:\Games\HookshotDev     Arquivos temporarios:  C:\DEV\build-work     Log:  C:\DEV\build.log
+# Saida do jogo:  C:\Games\RecompZel     Arquivos temporarios:  C:\DEV\build-work     Log:  C:\DEV\build.log
 # Uso: cd C:\DEV ; powershell -ExecutionPolicy Bypass -File .\build-game.ps1
 # --fsr: compila o suporte ao AMD FSR 4 (as DLLs da AMD ou do fsr4vk ficam na pasta do jogo, nao vem nada junto)
 $ErrorActionPreference = 'Continue'
@@ -7,7 +7,11 @@ $ErrorActionPreference = 'Continue'
 [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal'   # o PC continua utilizavel durante o build
 
 $nup  = 'C:\Users\Crann\Downloads\Zeldinha\The Legend of Zelda Ocarina of Time [0400486024DEC000][v131072].nup'
-$out  = 'C:\Games\HookshotDev'
+$out  = 'C:\Games\RecompZel'
+if (-not (Test-Path $out) -and (Test-Path 'C:\Games\HookshotDev')) {   # (pasta antiga: renomeie para RecompZel quando puder)
+    $out = 'C:\Games\HookshotDev'
+    Write-Host 'Aviso: usando a pasta antiga C:\Games\HookshotDev. Renomeie para C:\Games\RecompZel quando o jogo estiver fechado.'
+}
 $work = 'C:\DEV\build-work'
 $log  = 'C:\DEV\build.log'
 
