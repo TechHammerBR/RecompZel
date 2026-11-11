@@ -1,13 +1,7 @@
-<h1 align="center">
-  <br>
-  <a>
-  <img src="../assets/hookshot.png" alt="Hookshot" width="200">
-</a>
+<h1 align="center">Hookshot (README original)</h1>
 
-  <br>
-  <b>Hookshot</b>
-  <br>
-</h1>
+> [!NOTE]
+> Esta é uma cópia do README do projeto Hookshot, base do RecompZel, mantida só como referência técnica (requisitos, problemas conhecidos, como funciona). Para instalar e jogar o RecompZel, use o [README do RecompZel](../readme.md). Os links, o Discord e as releases daqui pertencem ao projeto original.
 
 <h4 align="center">The Legend of Zelda: Ocarina of Time (Nintendo Switch 2) running natively on Windows & Linux, with no emulator.
 </h4>
@@ -34,8 +28,6 @@ the console's system software is reimplemented, and the Switch 2 graphics are re
 > Some users report the file in releases to be a Trojan - it is not. Feel free to run it through any antivirus software
 
 
-Discord: https://discord.gg/DVQQJphbBf
-<br>
 
 > [!IMPORTANT]
 > This repository **does not contain the game, keys or an executable**, and it does not explain how to get them. You
