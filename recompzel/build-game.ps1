@@ -2,7 +2,7 @@
 # Uso:  powershell -ExecutionPolicy Bypass -File .\build-game.ps1 [-Nup <arquivo.nup>] [-Out <pasta do jogo>]
 # Sem parametros: procura o .nup em Downloads, Desktop e Documentos e instala em C:\Games\RecompZel (ou %USERPROFILE%\Games\RecompZel).
 # Ao terminar com sucesso, cria o atalho na area de trabalho (post-install.ps1).
-param([string]$Nup, [string]$Out, [string]$Work, [string]$Log)
+param([string]$Nup, [string]$Out, [string]$Work, [string]$Log, [switch]$Dlss)
 $ErrorActionPreference = 'Continue'
 . (Join-Path $PSScriptRoot 'env-recompzel.ps1')
 [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal'   # o PC continua utilizavel durante o build
@@ -36,10 +36,19 @@ New-Item -ItemType Directory -Force -Path $Out, $Work, (Split-Path $Log) | Out-N
 Set-Location $Repo
 Write-Host "Jogo:    $Nup"
 Write-Host "Destino: $Out"
+# NVIDIA DLSS (reescalonamento), so quando o launcher pede (-Dlss): baixa o SDK da NVIDIA, sob a licenca NVIDIA RTX SDKs aceita no launcher,
+# e compila o motor com ele. Sem -Dlss o jogo e construido sem o SDK da NVIDIA.
+$extra = @()
+Remove-Item Env:HOOKSHOT_NGX_SDK -ErrorAction SilentlyContinue
+if ($Dlss) {
+    $env:HOOKSHOT_NGX_SDK = Join-Path $Work 'ngx-sdk'
+    $extra = @('--fetch-ngx-sdk', '--accept-nvidia-license')
+    Write-Host 'NVIDIA DLSS ligado: o SDK da NVIDIA sera baixado para o build (licenca aceita no launcher).'
+}
 Write-Host "Iniciando o build. Pode levar de dezenas de minutos a mais de uma hora. Nao feche esta janela."
 Write-Host "Acompanhe em $Log"
 $t0 = Get-Date
-& $Py -I (Join-Path $Repo 'nx2\make_game.py') --nup $Nup --out $Out --work $Work --language pt-BR --fsr --log $Log
+& $Py -I (Join-Path $Repo 'nx2\make_game.py') --nup $Nup --out $Out --work $Work --language pt-BR --fsr @extra --log $Log
 $code = $LASTEXITCODE
 $min = [math]::Round(((Get-Date) - $t0).TotalMinutes, 1)
 Write-Host ""

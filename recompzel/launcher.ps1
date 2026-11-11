@@ -54,6 +54,12 @@ $STR['pt'] = @{
     fsr_ready = 'Pronto. O FSR 4 sera usado ao clicar em Jogar.'
     fsr_q = 'O FSR 4 precisa de um componente de terceiros (fsr4vk, licenca GPLv3, cerca de 14 MB).{n}{n}Ele nao e da AMD nem nosso: vem do GitHub (0xCydral/bloodborne_pc) e o launcher confere o arquivo antes de usar.{n}{n}Baixar agora? Se escolher Nao, o jogo abre sem FSR 4.'
     fsr_dling = 'Baixando o componente do FSR 4...'
+    dsr = 'Usar NVIDIA DLSS (reescalonamento, RTX)'
+    dsr_off = 'Desligado. Se ligar, o launcher reconstroi o jogo uma vez com o SDK da NVIDIA e cuida do resto.'
+    dsr_rebuild = 'O jogo sera reconstruido uma vez, com o DLSS da NVIDIA, ao clicar em Jogar (baixa o SDK da NVIDIA no build).'
+    dsr_ready = 'Pronto. O DLSS sera usado ao clicar em Jogar (o menu Insert, linha Upscaler, tambem mostra DLSS e DLAA).'
+    dsr_nogpu = 'Nao encontrei uma NVIDIA RTX neste PC. O DLSS nao funciona nesta placa.'
+    dsr_q = 'O DLSS (reescalonamento) usa o SDK e o componente da NVIDIA (licenca NVIDIA RTX SDKs, so para placas NVIDIA). Eles nao sao nossos: o build baixa os arquivos oficiais do GitHub da NVIDIA e confere cada um.{n}{n}O jogo precisa ser reconstruido uma vez com o SDK (o que ja esta pronto e reaproveitado, entao demora bem menos que a primeira vez).{n}{n}Aceita a licenca da NVIDIA e reconstruir agora? Se escolher Nao, o jogo abre sem o DLSS.'
     dlss = 'Usar NVIDIA DLSS Frame Generation (RTX 40/50)'
     dlss_off = 'Desligado. Se ligar, o launcher baixa os componentes da NVIDIA e cuida do resto.'
     dlss_dl = 'Ao clicar em Jogar, baixa os componentes da NVIDIA (cerca de 276 MB, so na primeira vez).'
@@ -149,6 +155,12 @@ $STR['en'] = @{
     fsr_ready = 'Ready. FSR 4 will be used when you click Play.'
     fsr_q = 'FSR 4 needs a third-party component (fsr4vk, GPLv3 license, about 14 MB).{n}{n}It is neither AMD''s nor ours: it comes from GitHub (0xCydral/bloodborne_pc) and the launcher checks the file before using it.{n}{n}Download now? If you choose No, the game opens without FSR 4.'
     fsr_dling = 'Downloading the FSR 4 component...'
+    dsr = 'Use NVIDIA DLSS (upscaling, RTX)'
+    dsr_off = 'Off. If you turn it on, the launcher rebuilds the game once with NVIDIA''s SDK and handles the rest.'
+    dsr_rebuild = 'The game will be rebuilt once, with NVIDIA DLSS, when you click Play (the build downloads NVIDIA''s SDK).'
+    dsr_ready = 'Ready. DLSS will be used when you click Play (the Insert menu''s Upscaler row also shows DLSS and DLAA).'
+    dsr_nogpu = 'No NVIDIA RTX card found in this PC. DLSS does not work on this card.'
+    dsr_q = 'DLSS (upscaling) uses NVIDIA''s SDK and component (NVIDIA RTX SDKs license, NVIDIA GPUs only). They are not ours: the build downloads NVIDIA''s official files from GitHub and checks each one.{n}{n}The game must be rebuilt once with the SDK (what is already done is reused, so it takes much less than the first time).{n}{n}Accept NVIDIA''s license and rebuild now? If you choose No, the game opens without DLSS.'
     dlss = 'Use NVIDIA DLSS Frame Generation (RTX 40/50)'
     dlss_off = 'Off. If you turn it on, the launcher downloads the NVIDIA components and handles the rest.'
     dlss_dl = 'When you click Play, it downloads the NVIDIA components (about 276 MB, first time only).'
@@ -315,6 +327,8 @@ $xaml = @'
           <CheckBox x:Name="chkDiag" Foreground="#E6F2EC" FontSize="12"/>
           <CheckBox x:Name="chkFsr" Foreground="#E6F2EC" FontSize="12" Margin="0,8,0,0"/>
           <TextBlock x:Name="txtFsr" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
+          <CheckBox x:Name="chkDsr" Foreground="#E6F2EC" FontSize="12" Margin="0,8,0,0"/>
+          <TextBlock x:Name="txtDsr" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
           <CheckBox x:Name="chkDlss" Foreground="#E6F2EC" FontSize="12" Margin="0,8,0,0"/>
           <TextBlock x:Name="txtDlss" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
         </StackPanel>
@@ -359,7 +373,7 @@ $xaml = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
 try { if (Test-Path 'C:\DEV\recompzel.ico') { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]'C:\DEV\recompzel.ico') } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','chkDlss','txtDlss','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -407,7 +421,7 @@ function Apply-Language {
         $btnReport.Content = T 'report'; $btnReport.Tag = T 'report_tip'
         $btnBuild.Tag = T 'build_tip'
         $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtFgT.Text = T 'fg_t'
-        $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'; $chkDlss.Content = T 'dlss'
+        $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'; $chkDlss.Content = T 'dlss'; $chkDsr.Content = T 'dsr'
         $lblNow.Text = T 'lbl_now'; $lblSteps.Text = T 'lbl_steps'; $lblNext.Text = T 'lbl_next'
         $lblNotes.Text = T 'lbl_notes'; $lblSummary.Text = T 'lbl_summary'
         if ($txtResumo.Tag -ne 'real') { $txtResumo.Text = T 'summary_ph' }
@@ -440,6 +454,7 @@ try {
         if ($c.diag -eq $true) { $chkDiag.IsChecked = $true }
         if ($c.fsr -eq $true) { $chkFsr.IsChecked = $true }
         if ($c.dlss -eq $true) { $chkDlss.IsChecked = $true }
+        if ($c.dsr -eq $true) { $chkDsr.IsChecked = $true }
         if ($c.fgIndex -ge 0 -and $c.fgIndex -lt $fgOptions.Count) { $cbFg.SelectedIndex = [int]$c.fgIndex }
     }
 } catch {}
@@ -449,7 +464,7 @@ Apply-Language
 function Save-Settings {
     if ($script:loading) { return }
     try {
-        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; lang = $script:lang } |
+        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; lang = $script:lang } |
             ConvertTo-Json | Set-Content $Cfg -Encoding ASCII
     } catch {}
 }
@@ -529,6 +544,7 @@ $cbFg.Add_SelectionChanged({ Save-Settings })
 $chkDiag.Add_Click({ Save-Settings })
 $chkFsr.Add_Click({ Save-Settings; Update-Fsr-Text })
 $chkDlss.Add_Click({ Save-Settings; Update-Dlss-Text })
+$chkDsr.Add_Click({ Save-Settings; Update-Dsr-Text })
 $cbLang.Add_SelectionChanged({
     if ($script:loading) { return }
     if ($cbLang.SelectedIndex -eq 1) { $script:lang = 'en' } else { $script:lang = 'pt' }
@@ -537,6 +553,7 @@ $cbLang.Add_SelectionChanged({
     Update-View
     Update-Fsr-Text
     Update-Dlss-Text
+    Update-Dsr-Text
     Refresh-Mesh
 })
 
@@ -633,6 +650,36 @@ function Update-Fsr-Text {
     if (-not (Test-FsrBuilt)) { $txtFsr.Text = T 'fsr_rebuild'; return }
     if (-not (Test-FsrDll)) { $txtFsr.Text = T 'fsr_dl'; return }
     $txtFsr.Text = T 'fsr_ready'
+}
+
+# ---------- NVIDIA DLSS, reescalonamento (opcional, RTX) ----------
+# O motor ja tem o DLSS (gpu/vk/vk_dlss.cpp), mas so quando o jogo e construido com o SDK da NVIDIA (build-game.ps1 -Dlss) e o
+# componente nvngx_dlss.dll fica em <pasta do jogo>\ngx. O SDK e o componente sao da NVIDIA (licenca NVIDIA RTX SDKs, so para placas
+# NVIDIA): o build baixa e confere cada arquivo; nada disso fica no repositorio. RX_VK_DLSS=1 escolhe o DLSS na hora de jogar.
+$script:dsrGpu = $null
+function Test-DsrGpu {
+    if ($null -ne $script:dsrGpu) { return $script:dsrGpu }
+    try {
+        $script:dsrGpu = $false
+        foreach ($n in @(Get-CimInstance Win32_VideoController -ErrorAction Stop | ForEach-Object { [string]$_.Name })) {
+            if ($n -match 'NVIDIA' -and $n -match 'RTX') { $script:dsrGpu = $true }
+        }
+    } catch { $script:dsrGpu = $true }
+    return $script:dsrGpu
+}
+function Test-DsrBuilt { return (Test-Path (Join-Path (Get-OutDir) 'ngx\nvngx_dlss.dll')) }
+function Update-Dsr-Text {
+    if (-not (Test-DsrGpu)) { $chkDsr.IsEnabled = $false; $chkDsr.IsChecked = $false; $txtDsr.Text = T 'dsr_nogpu'; return }
+    $chkDsr.IsEnabled = $true
+    if (-not [bool]$chkDsr.IsChecked) { $txtDsr.Text = T 'dsr_off'; return }
+    if (-not (Test-DsrBuilt)) { $txtDsr.Text = T 'dsr_rebuild'; return }
+    $txtDsr.Text = T 'dsr_ready'
+}
+# Os argumentos para abrir o build-game.ps1: com -Dlss quando a caixa do DLSS esta marcada
+function Get-BuildArgs([string]$buildPath) {
+    $a = @('-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $buildPath)
+    if ($chkDsr.IsChecked -and (Test-DsrGpu)) { $a += '-Dlss' }
+    return $a
 }
 
 # ---------- NVIDIA DLSS Frame Generation (opcional, so RTX 40/50) ----------
@@ -890,7 +937,7 @@ $btnBuild.Add_Click({
         $s = [string]$script:g.buildScript
         if (Test-Path $s) {
             $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
-            Start-Process powershell.exe -ArgumentList '-NoExit','-ExecutionPolicy','Bypass','-File',$s
+            Start-Process powershell.exe -ArgumentList (Get-BuildArgs $s)
         } else {
             [System.Windows.MessageBox]::Show(((T 'e_script') -f $s), 'RecompZel') | Out-Null
         }
@@ -936,7 +983,7 @@ $btnPlay.Add_Click({
                 $s = [string]$script:g.buildScript
                 if (Test-Path $s) {
                     $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
-                    Start-Process powershell.exe -ArgumentList '-NoExit','-ExecutionPolicy','Bypass','-File',$s
+                    Start-Process powershell.exe -ArgumentList (Get-BuildArgs $s)
                     return
                 }
             }
@@ -946,6 +993,25 @@ $btnPlay.Add_Click({
             [Environment]::SetEnvironmentVariable('RX_VK_FSR4', '1', 'Process')
         }
         Update-Fsr-Text
+    }
+    # DLSS (reescalonamento): so liga quando o jogo foi construido com o SDK da NVIDIA (nvngx_dlss.dll em ngx); senao oferece reconstruir
+    $useDsr = $false
+    [Environment]::SetEnvironmentVariable('RX_VK_DLSS', $null, 'Process')
+    if ($chkDsr.IsChecked -and (Test-DsrGpu)) {
+        if (-not (Test-DsrBuilt)) {
+            if ([System.Windows.MessageBox]::Show((T 'dsr_q'), 'RecompZel', 'YesNo', 'Question') -eq 'Yes') {
+                $s = [string]$script:g.buildScript
+                if (Test-Path $s) {
+                    $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
+                    Start-Process powershell.exe -ArgumentList (Get-BuildArgs $s)
+                    return
+                }
+            }
+        } else {
+            $useDsr = $true
+            [Environment]::SetEnvironmentVariable('RX_VK_DLSS', '1', 'Process')
+        }
+        Update-Dsr-Text
     }
     # DLSS Frame Generation: so liga com os 6 arquivos da NVIDIA instalados e conferidos
     $useDlss = $false
@@ -960,7 +1026,7 @@ $btnPlay.Add_Click({
     }
     # a nota da rodada fica sempre em portugues (e lida pelo medir-rodada.ps1)
     $meshNow = Read-Mesh
-    $script:roundNote = ('VRAM={0} UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6}' -f $vramOptions[$cbVram.SelectedIndex].Pt, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss)
+    $script:roundNote = ('VRAM={0} UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7}' -f $vramOptions[$cbVram.SelectedIndex].Pt, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr)
     $script:gameOut = Get-OutDir
     $script:gameProc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
     $txtHelp.Text = T 'started'
@@ -999,11 +1065,12 @@ function Check-Game {
     } catch {}
     Refresh-Mesh
 }
-$timer.Add_Tick({ Update-View; Check-Game; Update-Fsr-Text; Update-Dlss-Text })
+$timer.Add_Tick({ Update-View; Check-Game; Update-Fsr-Text; Update-Dlss-Text; Update-Dsr-Text })
 $timer.Start()
 Update-View
 Update-Fsr-Text
 Update-Dlss-Text
+Update-Dsr-Text
 Refresh-Mesh
 Update-Shortcuts
 
