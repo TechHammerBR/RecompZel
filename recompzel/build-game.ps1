@@ -71,6 +71,37 @@ if (-not $Work) { $Work = Join-Path $base 'build-work' }
 if (-not $Log)  { $Log  = Join-Path $base 'build.log' }
 
 New-Item -ItemType Directory -Force -Path $Out, $Work, (Split-Path $Log) | Out-Null
+
+# Codigo do jogo: se $Repo e um clone git (C:\DEV\RecompZel), traz do GitHub o que for novo antes de compilar. Sem isso o build usava o codigo
+# da ultima vez que o clone foi atualizado a mao: um build "na ultima versao" saia com o motor antigo. So AVANCA (git merge --ff-only):
+# se o clone tem alteracoes suas, commits que o GitHub nao tem, ou esta em outro ramo, avisa e nao mexe em nada. A copia baixada pelo launcher
+# (sem .git) nao passa por aqui: o botao Atualizar cuida dela.
+function Update-Clone {
+    if (-not (Test-Path -LiteralPath (Join-Path $Repo '.git'))) { return }
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-Host 'Aviso: git nao encontrado; compilando o codigo que esta no disco.'; return }
+    Push-Location -LiteralPath $Repo
+    try {
+        $antes = (& git rev-parse --short HEAD 2>$null)
+        & git fetch --quiet origin main 2>$null
+        if ($LASTEXITCODE -ne 0) { Write-Host "Aviso: nao consegui consultar o GitHub (sem internet?). Compilando o codigo que esta no disco ($antes)."; return }
+        $atras = [int](& git rev-list --count 'HEAD..origin/main' 2>$null)
+        $a_frente = [int](& git rev-list --count 'origin/main..HEAD' 2>$null)
+        $ramo = (& git rev-parse --abbrev-ref HEAD 2>$null)
+        $sujo = @(& git status --porcelain --untracked-files=no 2>$null)
+        if ($atras -eq 0) { Write-Host "Codigo do jogo: $antes (ja e o mais novo do GitHub)."; return }
+        if ($ramo -ne 'main' -or $a_frente -gt 0 -or $sujo.Count -gt 0) {
+            Write-Host "AVISO: o GitHub tem $atras commit(s) novo(s), mas nao atualizei o clone porque ele tem alteracoes suas (ramo $ramo, $a_frente commit(s) so seus, $($sujo.Count) arquivo(s) modificado(s))." -ForegroundColor Yellow
+            Write-Host "       Compilando o codigo que esta no disco ($antes). Para atualizar, rode 'Sincronizar GitHub.bat' e compile de novo."
+            return
+        }
+        & git merge --ff-only origin/main 2>&1 | Out-Null
+        $mesclou = ($LASTEXITCODE -eq 0)   # (antes do git rev-parse, que reescreve o codigo de saida)
+        $depois = (& git rev-parse --short HEAD 2>$null)
+        if ($mesclou -and $depois -ne $antes) { Write-Host "Codigo do jogo atualizado: $antes -> $depois ($atras commit(s) novo(s) do GitHub)." }
+        else { Write-Host "AVISO: nao consegui atualizar o clone ($antes). Compilando o que esta no disco." -ForegroundColor Yellow }
+    } finally { Pop-Location }
+}
+Update-Clone
 Set-Location $Repo
 Write-Host "Jogo:    $Nup"
 Write-Host "Destino: $Out"
