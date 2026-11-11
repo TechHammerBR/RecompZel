@@ -63,7 +63,7 @@ $STR['pt'] = @{
     dlss = 'Usar NVIDIA DLSS Frame Generation (RTX 40/50)'
     dlss_off = 'Desligado. Se ligar, o launcher baixa os componentes da NVIDIA e cuida do resto.'
     dlss_dl = 'Ao clicar em Jogar, baixa os componentes da NVIDIA (cerca de 276 MB, so na primeira vez).'
-    dlss_ready = 'Pronto. O DLSS Frame Generation sera usado ao clicar em Jogar.'
+    dlss_ready = 'Pronto. No jogo (menu Insert, aba Graficos), a linha Metodo de geracao de quadros escolhe o DLSS e a linha Geracao de quadros, o multiplicador (2x). Precisa do DLSS (reescalonamento) ligado.'
     dlss_nogpu = 'Nao encontrei uma NVIDIA RTX serie 40 ou 50 neste PC. O DLSS Frame Generation nao funciona nesta placa.'
     dlss_q = 'O DLSS Frame Generation precisa de componentes da NVIDIA (Streamline 2.14.16: 6 arquivos, uso so em placas NVIDIA, licenca NVIDIA RTX SDKs).{n}{n}Eles nao sao nossos: o launcher baixa o pacote oficial do GitHub da NVIDIA (cerca de 276 MB), extrai so esses 6 arquivos e confere cada um antes de usar.{n}{n}Baixar agora? Se escolher Nao, o jogo abre sem DLSS Frame Generation.'
     dlss_dling = 'Baixando o pacote da NVIDIA (276 MB), aguarde...'
@@ -164,7 +164,7 @@ $STR['en'] = @{
     dlss = 'Use NVIDIA DLSS Frame Generation (RTX 40/50)'
     dlss_off = 'Off. If you turn it on, the launcher downloads the NVIDIA components and handles the rest.'
     dlss_dl = 'When you click Play, it downloads the NVIDIA components (about 276 MB, first time only).'
-    dlss_ready = 'Ready. DLSS Frame Generation will be used when you click Play.'
+    dlss_ready = 'Ready. In the game (Insert menu, Graphics tab), the Frame generation method row picks DLSS and the Frame generation row the multiplier (2x). It needs DLSS upscaling on.'
     dlss_nogpu = 'No NVIDIA RTX 40 or 50 series card found in this PC. DLSS Frame Generation does not work on this card.'
     dlss_q = 'DLSS Frame Generation needs NVIDIA components (Streamline 2.14.16: 6 files, NVIDIA GPUs only, NVIDIA RTX SDKs license).{n}{n}They are not ours: the launcher downloads the official package from NVIDIA''s GitHub (about 276 MB), extracts only those 6 files and checks each one before using it.{n}{n}Download now? If you choose No, the game opens without DLSS Frame Generation.'
     dlss_dling = 'Downloading the NVIDIA package (276 MB), please wait...'
@@ -491,6 +491,29 @@ function Set-DsrChoice([bool]$on) {
         [IO.File]::WriteAllText($p, $new)
     } catch {}
 }
+function Get-IniInt([string]$key, [int]$default) {
+    $p = Get-IniPath
+    if (-not (Test-Path -LiteralPath $p)) { return $default }
+    try { foreach ($l in [IO.File]::ReadAllLines($p)) { if ($l -match ('^\s*' + [regex]::Escape($key) + '\s*=\s*(\d+)')) { return [int]$Matches[1] } } } catch {}
+    return $default
+}
+function Set-IniInt([string]$key, [int]$val) {
+    $p = Get-IniPath
+    if (-not (Test-Path -LiteralPath $p) -or (Test-GameRunning)) { return }
+    try {
+        $raw = [IO.File]::ReadAllText($p)
+        if ($raw -match ('(?m)^\s*' + [regex]::Escape($key) + '\s*=')) { $new = [regex]::Replace($raw, ('(?m)^(\s*' + [regex]::Escape($key) + '\s*=\s*)\d+'), ('${1}' + $val)) }
+        else { $nl = if ($raw.Contains("`r`n")) { "`r`n" } else { "`n" }; if (-not $raw.EndsWith("`n")) { $raw += $nl }; $new = $raw + $key + '=' + $val + $nl }
+        [IO.File]::WriteAllText($p, $new)
+    } catch {}
+}
+# Ao marcar a caixa do DLSS Frame Generation: metodo DLSS e pelo menos 2x no menu do jogo (frame_generation_method, frame_generation); ao desmarcar, volta ao metodo do RecompZel
+function Set-FgChoice([bool]$on) {
+    if ($on) {
+        Set-IniInt 'frame_generation_method' 1
+        if ((Get-IniInt 'frame_generation' 0) -lt 2) { Set-IniInt 'frame_generation' 2 }
+    } elseif ((Get-IniInt 'frame_generation_method' 0) -eq 1) { Set-IniInt 'frame_generation_method' 0 }
+}
 function Read-Mesh {
     $p = Get-IniPath
     if (-not (Test-Path -LiteralPath $p)) { return $null }
@@ -559,7 +582,7 @@ $cbUpload.Add_SelectionChanged({ Save-Settings })
 $cbFg.Add_SelectionChanged({ Save-Settings })
 $chkDiag.Add_Click({ Save-Settings })
 $chkFsr.Add_Click({ Save-Settings; Update-Fsr-Text })
-$chkDlss.Add_Click({ Save-Settings; Update-Dlss-Text })
+$chkDlss.Add_Click({ Save-Settings; Set-FgChoice ([bool]$chkDlss.IsChecked); Update-Dlss-Text })
 $chkDsr.Add_Click({ Save-Settings; Update-Dsr-Text })
 $cbLang.Add_SelectionChanged({
     if ($script:loading) { return }

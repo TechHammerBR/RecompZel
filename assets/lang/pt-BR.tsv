@@ -585,3 +585,13 @@ No upscaler, not even the game's network: the 3D is stretched to the output with
 The game lowers it when the GPU is busy; the 3D is stretched from whatever size it draws.	O jogo reduz quando a GPU está ocupada; o 3D é esticado de qualquer tamanho em que for desenhado.
 The 3D at the output's full size, not stretched: the sharpest, but its edges stay jagged.	O 3D no tamanho total da saída, sem esticar: o mais nítido, mas as bordas ficam serrilhadas.
 A steady size, stretched to the output: lower is faster, and blurrier.	Um tamanho fixo, esticado até a saída: menor é mais rápido e mais borrado.
+Frame generation method	Método de geração de quadros
+RecompZel / AMD FSR 3.1	RecompZel / AMD FSR 3.1
+NVIDIA DLSS Frame Generation	NVIDIA DLSS Frame Generation
+%dx (NVIDIA DLSS-G)	%dx (NVIDIA DLSS-G)
+%dx (this GPU: %dx)	%dx (esta GPU: %dx)
+Who makes the frames between the game's own: the renderer's interpolation (or AMD FSR 3.1) or NVIDIA DLSS Frame Generation. Shown where DLSS Frame Generation is set up (the launcher's box).	Quem gera os quadros entre os do jogo: a interpolação do renderizador (ou o AMD FSR 3.1) ou o NVIDIA DLSS Frame Generation. Aparece onde o DLSS Frame Generation está configurado (a caixa do launcher).
+The renderer's own interpolation, or AMD FSR 3.1 at 2x where it is turned on. Works on any GPU.	A interpolação própria do renderizador, ou o AMD FSR 3.1 em 2x onde estiver ligado. Funciona em qualquer GPU.
+NVIDIA's frame generation (RTX 40 and 50), from the scene's depth and motion. It needs the Upscaler row on NVIDIA DLSS or DLAA, and takes the Frame generation row below as its multiplier: 2x on an RTX 40, up to 4x on an RTX 50.	A geração de quadros da NVIDIA (RTX 40 e 50), a partir da profundidade e do movimento da cena. Precisa da linha Upscaler em NVIDIA DLSS ou DLAA e usa a linha Geração de quadros logo abaixo como multiplicador: 2x em uma RTX 40, até 4x em uma RTX 50.
+Off: pick 2x or more. NVIDIA DLSS Frame Generation makes 1 frame at 2x, 2 at 3x and 3 at 4x, the most this GPU makes.	Desligado: escolha 2x ou mais. O NVIDIA DLSS Frame Generation gera 1 quadro em 2x, 2 em 3x e 3 em 4x, no máximo o que esta GPU faz.
+By NVIDIA DLSS Frame Generation, from the scene's depth and motion. It works with the Upscaler row on NVIDIA DLSS or DLAA.	Pelo NVIDIA DLSS Frame Generation, a partir da profundidade e do movimento da cena. Funciona com a linha Upscaler em NVIDIA DLSS ou DLAA.

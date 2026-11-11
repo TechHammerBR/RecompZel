@@ -9,7 +9,7 @@
 // through the interposer's, so the instance, the device and the swapchain are the ones Streamline needs, and says in the log
 // whether this GPU and driver run DLSS-G and how many frames it can make between two rendered ones (phase 1).
 //
-// Phase 2: while DLSS-G runs (active()), Streamline's own Reflex and PCL markers replace vk_reflex.cpp's (those functions
+// Phase 2: while DLSS-G runs (active(): the menu's method is DLSS-G and its Frame generation row 2x or more), Streamline's own Reflex and PCL markers replace vk_reflex.cpp's (those functions
 // forward here), each frame has a Streamline frame token, the scene's depth and motion (the chain DLSS's upscaler uses,
 // vk_temporal.cpp) are tagged and the camera's constants set, and DLSS-G is switched on for each frame that has them. The
 // renderer's own frame interpolation (vk_framegen.cpp) is off then: Streamline inserts the frame at the present.
@@ -41,6 +41,13 @@ void device_ready(VkPhysicalDevice physical);
 /// DLSS-G is to run: Streamline is up, the GPU supports it and its functions were all found (after device_ready). While it is
 /// true vk_reflex.cpp leaves Reflex to Streamline and vk_framegen.cpp makes no frames of its own.
 [[nodiscard]] bool active();
+/// How many frames DLSS-G is to make between two rendered ones now: the Insert menu's Frame generation method (NVIDIA DLSS
+/// Frame Generation) and its Frame generation row (2x: 1, 3x: 2, ...), at the most this GPU makes (an RTX 40: 1). 0: not wanted;
+/// active() is this above 0
+[[nodiscard]] int frames_to_generate();
+/// The most DLSS-G makes between two rendered ones on this GPU (0 when it is not ready): the menu says it
+[[nodiscard]] int max_generated();
+/// Every present while active() is false (vk_reflex.cpp): switches DLSS-G and Streamline's Reflex off once after they were on
 
 /// What one frame's upscale was given (vk_temporal.cpp, after the engine's evaluation): the images stay GENERAL until the
 /// frame is presented. Depth is R32F in [0, 1], not reversed; motion RG16F in render pixels towards the frame before, the
@@ -60,6 +67,7 @@ void frame_inputs(const FrameInputs& in);
 /// The frame's markers, called where vk_reflex.cpp's were (the game's present): the simulation's end and the submission's
 /// start (and DLSS-G's options for the frame), the submission's end, the present's start and end, and, after the present,
 /// the next frame's start: a new token, Reflex's sleep and the simulation's start.
+void idle_tick();
 void present_begins();
 void submit_ends();
 void present_starts();

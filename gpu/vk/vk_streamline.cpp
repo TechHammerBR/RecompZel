@@ -1,6 +1,7 @@
 // (recompzel) NVIDIA Streamline: loading, starting and asking what the GPU can do (vk_streamline.h).
 #include "vk_streamline.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdarg>
 #include <cstdint>
@@ -10,6 +11,7 @@
 #include <mutex>
 
 #include "vk_internal.h"
+#include "vk_menu.h"   // (opts: the Insert menu's Frame generation rows)
 
 #ifdef _WIN32
 #include <windows.h>
@@ -37,6 +39,9 @@ PFN_vkGetInstanceProcAddr instance_proc() { return nullptr; }
 void device_ready(VkPhysicalDevice) {}
 bool available() { return false; }
 bool active() { return false; }
+int frames_to_generate() { return 0; }
+int max_generated() { return 0; }
+void idle_tick() {}
 void frame_inputs(const FrameInputs&) {}
 void present_begins() {}
 void submit_ends() {}
@@ -74,6 +79,8 @@ struct State {
     uint32_t in_w = 0, in_h = 0;        // (their render size)
     uint64_t frames = 0, frames_on = 0, tag_errors = 0;
     bool told_on = false;
+    int max_gen = 1;                    // (the most frames DLSS-G makes between two rendered ones here: its state says, 2x on an RTX 40)
+    bool was_on = false;                // (DLSS-G was switched on and Reflex handed to Streamline: idle_tick undoes it)
     int early_result = -1;   // -1 not tried, 0 failed, 1 up
     int wanted = -1;
     bool available = false;
@@ -215,6 +222,7 @@ void device_ready(VkPhysicalDevice physical) {
         sl::DLSSGState state{};
         const sl::ViewportHandle viewport(0);
         const sl::Result gr = S.dlssg_state(viewport, state, nullptr);
+        if (gr == sl::Result::eOk && state.numFramesToGenerateMax > 0) S.max_gen = (int)state.numFramesToGenerateMax;
         logf("streamline: DLSS-G state: result %d, status %u, up to %u generated frames between two rendered (0: not reported yet), "
              "about %llu MB of video memory",
              (int)gr, (unsigned)state.status, (unsigned)state.numFramesToGenerateMax,
@@ -241,20 +249,20 @@ void device_ready(VkPhysicalDevice physical) {
              S.dlssg_state != nullptr);
         return;
     }
-    sl::ReflexOptions ro{};
-    ro.mode = sl::eLowLatency;
-    const sl::Result rr = S.reflex_options(ro);
-    if (rr != sl::Result::eOk) {
-        logf("streamline: Reflex did not start (result %d): DLSS-G needs it, so it does not run", (int)rr);
-        return;
-    }
     S.live = true;
-    logf("streamline: Reflex and DLSS-G are on the renderer's frames now: Streamline's own markers replace vk_reflex.cpp's, and "
-         "the renderer's own frame interpolation is off");
+    logf("streamline: DLSS-G is ready: it runs when the Insert menu's Frame generation method is NVIDIA DLSS Frame Generation and the "
+         "Frame generation row is 2x or more; then Streamline's Reflex and markers replace vk_reflex.cpp's");
 }
 
 bool available() { return S.available; }
-bool active() { return S.live; }
+int max_generated() { return S.live ? S.max_gen : 0; }
+/// Frames to make between two rendered ones: the Insert menu's Frame generation row (2x and up) with the method DLSS-G, at the
+/// most this GPU makes. 0: DLSS-G is not wanted now, and the renderer's own Reflex and frame interpolation are as without it
+int frames_to_generate() {
+    if (!S.live || opts.fgtype != 1 || opts.framegen < 2) return 0;
+    return std::min(opts.framegen - 1, std::max(1, S.max_gen));
+}
+bool active() { return frames_to_generate() > 0; }
 
 namespace {
 
@@ -293,6 +301,22 @@ const char* status_text(uint32_t status) {
 
 }  // namespace
 
+/// Every present while DLSS-G is not wanted (vk_reflex.cpp): once after it was, DLSS-G is switched off and Streamline's Reflex
+/// too, so the renderer's own are the only ones. The swapchain is made again by vk_reflex.cpp when Reflex changes hands
+void idle_tick() {
+    if (!S.live || !S.was_on) return;
+    std::lock_guard lk(S.mu);
+    S.was_on = false;
+    sl::DLSSGOptions o{};
+    o.mode = sl::DLSSGMode::eOff;
+    o.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
+    const sl::Result r = S.dlssg_options(sl::ViewportHandle(0), o);
+    sl::ReflexOptions ro{};
+    ro.mode = sl::eOff;
+    S.reflex_options(ro);
+    logf("streamline: DLSS-G off (the menu): the renderer's own Reflex and frame generation are back (slDLSSGSetOptions result %d)", (int)r);
+}
+
 void next_frame() {
     if (!S.live) return;
     std::lock_guard lk(S.mu);
@@ -306,13 +330,20 @@ void next_frame() {
 void present_begins() {
     if (!S.live) return;
     std::lock_guard lk(S.mu);
+    if (!S.was_on) {   // (back on after the menu turned it off: Reflex is Streamline's again)
+        sl::ReflexOptions ro{};
+        ro.mode = sl::eLowLatency;
+        const sl::Result rr = S.reflex_options(ro);
+        if (rr != sl::Result::eOk) logf("streamline: Reflex did not start (result %d): DLSS-G needs it", (int)rr);
+        S.was_on = true;
+    }
     marker_locked(sl::PCLMarker::eSimulationEnd);
     marker_locked(sl::PCLMarker::eRenderSubmitStart);
     // DLSS-G's options for this frame, on the present thread: on when the frame's depth and motion were tagged, else off (the
     // menus, a loading screen, a frame the upscale did not take), keeping its resources so turning it on again is quick
     sl::DLSSGOptions o{};
     o.mode = S.have_inputs ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff;
-    o.numFramesToGenerate = 1;
+    o.numFramesToGenerate = (uint32_t)std::max(1, frames_to_generate());
     o.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
     o.mvecDepthWidth = S.in_w, o.mvecDepthHeight = S.in_h;
     const sl::ViewportHandle viewport(0);
@@ -324,6 +355,7 @@ void present_begins() {
     if (S.frames % 300 == 0 && S.dlssg_state) {
         sl::DLSSGState state{};
         const sl::Result gr = S.dlssg_state(viewport, state, &o);
+        if (gr == sl::Result::eOk && state.numFramesToGenerateMax > 0) S.max_gen = (int)state.numFramesToGenerateMax;
         logf("streamline: DLSS-G over the last 300 frames: on for %llu, status %u (%s), %u frames presented since the last look, "
              "up to %u generated per rendered, about %llu MB",
              (unsigned long long)S.frames_on, (unsigned)state.status, gr == sl::Result::eOk ? status_text((uint32_t)state.status) : "state not read",

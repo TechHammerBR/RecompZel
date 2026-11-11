@@ -202,6 +202,7 @@ void reflex_swapchain_destroyed() {
 
 void reflex_present_begins() {
     if (sl_owns()) return slfg::present_begins();
+    slfg::idle_tick();   // (after DLSS-G, once: Streamline's Reflex and DLSS-G off, this file's own back)
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
     if (!on() || !r.frame_marked) return;

@@ -507,7 +507,7 @@ bool framegen_wanted(int menu_value, int allow) {
 
 bool framegen_on() {
     static const int allow = !getenv("RX_VK_FRAMEGEN") || atoi(getenv("RX_VK_FRAMEGEN")) != 0;
-    return framegen_wanted(opts.framegen, allow) && !dev.offscreen && !fg.failed && !slfg::active();
+    return framegen_wanted(opts.framegen, allow) && !dev.offscreen && !fg.failed && !(opts.fgtype == 1 && slfg::max_generated() > 0);   // (method 1 with DLSS-G ready: NVIDIA makes the frames, vk_streamline.cpp)
 }
 
 // Ultrawide's menus (the Insert menu's Ultrawide menus): which of nx2/oot_wide.py's keep-list screens keep the whole picture, told
