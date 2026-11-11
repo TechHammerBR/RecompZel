@@ -556,24 +556,35 @@ function Find-GameExe {
     return Get-ChildItem -Path $o -Filter *.exe -File -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 
-# ---------- Atalhos: garante o icone do RecompZel e o exe novo (roda ao abrir o launcher) ----------
+# ---------- Atalhos: cria os que faltam e garante o icone do RecompZel e o exe novo (roda ao abrir o launcher) ----------
 function Update-Shortcuts {
     try {
         $ico = 'C:\DEV\recompzel.ico'
-        if (-not (Test-Path -LiteralPath $ico)) { return }
+        $iconOk = Test-Path -LiteralPath $ico
         $desk = [Environment]::GetFolderPath('Desktop')
         $sh = New-Object -ComObject WScript.Shell
         $changed = $false
-        foreach ($n in 'Zelda OoT (RecompZel).lnk', 'RecompZel Launcher.lnk') {
+        $ps = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        foreach ($isGame in @($true, $false)) {
+            if ($isGame) { $n = 'Zelda OoT (RecompZel).lnk' } else { $n = 'RecompZel Launcher.lnk' }
             $f = Join-Path $desk $n
-            if (-not (Test-Path -LiteralPath $f)) { continue }
+            $exists = Test-Path -LiteralPath $f
+            $exe = $null
+            if ($isGame) { $exe = Find-GameExe; if (-not $exe) { continue } }
             $l = $sh.CreateShortcut($f)
             $dirty = $false
-            if ($l.IconLocation -ne ($ico + ',0')) { $l.IconLocation = $ico; $dirty = $true }
-            if ($n -like 'Zelda*') {
-                $exe = Find-GameExe
-                if ($exe -and $l.TargetPath -ne $exe.FullName) { $l.TargetPath = $exe.FullName; $l.WorkingDirectory = $exe.DirectoryName; $dirty = $true }
+            if (-not $exists) {
+                if ($isGame) { $l.Description = 'Zelda Ocarina of Time recompilado (RecompZel)' }
+                else {
+                    $l.TargetPath = $ps
+                    $l.Arguments = '-ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\DEV\launcher.ps1"'
+                    $l.WorkingDirectory = 'C:\DEV'
+                    $l.Description = 'Launcher do RecompZel'
+                }
+                $dirty = $true
             }
+            if ($isGame -and $l.TargetPath -ne $exe.FullName) { $l.TargetPath = $exe.FullName; $l.WorkingDirectory = $exe.DirectoryName; $dirty = $true }
+            if ($iconOk -and $l.IconLocation -ne ($ico + ',0')) { $l.IconLocation = $ico; $dirty = $true }
             if ($dirty) { $l.Save(); $changed = $true }
         }
         # o Windows guarda os icones em cache: pede para atualizar

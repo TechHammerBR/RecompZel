@@ -1,9 +1,10 @@
 # Prepara o ambiente de build usando as ferramentas que o HookshotBuilder ja instalou.
-# Nao e para rodar sozinho: os outros scripts chamam este com ". C:\DEV\env-recompzel.ps1"
-$Repo = 'C:\DEV\RecompZel'
+# Nao e para rodar sozinho: os outros scripts chamam este com ". $PSScriptRoot\env-recompzel.ps1"
+# Repo = a pasta do repositorio. Se este script esta em <repo>\recompzel, usa <repo>; senao (copia em C:\DEV) usa C:\DEV\RecompZel.
+$Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Split-Path $PSScriptRoot -Parent } else { 'C:\DEV\RecompZel' }
 $ver = Get-ChildItem "$env:LOCALAPPDATA\HookshotBuilder\versions" -Directory |
        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $ver) { throw "HookshotBuilder nao encontrado em $env:LOCALAPPDATA\HookshotBuilder\versions" }
+if (-not $ver) { throw "As ferramentas de compilacao ainda nao estao instaladas ($env:LOCALAPPDATA\HookshotBuilder\versions). Rode primeiro o instalador do RecompZel (veja o README) para baixa-las." }
 $Tools = Join-Path $ver.FullName 'HookshotBuilder\tools'
 $Py = Join-Path $Tools 'python\python.exe'
 if (-not (Test-Path -LiteralPath $Py)) { throw "Python do Builder nao encontrado: $Py" }

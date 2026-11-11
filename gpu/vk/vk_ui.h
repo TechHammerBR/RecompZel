@@ -13,6 +13,7 @@
 
 #include "imgui.h"
 #include "vk_imgui.h"
+#include "vk_lang.h"
 
 namespace mkwvk::ui {
 
@@ -51,7 +52,10 @@ struct Ctx {
     int confirm_dot = 3, back_dot = 1;   // (the face buttons that confirm and go back: vk_menu_keys.h dot, 3 the bottom, 1 the right)
 };
 
-inline ImVec2 size_of(ImFont* font, float px, const char* t, float wrap = 0) { return font->CalcTextSizeA(px, FLT_MAX, wrap, t); }
+// (recompzel) Every text of the overlays passes through size_of, text or para: the language chosen is applied there (vk_lang.h)
+inline ImVec2 size_of(ImFont* font, float px, const char* t, float wrap = 0) {
+    return font->CalcTextSizeA(px, FLT_MAX, wrap, lang::tr(t));
+}
 /// (hookshot) Shrink to fit: the size a text is drawn at to be at most room wide. px when it fits there; else the largest size
 /// below it, on steps of step, down to min_px at the least; 0 when it fits at none (not drawn). width(size): the text's width
 /// at a size (size_of's .x). The first guess scales px by room over the width, as a text's width grows with its size; from it
@@ -68,12 +72,14 @@ float fit_px(float px, float min_px, float step, float room, Width width) {
     return f >= min_px ? f : 0;
 }
 inline float text(Ctx& c, ImFont* font, float px, ImVec2 p, ImU32 col, const char* t, float wrap = 0) {
+    t = lang::tr(t);
     c.d->AddText(font, px, p, col, t, nullptr, wrap);
-    return size_of(font, px, t, wrap).x;
+    return font->CalcTextSizeA(px, FLT_MAX, wrap, t).x;
 }
 /// Text wrapped at wrap pixels, its lines 1.3 em apart (ImGui's own wrap sets them 1 em apart: too tight for reading); its
 /// height. draw false: measured only
 inline float para(Ctx& c, ImFont* font, float px, ImVec2 p, ImU32 col, const char* t, float wrap, bool draw = true) {
+    t = lang::tr(t);
     const char* end = t + strlen(t);
     float y = 0;
     while (t < end) {

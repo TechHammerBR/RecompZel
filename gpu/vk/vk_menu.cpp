@@ -34,6 +34,7 @@
 #include "oot_cheat_items.h"
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
+#include "vk_lang.h"   // (recompzel: the menu in Portuguese, from the dictionary: a text is turned at the last moment, vk_ui.h)
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "vk_dlss.h"
 #include "../../host/hos_wide_size.h"   // (the widescreen picture's size, as host/hos_main.c works it out)
@@ -94,9 +95,19 @@ const char* hint_in(const char* const* t, int n, int lo, int v, int variant) {
         static const char* const t[] = {__VA_ARGS__};                                                                        \
         return hint_in(t, (int)(sizeof t / sizeof t[0]), lo, v, variant);                                                    \
     }
+// (recompzel) The value says which method makes the frames: RecompZel's own interpolation (vk_framegen.cpp), or AMD FSR 3.1 at 2x
+// where it is turned on and runs on this GPU (fsr3fi)
 const char* tx_framegen(int v) {
-    static const char* t[] = {"Off", "Auto", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
+    static char t[9][24];
+    v = std::clamp(v, 0, 8);
+    if (v == 0) return "Off";
+    if (v == 1) return "Auto (RecompZel)";
+    snprintf(t[v], sizeof t[v], "%dx (%s)", v, v == 2 && fsr3fi::frames_wanted() != 0 ? "AMD FSR 3.1" : "RecompZel");
     return t[v];
+}
+const char* tx_language(int v) {
+    static const char* const names[] = {"Auto", "English", "Portugu\xc3\xaas (Brasil)"};
+    return names[std::clamp(v, 0, 2)];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
 const char* tx_profile(int v) { return v ? "Handheld" : "Docked"; }   // (opts.handheld: the Profile row)
@@ -607,9 +618,11 @@ const char* hn_framegen(int v, int variant) {
         return "One made frame between each two of the game's, by AMD FSR 3.1 from the scene's depth and motion.";
     if (variant > 0) return nullptr;
     if (v <= 0) return "Only the game's own frames: no added delay.";
-    if (v == 1) return "A frame for each of the display's refreshes: none made when the game keeps up. Frame pacing does not apply.";
-    static char b[9][96];
-    snprintf(b[v], sizeof b[v], "%s between each two of the game's.", v == 2 ? "One made frame" : v == 3 ? "Two made frames" : v == 4 ? "Three made frames"
+    if (v == 1)
+        return "A frame for each of the display's refreshes, by RecompZel's own interpolation: none made when the game keeps up. "
+               "Frame pacing does not apply.";
+    static char b[9][160];
+    snprintf(b[v], sizeof b[v], "%s between each two of the game's, by RecompZel's own interpolation of the finished pictures.", v == 2 ? "One made frame" : v == 3 ? "Two made frames" : v == 4 ? "Three made frames"
              : v == 5 ? "Four made frames" : v == 6 ? "Five made frames" : v == 7 ? "Six made frames" : "Seven made frames");
     return b[std::clamp(v, 2, 8)];
 }
@@ -686,7 +699,8 @@ Row rows[] = {
      "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
-     "show artifacts.", hn_framegen, false, true},
+     "show artifacts. The value names the method: RecompZel's own interpolation or, at 2x, AMD FSR 3.1 where it is turned on.",
+     hn_framegen, false, true},
     {TAB_GRAPHICS, "Frame pacing", &opts.pace, 0, 1, 1, tx_onoff, "When each frame is shown.", hn_pace},
     {TAB_GRAPHICS, "HDR", &opts.hdr, 0, 2, 1, tx_hdr,
      "HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at "
@@ -762,6 +776,9 @@ Row rows[] = {
     {TAB_GAMEPLAY, "Discord status", &opts.discord, 0, 1, 1, tx_onoff,
      "Shows \"Playing Hookshot\" and the time played in your Discord status, while Discord runs on this PC.", nullptr, false,
      true},
+    {TAB_GAMEPLAY, "Language", &opts.language, 0, 2, 1, tx_language,
+     "The language of this menu, the FPS counter and the start-up screen. Auto follows the language of Windows.", nullptr,
+     false, true},
 
     // Controls (12 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
@@ -1450,7 +1467,28 @@ int scrolled_to[TAB_MOTION + 2] = {-1, -1, -1, -1, -1, -1};   // (the selection 
 float scroll_want[TAB_MOTION + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
+/// (recompzel) The language the Language row says, and where its files are: every drawing, once changed. Windows' own language
+/// is what Auto follows
+void sync_language() {
+    static int last = -1;
+    if (last == opts.language) return;
+    if (last < 0) {
+        char exe[MAX_PATH];
+        const DWORD n = game_module_path(exe, MAX_PATH);
+        std::string dir(exe, n);
+        lang::set_dir(dir.substr(0, dir.find_last_of("\\/") + 1));
+        wchar_t loc[LOCALE_NAME_MAX_LENGTH] = {};
+        char name[LOCALE_NAME_MAX_LENGTH] = {};
+        if (GetUserDefaultLocaleName(loc, LOCALE_NAME_MAX_LENGTH))
+            for (int i = 0; loc[i] && i + 1 < LOCALE_NAME_MAX_LENGTH; i++) name[i] = loc[i] < 128 ? (char)loc[i] : '?';
+        lang::set_system(name);
+    }
+    last = opts.language;
+    lang::set_mode(opts.language);
+}
+
 ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
+    sync_language();
     ui::Ctx c{ImGui::GetForegroundDrawList(), ui::fonts(), 1, (float)w, (float)h, 0, pad_last};
     c.confirm_dot = menu_keys::dot(pad_confirm), c.back_dot = menu_keys::dot(pad_back);
     c.s = ui::unit((float)h, opts.menu_size, &c.safe);
@@ -1483,7 +1521,9 @@ std::vector<size_t> char_starts(const std::string& t) {
     at.push_back(t.size());
     return at;
 }
-std::string fit(ui::Ctx& c, ImFont* f, float px, float room, const std::string& label, bool sel) {
+std::string fit(ui::Ctx& c, ImFont* f, float px, float room, const std::string& said, bool sel) {
+    const std::string label = lang::tr(said);   // (recompzel: the text in the language chosen, cut to the room as it is: lang::Raw below)
+    lang::Raw raw;
     auto width = [&](const std::string& t) { return ui::size_of(f, px, t.c_str()).x; };
     if (width(label) <= room) return label;
     const std::vector<size_t> at = char_starts(label);
@@ -1612,6 +1652,7 @@ void name_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* name, bool sel, bool 
     }
     ImFont* f = sel ? c.f.strong : c.f.body;
     const std::string shown = fit(c, f, px * s, room, name, false);
+    lang::Raw raw;   // (fit has turned it)
     ui::text_mid(c, f, px * s, a.x + 20 * s, mid, sel ? ui::kInkBright : ui::kInk, shown.c_str());
 }
 /// A value cell: a choice with arrows at its ends (left, right: whether it can go that way), gold when selected
@@ -1625,6 +1666,7 @@ void choice_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const std::string& value, bool 
     if (right) ui::triangle(c, ImVec2(b.x - in - 11 * s, mid), 9 * s, 1, arrow);
     ImFont* f = sel ? c.f.strong : c.f.body;
     const std::string shown = fit(c, f, px, b.x - a.x - 2 * in - (left || right ? 48 : 16) * s, value, sel);   // (room for arrows)
+    lang::Raw raw;   // (fit has turned it)
     ui::text_mid_centre(c, f, px, (a.x + b.x) * 0.5f, mid, ink, shown.c_str());
     if (sel) ui::glow(c, a, b);
 }
@@ -2607,6 +2649,7 @@ void menu_init() {
     if (const char* e = getenv("HOS_DYNRES")) opts.resolution = atoi(e) != 0 ? 0 : 1;
     if (const char* e = getenv("HOS_OUTPUT_RES")) opts.output_res = parse_output(e);
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
+    sync_language();   // (recompzel: before the first drawing, the start-up screen's)
 }
 
 bool resolution_auto() { return opts.resolution == 0; }

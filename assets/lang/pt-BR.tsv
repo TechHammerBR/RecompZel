@@ -1,0 +1,576 @@
+# RecompZel: menu do jogo em Portugues do Brasil. Formato: texto original<TAB>traducao (UTF-8).
+# Os marcadores %d %s %.1f etc. devem ficar na mesma ordem do original. Linhas com # sao comentarios.
+VRAM %.1f of %.1f GB	VRAM %.1f de %.1f GB
+VRAM %.1f GB in the game's allocations (no budget from the driver)	VRAM %.1f GB nas alocações do jogo (sem orçamento do driver)
+: DLAA may stutter here; Quality or Balanced uses less	: o DLAA pode travar aqui; Qualidade ou Equilibrado usa menos
+: DLSS may stutter here; a lower Render resolution mode uses less	: o DLSS pode travar aqui; um modo de resolução de renderização menor usa menos
+: FSR 4's native AA may stutter here; FSR 4's Quality or Balanced uses less	: o AA nativo do FSR 4 pode travar aqui; Qualidade ou Equilibrado do FSR 4 usa menos
+: FSR 4 may stutter here; a lower Render resolution mode uses less	: o FSR 4 pode travar aqui; um modo de resolução de renderização menor usa menos
+Quality	Qualidade
+Balanced	Equilibrado
+Performance	Desempenho
+Ultra Performance	Ultra desempenho
+, sRGB: colours made linear	, sRGB: cores convertidas para linear
+Off	Desligado
+Auto	Auto
+Handheld	Portátil
+Docked	Na TV
+Insert or F1	Insert ou F1
+F1 only	Somente F1
+Insert, F1 or Esc	Insert, F1 ou Esc
+Expanded	Expandido
+Native (the game's)	Nativo (do jogo)
+%d nits	%d nits
+60 (the console's)	60 (do console)
+On (gyro found)	Ligado (giroscópio encontrado)
+Off (gyro found)	Desligado (giroscópio encontrado)
+On (no gyro on this pad)	Ligado (este controle não tem giroscópio)
+Off (no gyro on this pad)	Desligado (este controle não tem giroscópio)
+On (no controller)	Ligado (sem controle)
+Off (no controller)	Desligado (sem controle)
+Native	Nativo
+As the stick	Como o analógico
+Catmull-Rom	Catmull-Rom
+Lanczos	Lanczos
+Not needed (window = output)	Desnecessário (janela = saída)
+On + Boost	Ligado + Boost
+The game as without it.	O jogo como seria sem isso.
+The driver paces the frames for less latency.	O driver ajusta o ritmo dos quadros para reduzir a latência.
+As On, and the GPU's clocks are kept up as well.	Como Ligado, e os clocks da GPU também são mantidos altos.
+The driver delays each frame's start for less latency.	O driver atrasa o início de cada quadro para reduzir a latência.
+Game's own	Do jogo
+NVIDIA DLSS	NVIDIA DLSS
+NVIDIA DLAA	NVIDIA DLAA
+AMD FSR 3.1	AMD FSR 3.1
+AMD FSR 4	AMD FSR 4
+AMD FSR 4 Native AA	AMD FSR 4 AA nativo
+The game's own network.	O processamento do próprio jogo.
+NVIDIA's, from a smaller 3D. Softer than the game's own: set Sharpness to around 80%. Things that move by themselves can trail for now.	Da NVIDIA, a partir de um 3D menor. Mais suave que o do jogo: ajuste a Nitidez para cerca de 80%. Coisas que se movem sozinhas podem deixar rastro por enquanto.
+NVIDIA's, the 3D at full size with its edges smoothed; the slowest. Softer than the game's own: set Sharpness to around 80%. Things that move by themselves can trail for now.	Da NVIDIA, com o 3D em tamanho total e as bordas suavizadas; o mais lento. Mais suave que o do jogo: ajuste a Nitidez para cerca de 80%. Coisas que se movem sozinhas podem deixar rastro por enquanto.
+AMD's, from a smaller 3D, on any GPU: built from AMD's own shaders. Things that move by themselves can trail for now.	Da AMD, a partir de um 3D menor, em qualquer GPU: feito com os shaders da própria AMD. Coisas que se movem sozinhas podem deixar rastro por enquanto.
+AMD's machine-learned upscaler, from a smaller 3D, with AMD's files beside the game. Things that move by themselves can trail for now.	Upscaler de aprendizado de máquina da AMD, a partir de um 3D menor, com os arquivos da AMD ao lado do jogo. Coisas que se movem sozinhas podem deixar rastro por enquanto.
+AMD's machine-learned upscaler, the 3D at full size with its edges smoothed; the slowest.	Upscaler de aprendizado de máquina da AMD, com o 3D em tamanho total e as bordas suavizadas; o mais lento.
+DLSS and DLAA: not in this build (built without NVIDIA's DLSS SDK, see the readme).	DLSS e DLAA: não estão nesta versão (compilada sem o SDK DLSS da NVIDIA, veja o leia-me).
+DLSS and DLAA: need an NVIDIA RTX GPU.	DLSS e DLAA: exigem uma placa NVIDIA RTX.
+DLSS and DLAA: need a newer NVIDIA driver.	DLSS e DLAA: exigem um driver NVIDIA mais novo.
+DLSS and DLAA: DLSS's runtime was not found (the game folder's ngx folder, see the readme).	DLSS e DLAA: o runtime do DLSS não foi encontrado (pasta ngx dentro da pasta do jogo, veja o leia-me).
+DLSS and DLAA: NVIDIA's NGX on Linux loads DLSS's runtime only from a folder named in ASCII (see the readme).	DLSS e DLAA: o NGX da NVIDIA no Linux só carrega o runtime do DLSS de uma pasta com nome em ASCII (veja o leia-me).
+AMD FSR 4: not in this build (see the readme).	AMD FSR 4: não está nesta versão (veja o leia-me).
+AMD FSR 4: AMD's files were not found beside the game (see the readme).	AMD FSR 4: os arquivos da AMD não foram encontrados ao lado do jogo (veja o leia-me).
+AMD FSR 4: AMD's files have no FSR 4 for this GPU.	AMD FSR 4: os arquivos da AMD não têm FSR 4 para esta GPU.
+Transformer (K)	Transformer (K)
+Transformer 2 (M)	Transformer 2 (M)
+Transformer 2 (L)	Transformer 2 (L)
+NVIDIA default	Padrão da NVIDIA
+NVIDIA's transformer model: the one tested most here.	Modelo transformer da NVIDIA: o mais testado aqui.
+NVIDIA's second-generation transformer, its pick for Performance: sharper, at a little more GPU time.	Transformer de segunda geração da NVIDIA, a escolha dela para Desempenho: mais nítido, com um pouco mais de tempo de GPU.
+The second-generation transformer as NVIDIA tuned it for Ultra Performance, the smallest Render resolutions.	O transformer de segunda geração como a NVIDIA ajustou para Ultra desempenho, as menores resoluções de renderização.
+Lets DLSS's runtime pick for each mode: what it picks can change with a runtime update.	Deixa o runtime do DLSS escolher para cada modo: a escolha pode mudar com uma atualização do runtime.
+Used by NVIDIA DLSS and DLAA: choose one in the Upscaler row.	Usado pelo NVIDIA DLSS e DLAA: escolha um deles na linha Upscaler.
+Native (%s, %ux%u)	Nativo (%s, %ux%u)
+DLAA	DLAA
+FSR 4	FSR 4
+Auto (dynamic)	Auto (dinâmico)
+DLAA: the 3D at the picture's full size, anti-aliased by DLSS. The sharpest, and the heaviest.	DLAA: o 3D em tamanho total da imagem, com antisserrilhado do DLSS. O mais nítido e o mais pesado.
+FSR 4's native AA: the 3D at the picture's full size. The sharpest, and the heaviest.	AA nativo do FSR 4: o 3D em tamanho total da imagem. O mais nítido e o mais pesado.
+The game lowers it when the GPU is busy, and DLSS follows. Set Sharpness to around 80%.	O jogo reduz quando a GPU está ocupada, e o DLSS acompanha. Ajuste a Nitidez para cerca de 80%.
+Between Native and Quality: sharper than Quality, a little slower.	Entre Nativo e Qualidade: mais nítido que Qualidade, um pouco mais lento.
+DLSS's Quality mode: its sharpest from a smaller 3D. Set Sharpness to around 80%.	Modo Qualidade do DLSS: o mais nítido a partir de um 3D menor. Ajuste a Nitidez para cerca de 80%.
+Between Quality and Performance. Set Sharpness to around 80%.	Entre Qualidade e Desempenho. Ajuste a Nitidez para cerca de 80%.
+Faster, and softer. Set Sharpness to around 80%.	Mais rápido e mais suave. Ajuste a Nitidez para cerca de 80%.
+Between Performance and Ultra Performance.	Entre Desempenho e Ultra desempenho.
+DLSS's fastest mode, and its softest. Set Sharpness to around 80%.	O modo mais rápido do DLSS, e o mais suave. Ajuste a Nitidez para cerca de 80%.
+The game lowers it when the GPU is busy, and FSR follows.	O jogo reduz quando a GPU está ocupada, e o FSR acompanha.
+FSR's Quality mode, 1.5x: its sharpest.	Modo Qualidade do FSR, 1,5x: o mais nítido.
+FSR's Balanced mode, 1.7x.	Modo Equilibrado do FSR, 1,7x.
+FSR's Performance mode, 2x: faster, and softer.	Modo Desempenho do FSR, 2x: mais rápido e mais suave.
+FSR's Ultra Performance mode, 3x: its fastest, and its softest.	Modo Ultra desempenho do FSR, 3x: o mais rápido e o mais suave.
+The game lowers it when the GPU is busy.	O jogo reduz quando a GPU está ocupada.
+The 3D at the output's full size: the sharpest, and the slowest.	O 3D no tamanho total da saída: o mais nítido e o mais lento.
+A steady size: lower is faster, and softer.	Um tamanho fixo: menor é mais rápido e mais suave.
+ (native)	 (nativo)
+ (game's)	 (do jogo)
+Game's	Do jogo
+Real time	Tempo real
+Per frame	Por quadro
+Normal	Normal
+Instant	Instantâneo
+Original	Original
+Monitor's shape	Formato do monitor
+Switch	Switch
+Xbox	Xbox
+PlayStation 4	PlayStation 4
+PlayStation 5	PlayStation 5
+Steam Deck	Steam Deck
+%d: Device %d	%d: Dispositivo %d
+Default	Padrão
+ (not connected)	 (desconectado)
+Microphone	Microfone
+The game hears silence.	O jogo ouve silêncio.
+The system's default recording device. On Windows, desktop apps must be allowed to use the microphone (Settings, Privacy & security).	O dispositivo de gravação padrão do sistema. No Windows, os aplicativos de desktop precisam ter permissão para usar o microfone (Configurações, Privacidade e segurança).
+Not plugged in: Default stands in until it is back.	Desconectado: o Padrão assume até ele voltar.
+This microphone, by its name. A change applies at once.	Este microfone, pelo nome. A mudança vale na hora.
+Small	Pequeno
+Medium	Médio
+Large	Grande
+Default (24%)	Padrão (24%)
+Stereo	Estéreo
+Low	Baixo
+Standard	Padrão
+High	Alto
+Automatic	Automático
+Compute	Compute
+Custom	Personalizado
+Minimum (4GB)	Mínimo (4GB)
+Low (6GB)	Baixo (6GB)
+Balanced (8GB)	Equilibrado (8GB)
+High (12GB)	Alto (12GB)
+Ultra (16GB+)	Ultra (16GB+)
+Each row as you set it. Changing most rows yourself comes back to Custom.	Cada linha como você a configurou. Mudar a maioria das linhas por conta própria volta para Personalizado.
+Resolution 50% (with DLSS its nearest mode), Lanczos, Sharpness 30%, the Handheld Profile.	Resolução 50% (com DLSS, o modo mais próximo), Lanczos, Nitidez 30%, perfil Portátil.
+Resolution 75% (with DLSS its nearest mode), Lanczos, Sharpness 30%, the Handheld Profile.	Resolução 75% (com DLSS, o modo mais próximo), Lanczos, Nitidez 30%, perfil Portátil.
+Resolution 100% (with DLSS its nearest mode), Catmull-Rom, Sharpness 30%.	Resolução 100% (com DLSS, o modo mais próximo), Catmull-Rom, Nitidez 30%.
+Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 40%.	Resolução 100% (com DLSS, o modo mais próximo), Lanczos, Nitidez 40%.
+Resolution 100% (with DLSS its nearest mode), Lanczos, Sharpness 50%.	Resolução 100% (com DLSS, o modo mais próximo), Lanczos, Nitidez 50%.
+The best dedicated GPU.	A melhor GPU dedicada.
+One made frame between each two of the game's, by AMD FSR 3.1 from the scene's depth and motion.	Um quadro gerado entre cada dois do jogo, pelo AMD FSR 3.1, a partir da profundidade e do movimento da cena.
+Only the game's own frames: no added delay.	Somente os quadros do próprio jogo: sem atraso adicional.
+One made frame	Um quadro gerado
+Two made frames	Dois quadros gerados
+Three made frames	Três quadros gerados
+Four made frames	Quatro quadros gerados
+Five made frames	Cinco quadros gerados
+Six made frames	Seis quadros gerados
+Seven made frames	Sete quadros gerados
+As soon as it is ready.	Assim que estiver pronto.
+At an even interval: less stutter, at up to one frame of delay.	Em intervalos iguais: menos engasgos, com até um quadro de atraso.
+The game's own size.	O tamanho do próprio jogo.
+The sharpest on a 2560x1440 screen: nothing to scale to the window.	O mais nítido em uma tela 2560x1440: nada a escalar para a janela.
+The sharpest on a 3840x2160 screen. The game's render targets get a bigger GPU pool, so a full-size 3D fits.	O mais nítido em uma tela 3840x2160. Os alvos de renderização do jogo recebem um espaço maior na GPU, para caber um 3D em tamanho total.
+The sharpest on a 1920x1080 screen: the HUD and text pixel for pixel, nothing to scale to the window.	O mais nítido em uma tela 1920x1080: HUD e texto pixel a pixel, nada a escalar para a janela.
+The sharpest on a 5120x1440 ultrawide screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.	O mais nítido em uma tela ultrawide 5120x1440: o quadro inteiro pixel a pixel. Os alvos de renderização do jogo recebem um espaço maior na GPU, para caber um 3D em tamanho total.
+The sharpest on a 5120x2880 (5K) screen: the whole frame pixel for pixel. The game's render targets get a bigger GPU pool, so a full-size 3D fits.	O mais nítido em uma tela 5120x2880 (5K): o quadro inteiro pixel a pixel. Os alvos de renderização do jogo recebem um espaço maior na GPU, para caber um 3D em tamanho total.
+The plain copy.	A cópia simples.
+Sharper.	Mais nítido.
+Sharper still; can ring on edges.	Ainda mais nítido; pode criar halos nas bordas.
+The window is the Output resolution's size: nothing to scale. The choice is kept for another size.	A janela tem o tamanho da Resolução de saída: nada a escalar. A escolha é mantida para outro tamanho.
+DLSS and DLAA look softer than the game's own upscaler: around 80% suits them.	DLSS e DLAA ficam mais suaves que o upscaler do próprio jogo: cerca de 80% é o ideal.
+Off: the picture as it is.	Desligado: a imagem como está.
+As on a TV: the game at the Output resolution's size.	Como na TV: o jogo no tamanho da Resolução de saída.
+As in the hands: the game at the console's handheld size (1536x864), lighter on the GPU.	Como nas mãos: o jogo no tamanho portátil do console (1536x864), mais leve para a GPU.
+The game's own shape.	O formato do próprio jogo.
+The camera takes the screen's shape, wider or narrower. The HUD keeps its 16:9 shape in the middle.	A câmera assume o formato da tela, mais larga ou mais estreita. O HUD mantém o formato 16:9 no meio.
+Full width	Largura total
+Centred, blurred sides	Centralizado, laterais desfocadas
+Centred, black bars	Centralizado, barras pretas
+The menus stretched over the whole screen, as before.	Os menus esticados por toda a tela, como antes.
+The menus in the middle 16:9; beside them, what the game draws there, out of focus.	Os menus no meio em 16:9; ao lado, o que o jogo desenha ali, desfocado.
+The menus in the middle 16:9; black beside them.	Os menus no meio em 16:9; preto ao lado.
+On, on every card.	Ligado, em todas as placas.
+Can be faster on some NVIDIA cards.	Pode ser mais rápido em algumas placas NVIDIA.
+Always on.	Sempre ligado.
+The GPU's own mesh shaders where it has them, the compute path where it has not.	Os mesh shaders da própria GPU onde ela tem, e o caminho por compute onde não tem.
+The GPU's own mesh shaders for every draw. A GPU without them still uses the compute path.	Os mesh shaders da própria GPU em todo desenho. Uma GPU sem eles ainda usa o caminho por compute.
+The compute path on every GPU: try it if your card crashes or leaves objects out. Usually a little slower.	O caminho por compute em toda GPU: experimente se sua placa travar ou deixar objetos de fora. Geralmente um pouco mais lento.
+With frame generation on, the game's own rate too.	Com a geração de quadros ligada, a taxa do próprio jogo também.
+Smaller, for a desk.	Menor, para mesa.
+The usual size.	O tamanho usual.
+Larger, for a TV across the room.	Maior, para uma TV do outro lado da sala.
+A step each frame: the game slows down whenever it runs below 60 fps.	Um passo por quadro: o jogo fica mais lento sempre que roda abaixo de 60 fps.
+Normal speed down to 15 fps, by taking longer steps.	Velocidade normal até 15 fps, com passos mais longos.
+The game's own pace, with its pauses.	O ritmo do próprio jogo, com suas pausas.
+Twice as fast.	Duas vezes mais rápido.
+Four times as fast.	Quatro vezes mais rápido.
+Each page at once, as pressing A does.	Cada página de uma vez, como ao apertar A.
+5.1 when the default output device has 5.1 or more speakers, else stereo.	5.1 quando o dispositivo de saída padrão tem 5.1 ou mais caixas, senão estéreo.
+Stereo, whatever the device has.	Estéreo, seja qual for o dispositivo.
+5.1, whatever the device has. Mixed down on stereo speakers.	5.1, seja qual for o dispositivo. Misturado para estéreo em caixas estéreo.
+The game's original size.	O tamanho original do jogo.
+A little larger.	Um pouco maior.
+Larger.	Maior.
+Much larger.	Muito maior.
+Largest.	O maior.
+Only while the game's window has the focus.	Somente enquanto a janela do jogo está em foco.
+Also behind other windows, for streaming or other apps. The keyboard and mouse still need the game's window.	Também atrás de outras janelas, para streaming ou outros aplicativos. O teclado e o mouse ainda precisam da janela do jogo.
+The mouse stands in for the right stick, with its curve and top speed.	O mouse faz o papel do analógico direito, com a curva e a velocidade máxima dele.
+The mouse turns the camera itself, one to one, as in a PC game.	O mouse gira a câmera diretamente, um para um, como em um jogo de PC.
+Moving the mouse forward tilts the camera down.	Mover o mouse para a frente inclina a câmera para baixo.
+The sticks alone aim.	Só os analógicos fazem a mira.
+Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4. The value says whether the connected pad has a gyroscope.	Controles Switch Pro, controles em modo Switch, DualSense e DualShock 4. O valor mostra se o controle conectado tem giroscópio.
+The Switch's order: A on the right, B at the bottom, X at the top, Y on the left.	A ordem do Switch: A à direita, B embaixo, X em cima, Y à esquerda.
+A at the bottom (action and talk), B on the right, X on the left, Y at the top.	A embaixo (ação e conversa), B à direita, X à esquerda, Y em cima.
+A at the bottom, B on the right; X and Y as on the Switch.	A embaixo, B à direita; X e Y como no Switch.
+Bindings of your own, from the Controls page.	Atribuições suas, feitas na página Controles.
+Those of the first controller, from its name (SDL's). The Switch's when it has none, as with XInput alone.	Os do primeiro controle, pelo nome dele (do SDL). Os do Switch quando não há nenhum, como só com XInput.
+Quality preset	Predefinição de qualidade
+Sets the scaling rows and memory limits for a GPU with that much memory. The Upscaler and Frame generation stay yours.	Define as linhas de escala e os limites de memória para uma GPU com essa quantidade de memória. O Upscaler e a Geração de quadros continuam como você definiu.
+Fullscreen	Tela cheia
+Fills the whole screen with the game, without the window's border. The same as F11.	Preenche a tela inteira com o jogo, sem a borda da janela. O mesmo que F11.
+GPU device	Placa de vídeo (GPU)
+Which graphics card the game runs on. Applies after a restart.	Em qual placa de vídeo o jogo roda. Vale após reiniciar.
+Frame generation	Geração de quadros
+Frame pacing	Ritmo dos quadros
+When each frame is shown.	Quando cada quadro é exibido.
+HDR	HDR
+HDR10 out on an HDR display (Windows: Use HDR on in the display settings). Expanded: the game's SDR picture, its white at the paper white and its highlights up to the peak. Native: the game's own HDR, told the display's peak and paper white.	Saída HDR10 em um monitor HDR (Windows: ative Usar HDR nas configurações de vídeo). Expandido: a imagem SDR do jogo, com o branco no branco de papel e os brilhos até o pico. Nativo: o HDR do próprio jogo, informado do pico e do branco de papel do monitor.
+HDR paper white	Branco de papel HDR
+How bright the picture's white is with HDR on. Around 200 for a normal room; higher in a bright one.	O brilho do branco da imagem com HDR ligado. Cerca de 200 para um ambiente normal; mais alto em um ambiente claro.
+HDR peak brightness	Brilho de pico HDR
+The brightest highlights with HDR on: set it to your display's peak brightness.	Os realces mais brilhantes com HDR ligado: ajuste para o brilho de pico do seu monitor.
+Game frame rate cap	Limite de FPS do jogo
+Limits frames rendered by the game. Generated frames are additional. Takes a restart. Past 60 is experimental: the game keeps real time, but some cutscenes and bosses can misbehave (Gohma, the intro's narration). 60 is the safe choice.	Limita os quadros renderizados pelo jogo. Os quadros gerados são adicionais. Exige reiniciar. Acima de 60 é experimental: o jogo mantém o tempo real, mas algumas cenas e chefes podem se comportar mal (Gohma, a narração da introdução). 60 é a escolha segura.
+NVIDIA Reflex	NVIDIA Reflex
+NVIDIA GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.	Placas NVIDIA: cada quadro começa o mais tarde possível, para menos atraso nos comandos. Não é usado com geração de quadros.
+AMD Anti-Lag 2	AMD Anti-Lag 2
+AMD GPUs: each frame starts as late as it can, for less input delay. Not used with frame generation.	Placas AMD: cada quadro começa o mais tarde possível, para menos atraso nos comandos. Não é usado com geração de quadros.
+Output resolution	Resolução de saída
+The game's whole frame, HUD included, before it is scaled to the window. Docked only. Applies after a restart.	O quadro inteiro do jogo, com o HUD, antes de ser escalado para a janela. Somente no modo Na TV. Vale após reiniciar.
+Upscaler	Upscaler
+What scales the 3D up to the Output resolution.	O que amplia o 3D até a Resolução de saída.
+DLSS model	Modelo do DLSS
+Which of NVIDIA's DLSS networks draws the picture.	Qual das redes DLSS da NVIDIA desenha a imagem.
+Render resolution	Resolução de renderização
+The share of the output the 3D is drawn at; the Upscaler fills in the rest.	A parte da saída em que o 3D é desenhado; o Upscaler completa o resto.
+Window scaling filter	Filtro de escala da janela
+How the finished picture is scaled to the window, when its size differs from the Output resolution.	Como a imagem pronta é escalada para a janela, quando o tamanho dela difere da Resolução de saída.
+Sharpness	Nitidez
+Sharpens the picture as it goes to the window, with any filter. Too much shows halos around edges.	Aumenta a nitidez da imagem ao ir para a janela, com qualquer filtro. Demais cria halos nas bordas.
+Anisotropic filtering	Filtragem anisotrópica
+Keeps textures sharp on surfaces seen at a slant, such as the ground ahead: higher is sharper in the distance, for a little GPU time. Game's is the console's own (1x or 2x).	Mantém as texturas nítidas em superfícies vistas de lado, como o chão à frente: valores maiores ficam mais nítidos à distância, por um pouco de tempo de GPU. «Do jogo» é o do próprio console (1x ou 2x).
+Profile	Perfil
+Runs the game as the console docked or handheld. Applies after a restart.	Executa o jogo como o console na base (TV) ou portátil. Vale após reiniciar.
+Ultrawide	Ultrawide
+The camera's shape on a screen wider or narrower than 16:9 (4:3, 16:10). Applies after a restart.	O formato da câmera em uma tela mais larga ou mais estreita que 16:9 (4:3, 16:10). Vale após reiniciar.
+Ultrawide menus	Menus ultrawide
+With Ultrawide: the pause, item and map menus, and what shows beside them. Loading screens and pre-rendered movies, which draw no world either, get the same sides. Changes at once.	Com Ultrawide: os menus de pausa, itens e mapa, e o que aparece ao lado deles. Telas de carregamento e vídeos pré-renderizados, que também não desenham mundo, recebem as mesmas laterais. Muda na hora.
+Robust buffers	Buffers robustos
+Bounds-checked buffer reads: a read past a buffer's end is dropped instead of stopping the GPU. Applies after a restart.	Leituras de buffer com checagem de limites: uma leitura além do fim do buffer é descartada em vez de travar a GPU. Vale após reiniciar.
+Mesh shaders	Mesh shaders
+How the game's mesh programs (much of the scenery) run: on the GPU's own mesh shaders, or as compute shaders, which every GPU has. Applies after a restart.	Como os programas de malha do jogo (boa parte do cenário) rodam: nos mesh shaders da própria GPU ou como compute shaders, que toda GPU tem. Vale após reiniciar.
+Volume	Volume
+How loud the game plays. The game's own sound settings and Windows' volume still apply.	O volume do jogo. As configurações de som do próprio jogo e o volume do Windows continuam valendo.
+Mute in background	Silenciar em segundo plano
+Silences the game while another window has the focus. The sound comes back when you switch to the game.	Silencia o jogo enquanto outra janela está em foco. O som volta quando você volta ao jogo.
+Audio output	Saída de áudio
+The speakers the game mixes its sound for. Applies after a restart.	As caixas para as quais o jogo mistura o som. Vale após reiniciar.
+FPS counter	Contador de FPS
+Frames per second in the top right corner.	Quadros por segundo no canto superior direito.
+Menu size	Tamanho do menu
+How large this menu, the FPS counter and the start-up screen are drawn.	O tamanho deste menu, do contador de FPS e da tela de abertura.
+Game speed	Velocidade do jogo
+How the game keeps time when it runs below 60 fps.	Como o jogo mantém o tempo quando roda abaixo de 60 fps.
+Text speed	Velocidade do texto
+How fast the letters of dialogue and other messages appear.	A rapidez com que as letras dos diálogos e outras mensagens aparecem.
+Text size	Tamanho do texto
+How large the text of dialogue, Navi and signs is drawn.	O tamanho do texto de diálogos, da Navi e de placas.
+What the ocarina hears when the game's microphone option is on (playing an instrument, or humming).	O que a ocarina ouve quando a opção de microfone do jogo está ligada (tocar um instrumento ou cantarolar).
+Discord status	Status do Discord
+Shows "Playing Hookshot" and the time played in your Discord status, while Discord runs on this PC.	Mostra «Jogando Hookshot» e o tempo de jogo no seu status do Discord, enquanto o Discord roda neste PC.
+Controller in background	Controle em segundo plano
+Whether the controller plays the game while another window has the focus.	Se o controle joga o jogo enquanto outra janela está em foco.
+Mouse camera	Câmera com mouse
+How the captured mouse turns the camera.	Como o mouse capturado gira a câmera.
+Disable camera centering	Desativar centralização da câmera
+Stops the camera gradually turning toward the direction you move, useful with native mouse look. Off keeps the game's standard behavior. Manual camera controls and recentering still work.	Impede que a câmera gire aos poucos para a direção em que você anda, útil com o olhar nativo do mouse. Desligado mantém o comportamento padrão do jogo. Os controles manuais da câmera e a recentralização continuam funcionando.
+Mouse sensitivity	Sensibilidade do mouse
+How far the camera turns for a mouse movement, with either Mouse camera: at 1.00 native look turns 0.1 degree a count. The - and = keys change it in game too.	Quanto a câmera gira para um movimento do mouse, em qualquer modo de câmera com mouse: em 1,00 o olhar nativo gira 0,1 grau por contagem. As teclas - e = também mudam isso durante o jogo.
+Invert mouse vertical	Inverter mouse na vertical
+Swaps up and down for the mouse.	Troca cima e baixo no mouse.
+Invert camera X	Inverter câmera X
+Inverts horizontal look (left/right) on the right analog stick.	Inverte o olhar horizontal (esquerda/direita) no analógico direito.
+Invert camera Y	Inverter câmera Y
+Inverts vertical look (up/down) on the right analog stick.	Inverte o olhar vertical (cima/baixo) no analógico direito.
+Stick dead zone	Zona morta do analógico
+How far a stick moves before the game sees it, on each axis. Lower for a precise stick, higher for one that drifts. The game's own dead zone still follows.	Quanto o analógico se move antes de o jogo perceber, em cada eixo. Menor para um analógico preciso, maior para um que tem drift. A zona morta do próprio jogo continua valendo depois.
+Rumble strength	Intensidade da vibração
+How strongly the controller rumbles, in percent of the game's rumble. Off turns it off.	A intensidade da vibração do controle, em porcentagem da vibração do jogo. Desligado desliga.
+Motion controls	Controles de movimento
+Aims and looks with the controller's gyroscope where the game uses motion, as on the Switch. Works with Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4. Shown beside it: whether the connected pad has one.	Mira e olha com o giroscópio do controle onde o jogo usa movimento, como no Switch. Funciona com controles Switch Pro, controles em modo Switch, DualSense e DualShock 4. Ao lado aparece se o controle conectado tem um.
+Motion sensitivity X	Sensibilidade de movimento X
+How far the aim moves left and right for a given turn of the controller. 100% is the console's own.	Quanto a mira se move para a esquerda e a direita para uma dada rotação do controle. 100% é o do próprio console.
+Motion sensitivity Y	Sensibilidade de movimento Y
+How far the aim moves up and down for a given tilt of the controller. 100% is the console's own.	Quanto a mira se move para cima e para baixo para uma dada inclinação do controle. 100% é o do próprio console.
+Invert motion X	Inverter movimento X
+Turns the motion aim's left and right around.	Inverte a esquerda e a direita da mira por movimento.
+Invert motion Y	Inverter movimento Y
+Turns the motion aim's up and down around.	Inverte o cima e o baixo da mira por movimento.
+Motion deadzone	Zona morta do movimento
+How slow a turn counts as none, the console's three settings: Standard is its own. High steadies a pad that jitters when held still; Low keeps the smallest movements.	Quão lenta precisa ser uma rotação para contar como nenhuma, as três configurações do console: Padrão é a dele. Alto estabiliza um controle que treme parado; Baixo mantém os menores movimentos.
+Motion	Movimento
+Motion controls: aiming with the controller's gyroscope, its sensitivity and its inverts.	Controles de movimento: mira com o giroscópio do controle, sua sensibilidade e suas inversões.
+Layout preset	Predefinição de layout
+Which face button is which. Binding one yourself on the Controls page makes it Custom.	Qual botão frontal é qual. Atribuir um você mesmo na página Controles muda para Personalizado.
+Button prompts	Ícones de botões
+The button icons the game shows, in its texts and menus: those of this controller, for the buttons your controls put each action on.	Os ícones de botões que o jogo mostra, em textos e menus: os deste controle, para os botões em que seus controles colocam cada ação.
+Controls	Controles
+The layout preset, the button prompts, and which gamepad button and which keys press each of the Switch's buttons.	A predefinição de layout, os ícones de botões e qual botão do controle e quais teclas apertam cada botão do Switch.
+Menu shortcut	Atalho do menu
+Which keys open and close this menu. F1 always does; F1 only leaves Insert free for an overlay. With Esc, Esc opens it too, as a PC game's pause menu (open, Esc still goes back a page or closes it).	Quais teclas abrem e fecham este menu. F1 sempre funciona; «Somente F1» deixa o Insert livre para um overlay. Com Esc, o Esc também abre o menu, como o menu de pausa de um jogo de PC (aberto, o Esc ainda volta uma página ou fecha).
+Testing tools: no-clip flight, a free camera, teleport, Link's age, the inventory, the clock, heart protection and movement speed. Off puts flight, the free camera and heart protection away and Link back to his own speed.	Ferramentas de teste: voo sem colisão, câmera livre, teletransporte, idade do Link, o inventário, o relógio, proteção de corações e velocidade de movimento. Desligado guarda o voo, a câmera livre e a proteção de corações e devolve ao Link a velocidade normal.
+Protects Link's hearts. Hits can still knock him back.	Protege os corações do Link. Golpes ainda podem empurrá-lo.
+Enable double-tap Jump for takeoff and landing. Hold Jump to climb or L to descend.	Ative o toque duplo em Pular para decolar e pousar. Segure Pular para subir ou L para descer.
+Remember Link's position for this loaded scene.	Memoriza a posição do Link nesta cena carregada.
+Teleport Link to the marked position in the current scene.	Teletransporta o Link para a posição marcada na cena atual.
+Choose an hour with Left or Right. Enter sets the world clock.	Escolha uma hora com Esquerda ou Direita. Enter define o relógio do mundo.
+Choose a consumable with Left or Right.	Escolha um consumível com Esquerda ou Direita.
+Choose how many to add or remove. Enter applies the change.	Escolha quantos adicionar ou remover. Enter aplica a mudança.
+Move and look with your usual controls. Page Up / Page Down or R / L changes height.	Mova-se e olhe com seus controles de sempre. Page Up / Page Down ou R / L mudam a altura.
+Opens the map list. Link travels through the game's own map change, in his current age.	Abre a lista de mapas. O Link viaja pela troca de mapa do próprio jogo, na idade atual dele.
+Swaps Link between child and adult and reloads this map in the other age (the Market when this map has no match).	Alterna o Link entre criança e adulto e recarrega este mapa na outra idade (a Praça do Mercado quando este mapa não tem correspondente).
+Enter opens the inventory editor: unlock or relock equipment, items, upgrades and quest items, and change amounts.	Enter abre o editor de inventário: desbloqueie ou bloqueie equipamentos, itens, melhorias e itens de missão, e mude quantidades.
+How fast Link walks, runs and swims, as a multiple of his own speed. Choose with Left or Right.	A velocidade com que o Link anda, corre e nada, como múltiplo da velocidade dele. Escolha com Esquerda ou Direita.
+A draw keeps its descriptors while the texture slots it samples are unchanged, so streaming elsewhere in the game no longer rebuilds every set each frame. Applies after restart.	Um desenho mantém seus descritores enquanto os espaços de textura que ele lê não mudam, então o carregamento em outra parte do jogo não refaz todos os conjuntos a cada quadro. Vale após reiniciar.
+What a sampler holds is kept beside it on the replay thread, so resolving a sampler that was not registered anew takes no lock. Helps while the game streams textures. Applies after restart.	O que um sampler guarda fica junto dele na thread de replay, então resolver um sampler que não foi registrado de novo não usa trava. Ajuda enquanto o jogo carrega texturas. Vale após reiniciar.
+Restart	Reiniciar
+Starts the game again. Save your progress first. Press Enter or A twice to restart. Esc or B cancels.	Inicia o jogo de novo. Salve seu progresso antes. Aperte Enter ou A duas vezes para reiniciar. Esc ou B cancela.
+Quit	Sair
+Save your progress first. Press Enter or A twice to quit. Esc or B cancels.	Salve seu progresso antes. Aperte Enter ou A duas vezes para sair. Esc ou B cancela.
+Deku Seeds	Sementes Deku
+Deku Nuts	Nozes Deku
+Deku Sticks	Gravetos Deku
+Bombs	Bombas
+Arrows	Flechas
+Kokiri Forest	Floresta Kokiri
+Hyrule Field	Campo de Hyrule
+Kakariko Village	Vila Kakariko
+Market	Mercado
+Hyrule Castle	Castelo de Hyrule
+Lost Woods	Bosque Perdido
+Sacred Forest Meadow	Campina Sagrada da Floresta
+Lake Hylia	Lago Hylia
+Graveyard	Cemitério
+Death Mountain Trail	Trilha da Montanha da Morte
+Death Mountain Crater	Cratera da Montanha da Morte
+Goron City	Cidade Goron
+Zora's River	Rio Zora
+Zora's Domain	Domínio Zora
+Zora's Fountain	Fonte Zora
+Gerudo Valley	Vale Gerudo
+Gerudo Fortress	Fortaleza Gerudo
+Haunted Wasteland	Deserto Assombrado
+Desert Colossus	Colosso do Deserto
+Inside the Deku Tree	Dentro da Árvore Deku
+Dodongo's Cavern	Caverna Dodongo
+Jabu-Jabu's Belly	Barriga de Jabu-Jabu
+Forest Temple	Templo da Floresta
+Fire Temple	Templo do Fogo
+Water Temple	Templo da Água
+Shadow Temple	Templo das Sombras
+Spirit Temple	Templo do Espírito
+Bottom of the Well	Fundo do Poço
+Ice Cavern	Caverna de Gelo
+Gerudo Training Ground	Campo de Treinamento Gerudo
+Ganon's Castle	Castelo do Ganon
+adult only	só adulto
+Overworld	Mundo aberto
+Dungeons	Masmorras
+Toggle	Alternar
+Apply	Aplicar
+Set	Definir
+Open list	Abrir lista
+Open	Abrir
+Nintendo (Def)	Nintendo (padrão)
+Xbox / PC	Xbox / PC
+Swap Face	Trocar botões
+Plus	Mais (+)
+Minus	Menos (-)
+Left stick press	Clique do analógico esquerdo
+Right stick press	Clique do analógico direito
+D-pad up	Direcional para cima
+D-pad down	Direcional para baixo
+D-pad left	Direcional para a esquerda
+D-pad right	Direcional para a direita
+Move forward	Andar para a frente
+Move back	Andar para trás
+Move left	Andar para a esquerda
+Move right	Andar para a direita
+Camera up	Câmera para cima
+Camera down	Câmera para baixo
+Camera left	Câmera para a esquerda
+Camera right	Câmera para a direita
+Bottom button	Botão inferior
+Right button	Botão direito
+Left button	Botão esquerdo
+Top button	Botão superior
+Select / Back	Select / Voltar
+Home	Home
+Start	Start
+View	View
+Menu	Menu
+Cross	Xis
+Circle	Círculo
+Square	Quadrado
+Triangle	Triângulo
+Share	Share
+Options	Options
+Create	Create
+Steam	Steam
+None	Nenhum
+Num %d	Num %d
+Mouse 5	Mouse 5
+Key %d	Tecla %d
+Takes effect after a restart	Vale após reiniciar
+Restart needed: 	Reinício necessário: 
+ and 	 e 
+ more	 mais
+ settings	 configurações
+ setting	 configuração
+Player	Jogador
+Travel	Viajar
+Camera & world	Câmera e mundo
+Kid	Criança
+Adult	Adulto
+Mark	Marcar
+Return	Voltar à marca
+Choose map	Escolher mapa
+Edit items	Editar itens
+Graphics	Gráficos
+Audio	Áudio
+Gameplay	Jogabilidade
+Debug	Depuração
+Choose	Escolher
+Change	Alterar
+Tabs	Abas
+Close	Fechar
+Confirm	Confirmar
+Back	Voltar
+Press again to confirm	Aperte de novo para confirmar
+Column	Coluna
+Bind	Atribuir
+Clear	Limpar
+Del	Del
+Cancel	Cancelar
+Reset to defaults	Restaurar padrões
+Press the gamepad button to use. Esc cancels.	Aperte o botão do controle que quer usar. Esc cancela.
+Press the key to use. Esc cancels.	Aperte a tecla que quer usar. Esc cancela.
+Which gamepad button and which keys press each of the Switch's buttons. Enter binds the one selected; Delete clears it. The game's button icons follow after a restart.	Qual botão do controle e quais teclas apertam cada botão do Switch. Enter atribui o selecionado; Delete limpa. Os ícones de botões do jogo acompanham após reiniciar.
+Gamepad: the D-pad moves, A binds, B goes back.	Controle: o direcional move, A atribui, B volta.
+Button	Botão
+Gamepad	Controle
+Keyboard	Teclado
+Press a button...	Aperte um botão...
+Press a key...	Aperte uma tecla...
+%d items	%d itens
+Inventory	Inventário
+Done	Concluído
+Edit amount	Editar quantidade
+Relock	Bloquear de novo
+Unlock	Desbloquear
+Move	Mover
+Amount	Quantidade
+Section	Seção
+All	Todos
+Load a save to edit the inventory.	Carregue um save para editar o inventário.
+Load a save to edit this item.	Carregue um save para editar este item.
+Choose Edit amount, then use Left and Right to change the quantity.	Escolha Editar quantidade e use Esquerda e Direita para mudar a quantidade.
+Unlock or relock this item.	Desbloqueie ou bloqueie este item.
+Unavailable	Indisponível
+Quantity %d	Quantidade %d
+Unlocked	Desbloqueado
+Locked	Bloqueado
+Page %d of %d	Página %d de %d
+Teleport	Teletransporte
+Select a destination, then Travel (or Enter) to go to its map entrance. Link keeps his current age.	Escolha um destino e depois Viajar (ou Enter) para ir à entrada do mapa. O Link mantém a idade atual.
+Restart Needed	Reinício necessário
+Restart to apply 	Reinicie para aplicar 
+Progress since your last save is lost.	O progresso desde o último save será perdido.
+Later	Depois
+Restart Now	Reiniciar agora
+FPS	FPS
+game %.0f	jogo %.0f
+Equipment	Equipamentos	x
+Kokiri Sword	Espada Kokiri	x
+Master Sword	Espada Mestra	x
+Giant's Knife	Faca do Gigante	x
+Biggoron's Sword	Espada de Biggoron	x
+Deku Shield	Escudo Deku	x
+Hylian Shield	Escudo Hyliano	x
+Mirror Shield	Escudo Espelhado	x
+Goron Tunic	Túnica Goron	x
+Zora Tunic	Túnica Zora	x
+Iron Boots	Botas de Ferro	x
+Hover Boots	Botas Flutuantes	x
+Items	Itens	x
+Bombchus	Bombchus	x
+Fairy Slingshot	Estilingue das Fadas	x
+Fairy Bow	Arco das Fadas	x
+Fire Arrow	Flecha de Fogo	x
+Ice Arrow	Flecha de Gelo	x
+Light Arrow	Flecha de Luz	x
+Din's Fire	Fogo de Din	x
+Farore's Wind	Vento de Farore	x
+Nayru's Love	Amor de Nayru	x
+Fairy Ocarina	Ocarina das Fadas	x
+Ocarina of Time	Ocarina do Tempo	x
+Hookshot	Gancho	x
+Longshot	Gancho Longo	x
+Boomerang	Bumerangue	x
+Lens of Truth	Lente da Verdade	x
+Magic Beans	Feijões Mágicos	x
+Megaton Hammer	Martelo Megaton	x
+Empty Bottle	Garrafa Vazia	x
+Masks	Máscaras	x
+Keaton Mask	Máscara Keaton	x
+Skull Mask	Máscara de Caveira	x
+Spooky Mask	Máscara Assustadora	x
+Bunny Hood	Capuz de Coelho	x
+Goron Mask	Máscara Goron	x
+Zora Mask	Máscara Zora	x
+Gerudo Mask	Máscara Gerudo	x
+Mask of Truth	Máscara da Verdade	x
+Upgrades	Melhorias	x
+Goron's Bracelet	Bracelete Goron	x
+Silver Gauntlets	Manoplas de Prata	x
+Golden Gauntlets	Manoplas de Ouro	x
+Silver Scale	Escama de Prata	x
+Golden Scale	Escama de Ouro	x
+Bomb Bag	Bolsa de Bombas	x
+Big Bomb Bag	Bolsa de Bombas Grande	x
+Biggest Bomb Bag	Bolsa de Bombas Gigante	x
+Quiver	Aljava	x
+Big Quiver	Aljava Grande	x
+Biggest Quiver	Aljava Gigante	x
+Bullet Bag	Bolsa de Munição	x
+Big Bullet Bag	Bolsa de Munição Grande	x
+Biggest Bullet Bag	Bolsa de Munição Gigante	x
+Adult's Wallet	Carteira de Adulto	x
+Giant's Wallet	Carteira do Gigante	x
+Magic Meter	Medidor de Magia	x
+Double Magic	Magia em Dobro	x
+Double Defense	Defesa em Dobro	x
+Quest	Missão	x
+Kokiri's Emerald	Esmeralda Kokiri	x
+Goron's Ruby	Rubi Goron	x
+Zora's Sapphire	Safira Zora	x
+Forest Medallion	Medalhão da Floresta	x
+Fire Medallion	Medalhão do Fogo	x
+Water Medallion	Medalhão da Água	x
+Shadow Medallion	Medalhão das Sombras	x
+Spirit Medallion	Medalhão do Espírito	x
+Light Medallion	Medalhão da Luz	x
+Zelda's Lullaby	Canção de Ninar de Zelda	x
+Epona's Song	Canção de Epona	x
+Saria's Song	Canção de Saria	x
+Sun's Song	Canção do Sol	x
+Song of Time	Canção do Tempo	x
+Song of Storms	Canção da Tempestade	x
+Minuet of Forest	Minueto da Floresta	x
+Bolero of Fire	Bolero do Fogo	x
+Serenade of Water	Serenata da Água	x
+Nocturne of Shadow	Noturno das Sombras	x
+Requiem of Spirit	Réquiem do Espírito	x
+Prelude of Light	Prelúdio da Luz	x
+Stone of Agony	Pedra da Agonia	x
+Gerudo's Card	Cartão Gerudo	x
+Gold Skulltula Tokens	Tokens de Skulltula Dourada	x
+On	Ligado
+Auto (RecompZel)	Auto (RecompZel)
+%dx (RecompZel)	%dx (RecompZel)
+%dx (AMD FSR 3.1)	%dx (AMD FSR 3.1)
+English	English
+Português (Brasil)	Português (Brasil)
+Language	Idioma
+The language of this menu, the FPS counter and the start-up screen. Auto follows the language of Windows.	O idioma deste menu, do contador de FPS e da tela de abertura. Auto segue o idioma do Windows.
+A frame for each of the display's refreshes, by RecompZel's own interpolation: none made when the game keeps up. Frame pacing does not apply.	Um quadro para cada atualização do monitor, pela interpolação própria do RecompZel: nenhum é gerado quando o jogo acompanha. O ritmo dos quadros não se aplica.
+%s between each two of the game's, by RecompZel's own interpolation of the finished pictures.	%s entre cada dois do jogo, pela interpolação própria do RecompZel, a partir das imagens prontas.
+Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can show artifacts. The value names the method: RecompZel's own interpolation or, at 2x, AMD FSR 3.1 where it is turned on.	Cria quadros entre os do próprio jogo, para um movimento mais suave, com um pouco de atraso nos comandos. Movimentos rápidos ou cortes de câmera podem mostrar falhas na imagem. O valor mostra o método: a interpolação própria do RecompZel ou, em 2x, o AMD FSR 3.1 quando está ligado.

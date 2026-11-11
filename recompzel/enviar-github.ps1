@@ -8,7 +8,7 @@ param([string]$Mensagem = 'RecompZel: atualiza launcher, FSR 4 direto e ferramen
 $ErrorActionPreference = 'Continue'
 $Repo  = 'C:\DEV\RecompZel'
 $Tools = Join-Path $Repo 'recompzel'
-$Files = 'launcher.ps1','medir-rodada.ps1','atualizar-fork.ps1','build-game.ps1','criar-atalhos.ps1','monitor-build.ps1','env-recompzel.ps1','enviar-github.ps1','recompzel.ico','games.json'
+$Files = 'launcher.ps1','medir-rodada.ps1','atualizar-fork.ps1','build-game.ps1','criar-atalhos.ps1','monitor-build.ps1','env-recompzel.ps1','enviar-github.ps1','post-install.ps1','instalar.ps1','recompzel.ico','games.json'
 
 if (-not (Test-Path (Join-Path $Repo '.git'))) { Write-Host "Nao achei o repositorio em $Repo"; return }
 Set-Location $Repo

@@ -1,11 +1,11 @@
 # atualizar-fork.ps1 - traz as novidades do Hookshot original (NotRexed) para o nosso fork local em C:\DEV\RecompZel
-# Sem -Aplicar: so mostra o que mudou. Com -Aplicar: atualiza (somente avanco, sem criar conflito). Nao apaga nada.
+# Sem -Aplicar: so mostra o que mudou. Com -Aplicar: atualiza (junta o upstream; se der conflito, desfaz tudo). Nao apaga nada.
 # Com -Aplicar -Enviar: depois de atualizar, envia o resultado para o nosso fork no GitHub (origin). So commits sao enviados.
 #   powershell -ExecutionPolicy Bypass -File C:\DEV\atualizar-fork.ps1
 #   powershell -ExecutionPolicy Bypass -File C:\DEV\atualizar-fork.ps1 -Aplicar
 param([switch]$Aplicar, [switch]$Enviar)
 
-$Repo = 'C:\DEV\RecompZel'
+$Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Split-Path $PSScriptRoot -Parent } else { 'C:\DEV\RecompZel' }
 Set-Location $Repo
 git config core.fileMode false
 
@@ -30,11 +30,11 @@ if ($sujo.Count -gt 0) {
     exit 1
 }
 
-git merge --ff-only upstream/main
-if ($LASTEXITCODE -ne 0) { Write-Host 'Nao foi possivel avancar sem conflito. Nada foi alterado. Me mande esta saida.'; exit 1 }
+git merge --no-edit upstream/main
+if ($LASTEXITCODE -ne 0) { git merge --abort 2>$null; Write-Host 'Houve conflito com o Hookshot original. Desfiz a juncao: nada foi alterado. Me mande esta saida.'; exit 1 }
 
 Write-Host ''
-Write-Host 'Fork atualizado. Proximo passo: rode C:\DEV\build-game.ps1 (so recompila o que mudou).'
+Write-Host 'Fork atualizado. Proximo passo: rode build-game.ps1 (so recompila o que mudou).'
 
 if ($Enviar) {
     Write-Host 'Enviando para o seu fork no GitHub (origin)...'

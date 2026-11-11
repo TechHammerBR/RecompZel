@@ -1,14 +1,14 @@
 # criar-atalhos.ps1 - cria atalhos na area de trabalho (nao apaga nada)
-# Uso: powershell -ExecutionPolicy Bypass -File C:\DEV\criar-atalhos.ps1
+# Uso: powershell -ExecutionPolicy Bypass -File .\criar-atalhos.ps1   (para so o atalho do jogo, use post-install.ps1)
 
 $Desktop = [Environment]::GetFolderPath('Desktop')
 $GameDir = 'C:\Games\RecompZel'
 if (-not (Test-Path $GameDir) -and (Test-Path 'C:\Games\HookshotDev')) { $GameDir = 'C:\Games\HookshotDev' }   # (pasta antiga, ate renomear)
 $GameExe = Join-Path $GameDir 'RecompZel.exe'
 if (-not (Test-Path $GameExe)) { $GameExe = Join-Path $GameDir 'hookshot.exe' }   # (build antigo, antes do exe proprio)
-$Launcher = 'C:\DEV\launcher.ps1'
+$Launcher = Join-Path $PSScriptRoot 'launcher.ps1'
 $Sh = New-Object -ComObject WScript.Shell
-$Ico = 'C:\DEV\recompzel.ico'   # icone do RecompZel (se nao existir, usa o do executavel)
+$Ico = Join-Path $PSScriptRoot 'recompzel.ico'   # icone do RecompZel (se nao existir, usa o do executavel)
 $IconLoc = if (Test-Path $Ico) { $Ico } else { "$GameExe,0" }
 
 if (-not (Test-Path $GameExe)) { Write-Host "Nao achei $GameExe"; exit 1 }
@@ -26,7 +26,7 @@ if (Test-Path $Launcher) {
     $b = $Sh.CreateShortcut((Join-Path $Desktop 'RecompZel Launcher.lnk'))
     $b.TargetPath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
     $b.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$Launcher`""
-    $b.WorkingDirectory = 'C:\DEV'
+    $b.WorkingDirectory = $PSScriptRoot
     $b.IconLocation = $IconLoc
     $b.Description = 'Launcher do RecompZel'
     $b.Save()

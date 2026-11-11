@@ -1,3 +1,8 @@
-RecompZel: ferramentas do projeto (launcher, build, medicao de rodadas, atalhos).
-Estes arquivos sao copiados de C:\DEV por enviar-github.ps1. Edite la e rode o script para atualizar aqui.
+RecompZel: ferramentas do projeto.
+ instalar.ps1       instala do zero (chamado por INSTALAR-RECOMPZEL.bat na raiz do repositorio)
+ build-game.ps1     compila o jogo a partir do .nup e, ao terminar, chama post-install.ps1
+ post-install.ps1   cria o atalho na area de trabalho, a entrada no menu Iniciar e "Jogar RecompZel.bat"
+ launcher.ps1       launcher com progresso do build e opcoes
+ atualizar-fork.ps1 traz as novidades do Hookshot original; enviar-github.ps1 envia o nosso trabalho ao GitHub
+Na maquina do Laura estes arquivos sao copiados de C:\DEV por enviar-github.ps1. Edite la e rode o script para atualizar aqui.
 Componentes de terceiros (por exemplo o fsr4vk, GPLv3) nunca ficam neste repositorio: o launcher baixa e confere o hash.
