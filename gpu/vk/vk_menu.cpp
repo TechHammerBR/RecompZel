@@ -1349,7 +1349,9 @@ void save() {
             const char* eq = strchr(line, '=');
             if (!eq || eq == line) continue;
             const std::string key(line, (size_t)(eq - line));
-            bool mine = key == "microphone_device" || key == "options_version";
+            // (recompzel) every key written below that is not a row: memory_budget was missing, so the old line was kept as "other" and
+            // written again beside the new one: two more lines every session (152 of them in a file after a day). tests/test_options_save_keys.py
+            bool mine = key == "microphone_device" || key == "memory_budget" || key == "options_version";
             for (const Row& r : rows)
                 if (!mine && r.value && key == ini_key(r)) mine = true;
             if (!mine) others += line, others += others.back() == '\n' ? "" : "\n";
