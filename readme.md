@@ -69,7 +69,7 @@ Dentro do jogo, **Insert** abre o menu (idioma, qualidade, geração de quadros,
 
 | Mensagem ou sintoma | O que fazer |
 |---|---|
-| O download das ferramentas falha ou o hash não confere | Verifique a internet e rode de novo; ele continua de onde parou. Se o antivírus apagar arquivos, libere `%LOCALAPPDATA%\HookshotBuilder` |
+| O download das ferramentas falha ou o hash não confere | Verifique a internet e rode de novo; ele continua de onde parou. Se o antivírus apagar arquivos, libere `%LOCALAPPDATA%\RecompZel` |
 | "Não achei o arquivo do jogo" | Uma janela pede o arquivo. Ou rode `recompzel\instalar.ps1 -Nup "caminho\arquivo.nup"` |
 | "O arquivo é a versão vXXXX" | O RecompZel só aceita a v131072 do jogo (`[v131072]` no nome do `.nup`) |
 | Avisos de memória, espaço ou placa no começo | São só avisos. O build pede 16 GB de RAM, cerca de 60 GB livres e uma placa com Vulkan e mesh shaders |

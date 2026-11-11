@@ -1,14 +1,14 @@
 # install-tools.ps1 - instala as ferramentas de compilacao do RecompZel (Python, compilador, pacotes), uma vez, sem o Builder.
 # Le a lista hookshot-setup.txt da release "nightly" do repositorio, baixa cada parte, confere o SHA-256 e extrai com o tar.exe do Windows
-# em %LOCALAPPDATA%\HookshotBuilder\versions\<versao> (a pasta que o env-recompzel.ps1 procura). Pula so o programa grafico do Builder (.NET).
+# em %LOCALAPPDATA%\RecompZel\tools\<versao> (a pasta que o env-recompzel.ps1 procura primeiro; a do Builder antigo, HookshotBuilder\versions, tambem serve). Pula so o programa grafico do Builder (.NET).
 # Chamado pelo env-recompzel.ps1 quando as ferramentas nao existem; pode rodar sozinho.
 param([string]$ListUrl = 'https://github.com/TechHammerBR/RecompZel/releases/download/nightly/hookshot-setup.txt')
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'   # (sem a barra do PowerShell: o download fica muito mais rapido)
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
-$base = Join-Path $env:LOCALAPPDATA 'HookshotBuilder'
-$versions = Join-Path $base 'versions'
+$base = Join-Path $env:LOCALAPPDATA 'RecompZel'
+$versions = Join-Path $base 'tools'
 $downloads = Join-Path $base 'downloads'
 
 function Get-WithRetry([string]$url, [string]$outFile) {

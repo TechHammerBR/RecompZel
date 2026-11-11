@@ -24,8 +24,13 @@ if (-not (Test-Path (Join-Path $Repo 'nx2\make_game.py'))) {
     } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
 }
 function Get-ToolsVersion {
-    Get-ChildItem "$env:LOCALAPPDATA\HookshotBuilder\versions" -Directory -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -notlike '*.part' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    # a pasta do RecompZel primeiro; senao a que o Builder antigo (HookshotBuilder) instalou
+    foreach ($root in @("$env:LOCALAPPDATA\RecompZel\tools", "$env:LOCALAPPDATA\HookshotBuilder\versions")) {
+        $v = Get-ChildItem $root -Directory -ErrorAction SilentlyContinue |
+             Where-Object { $_.Name -notlike '*.part' -and (Test-Path (Join-Path $_.FullName 'HookshotBuilder\tools\python\python.exe')) } |
+             Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($v) { return $v }
+    }
 }
 $ver = Get-ToolsVersion
 if (-not $ver) {
@@ -33,7 +38,7 @@ if (-not $ver) {
     & (Join-Path $PSScriptRoot 'install-tools.ps1')
     $ver = Get-ToolsVersion
 }
-if (-not $ver) { throw "As ferramentas de compilacao nao foram instaladas ($env:LOCALAPPDATA\HookshotBuilder\versions)." }
+if (-not $ver) { throw "As ferramentas de compilacao nao foram instaladas ($env:LOCALAPPDATA\RecompZel\tools)." }
 $Tools = Join-Path $ver.FullName 'HookshotBuilder\tools'
 $Py = Join-Path $Tools 'python\python.exe'
 if (-not (Test-Path -LiteralPath $Py)) { throw "Python do Builder nao encontrado: $Py" }
