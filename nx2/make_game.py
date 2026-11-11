@@ -55,6 +55,9 @@ LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt
 # (SDL2.dll is sdl2-compat: it loads SDL3.dll from beside the exe. Left out of bin\ since v2.0.0, it said "Failed loading SDL3
 # library" three times and no controller worked: Discord #bug-reporting, 11-08)
 BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"]
+# (recompzel) the game's own name in a development folder, where no launcher stands in front of it. The installed builder's folders keep
+# bin\hookshot.exe: builder/setup/setup.c and the builder start that name
+GAME_EXE = BESIDE[0] if LINUX else "RecompZel.exe"
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
              ("pl", "Polish"), ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"), ("zh-Hans", "Chinese (Simplified)"),
@@ -1513,6 +1516,11 @@ def main(a=None):
         # (copied only when it differs: a compiler still ending from a cancelled build keeps the profile mapped, WinError 1224)
         if os.path.exists(src) and not (os.path.exists(dst) and filecmp.cmp(src, dst, shallow=False)):
             copy_writable(src, dst)
+    # (recompzel) the game's icon, linked into the exe: assets/recompzel.res, made from assets/ by nx2/make_icon.py. It takes the place of the
+    # one above (work/ is not in the repository), and Windows only: it is the exe's resource
+    res_src, res_dst = os.path.join(ROOT, "assets", "recompzel.res"), os.path.join(work, "hookshot.res")
+    if not LINUX and os.path.isfile(res_src) and not (os.path.exists(res_dst) and filecmp.cmp(res_src, res_dst, shallow=False)):
+        copy_writable(res_src, res_dst)
     os.makedirs(os.path.join(work, "image"), exist_ok=True)
     src = os.path.join(ROOT, "work", "image", "chunks.txt")   # (where the lifted code's files begin: addresses)
     if os.path.exists(src):
@@ -1655,7 +1663,7 @@ def main(a=None):
     for n in BESIDE + ffmpeg_dlls:
         src = os.path.join(built, n)
         if os.path.exists(src):
-            staged.append((src, os.path.join(game_dir, n)))
+            staged.append((src, os.path.join(game_dir, GAME_EXE if (n == BESIDE[0] and not launcher) else n)))   # (recompzel: GAME_EXE)
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
     if launcher:
         staged.append((launcher, os.path.join(out, BESIDE[0])))
@@ -1682,6 +1690,12 @@ def main(a=None):
                     os.remove(os.path.join(out, n))
             except OSError:
                 pass
+    elif GAME_EXE != BESIDE[0]:   # (recompzel: the folder of an earlier build still has hookshot.exe: one game, one exe)
+        try:
+            if os.path.isfile(os.path.join(out, BESIDE[0])):
+                os.remove(os.path.join(out, BESIDE[0]))
+        except OSError:
+            print("the old %s could not be removed (is the game open?): delete it by hand" % BESIDE[0], flush=True)
     place_ngx_runtime(out)
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
@@ -1749,7 +1763,7 @@ def main(a=None):
     if skipped:
         not_prepared(skipped)
     else:
-        prepare_shaders([os.path.join(game_dir, BESIDE[0]), "--prepare-shaders"], out)
+        prepare_shaders([os.path.join(game_dir, BESIDE[0] if launcher else GAME_EXE), "--prepare-shaders"], out)
     say("done", out)
 
 

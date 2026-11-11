@@ -139,6 +139,7 @@ $xaml = @'
 
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
+try { if (Test-Path 'C:\DEV\recompzel.ico') { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]'C:\DEV\recompzel.ico') } } catch {}
 foreach ($n in 'btnPlay','btnBuild','btnFolder','btnReport','btnGit','cbVram','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
@@ -177,8 +178,9 @@ $cbUpload.SelectedIndex = 0
 
 # Metodo de geracao de quadros: o do Hookshot (padrao, 2x a 8x ou Auto) ou o FSR 3.1 (RX_VK_FSR_FG=1, so 2x)
 $fgOptions = @(
-    @{ Label = 'Hookshot (padrao, 2x a 8x)'; Fsr = $false },
-    @{ Label = 'AMD FSR 3.1 (so 2x)'; Fsr = $true }
+    @{ Label = 'Hookshot (padrao, 2x a 8x)'; Fsr = $false; Off = $false },
+    @{ Label = 'AMD FSR 3.1 (so 2x)'; Fsr = $true; Off = $false },
+    @{ Label = 'Desligado (sem geracao de quadros)'; Fsr = $false; Off = $true }
 )
 foreach ($o in $fgOptions) { [void]$cbFg.Items.Add($o.Label) }
 $cbFg.SelectedIndex = 0
@@ -238,6 +240,8 @@ function Read-LogLines {
 function Find-GameExe {
     $o = [string]$script:g.outDir
     if (-not (Test-Path $o)) { return $null }
+    $own = Join-Path $o 'RecompZel.exe'
+    if (Test-Path -LiteralPath $own) { return Get-Item -LiteralPath $own }
     return Get-ChildItem -Path $o -Filter *.exe -File -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 
@@ -446,8 +450,16 @@ $btnPlay.Add_Click({
     $ms = $uploadOptions[$cbUpload.SelectedIndex].Ms
     if ($ms -ge 0) { [Environment]::SetEnvironmentVariable('RX_VK_UPLOAD_BUDGET_MS', [string]$ms, 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_UPLOAD_BUDGET_MS', $null, 'Process') }
-    if ($fgOptions[$cbFg.SelectedIndex].Fsr) { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', '1', 'Process') }
-    else { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', $null, 'Process') }
+    # Desligado: RX_VK_FRAMEGEN=0 desliga a interpolacao propria e RX_VK_FSR_FG=0 a do FSR 3.1, valendo mais que o menu do jogo
+    $fgSel = $fgOptions[$cbFg.SelectedIndex]
+    if ($fgSel.Off) {
+        [Environment]::SetEnvironmentVariable('RX_VK_FRAMEGEN', '0', 'Process')
+        [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', '0', 'Process')
+    } else {
+        [Environment]::SetEnvironmentVariable('RX_VK_FRAMEGEN', $null, 'Process')
+        if ($fgSel.Fsr) { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', '1', 'Process') }
+        else { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', $null, 'Process') }
+    }
     if ($chkDiag.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', 'da7a7ab28b8e73d9', 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', $null, 'Process') }
     # FSR 4: so liga quando o jogo foi construido com ele e o componente esta instalado e conferido
