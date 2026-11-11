@@ -104,8 +104,8 @@ static int newest_tag(const char *body, char *tag, size_t cap) {
 #include <string.h>
 
 #define UPDATE_HOST L"api.github.com"
-#define UPDATE_PATH L"/repos/NotRexed/Hookshot/releases/latest"
-#define RELEASES_PAGE L"https://github.com/NotRexed/Hookshot/releases/latest"
+#define UPDATE_PATH L"/repos/TechHammerBR/RecompZel/releases/latest"
+#define RELEASES_PAGE L"https://github.com/TechHammerBR/RecompZel/releases/latest"
 
 /* (a line "name=value" of a small text file, in UTF-8: its value, trimmed) */
 static int read_value(const wchar_t *path, const char *name, char *out, size_t cap) {
@@ -163,11 +163,11 @@ static int latest_tag(const char *have, char *tag, size_t cap) {
     int ok = 0;
     char *body;
     if (nightly_version(have)) {
-        if ((body = get_body(L"github.com", L"/NotRexed/Hookshot/releases/download/nightly/hookshot-setup.txt")))
+        if ((body = get_body(L"github.com", L"/TechHammerBR/RecompZel/releases/download/nightly/hookshot-setup.txt")))
             ok = tag_in(body, tag, cap), free(body);
         return ok;
     }
-    if (strchr(have, '-') && (body = get_body(UPDATE_HOST, L"/repos/NotRexed/Hookshot/releases?per_page=20"))) {
+    if (strchr(have, '-') && (body = get_body(UPDATE_HOST, L"/repos/TechHammerBR/RecompZel/releases?per_page=20"))) {
         ok = newest_tag(body, tag, cap);
         free(body);
         if (ok) return 1;

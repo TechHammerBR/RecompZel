@@ -70,8 +70,8 @@ public partial class MainWindow : Window
         Loaded += (_, _) => Start();
         var tools = Tools.Find();
         ToolsNote.Text = tools != null
-            ? "Nothing else to install: Hookshot's own build tools are here, downloaded and checked by its setup."
-            : "Hookshot's build tools are missing from its folder. Press Build and Hookshot offers to download them again.";
+            ? "Nothing else to install: RecompZel's own build tools are here, downloaded and checked by its setup."
+            : "RecompZel's build tools are missing from its folder. Press Build and RecompZel offers to download them again.";
         SetStep(0);
         Refresh();
     }
@@ -101,7 +101,7 @@ public partial class MainWindow : Window
         }
         if (LaunchArg() is { } launchFolder)   // (Hookshot Launcher.exe in the game folder)
         {
-            SplashText.Text = "Starting Hookshot…";
+            SplashText.Text = "Starting RecompZel…";
             await Task.Delay(700);
             ShowMain();
             ShowLauncher(launchFolder);
@@ -159,7 +159,7 @@ public partial class MainWindow : Window
         {
             case Mode.UpdateGame:
                 FilesTitle.Text = "Update available";
-                FilesSub.Text = $"Hookshot {updateTarget} is available. Your game is {game}: Update builds it again from the game files kept in " +
+                FilesSub.Text = $"RecompZel {updateTarget} is available. Your game is {game}: Update builds it again from the game files kept in " +
                                 "its folder, compiling only what changed.";
                 BuildButton.Content = "Update";
                 break;
@@ -177,7 +177,7 @@ public partial class MainWindow : Window
                 break;
             default:
                 FilesTitle.Text = "Build your game";
-                FilesSub.Text = "Pick your game files and where the game goes. Hookshot does the rest, once.";
+                FilesSub.Text = "Pick your game files and where the game goes. RecompZel does the rest, once.";
                 BuildButton.Content = "Build the game";
                 break;
         }
@@ -281,7 +281,7 @@ public partial class MainWindow : Window
     /// (going to an older version, from another track: asked first)
     bool OlderOk(string? have) =>
         !Switching || !Updater.Newer(have, updateTarget) ||
-        MessageBox.Show(this, $"{updateTarget} is older than {have}, the version you have now. Install {updateTarget}?", "Hookshot",
+        MessageBox.Show(this, $"{updateTarget} is older than {have}, the version you have now. Install {updateTarget}?", "RecompZel",
                         MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
 
     void LaunchPlayClick(object sender, RoutedEventArgs e)
@@ -660,7 +660,7 @@ public partial class MainWindow : Window
 
     void BrowseWork(object sender, RoutedEventArgs e)
     {
-        if (PickFolder("Choose where Hookshot keeps its build files") is not { } picked) return;
+        if (PickFolder("Choose where RecompZel keeps its build files") is not { } picked) return;
         ChangeWork(picked);
     }
 
@@ -742,7 +742,7 @@ public partial class MainWindow : Window
         var tools = Tools.Find();
         if (tools == null)
         {
-            ShowProblem("The build tools are not in Hookshot's folder.", tools: true);
+            ShowProblem("The build tools are not in RecompZel's folder.", tools: true);
             return;
         }
         var args = new List<string>();
@@ -757,11 +757,11 @@ public partial class MainWindow : Window
     }
 
     const string DlssLicense =
-        "NVIDIA DLSS is NVIDIA's, not Hookshot's. With it ticked, the build downloads NVIDIA's DLSS SDK (release v310.9.16) from " +
+        "NVIDIA DLSS is NVIDIA's, not RecompZel's. With it ticked, the build downloads NVIDIA's DLSS SDK (release v310.9.16) from " +
         "github.com/NVIDIA/DLSS, under NVIDIA's own license, the NVIDIA RTX SDKs license:\n\n" +
         "https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt\n\n" +
         "Its files stay on this PC (in the builder's ngx-sdk folder, and nvngx_dlss.dll in the game folder's ngx folder). " +
-        "Hookshot never includes or shares them: never share a game folder built with them.\n\n" +
+        "RecompZel never includes or shares them: never share a game folder built with them.\n\n" +
         "Do you accept NVIDIA's license?";
 
     /// The NVIDIA DLSS tick: NVIDIA's license first, and the tick stays only when it is accepted
@@ -774,7 +774,7 @@ public partial class MainWindow : Window
     }
 
     const string FsrLicense =
-        "AMD FSR 4 is AMD's, not Hookshot's. With it ticked, the build downloads AMD's FSR runtime for Vulkan (FidelityFX SDK " +
+        "AMD FSR 4 is AMD's, not RecompZel's. With it ticked, the build downloads AMD's FSR runtime for Vulkan (FidelityFX SDK " +
         "v2.4.0: amd_fidelityfx_loader_vk.dll and amd_fidelityfx_upscaler_vk.dll, signed by AMD) from " +
         "github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK, each file checked against its SHA-256, under AMD's FSR SDK license:\n\n" +
         "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/7539ae8b6568ad29ed78a753404351daf3b5cca7/Kits/FidelityFX/docs/license.md\n\n" +
@@ -1185,7 +1185,7 @@ public partial class MainWindow : Window
                      {
                          (1, "Open Windows Security → Protection history, and restore the removed files."),
                          (2, $"Or add {base_} to its exclusions."),
-                         (3, "Then press Repair: Hookshot downloads the tools again from their official releases and checks each one."),
+                         (3, "Then press Repair: RecompZel downloads the tools again from their official releases and checks each one."),
                      })
                 ProblemSteps.Children.Add(new TextBlock { Text = $"{n}.  {s}", Style = (Style)FindResource("Note"), FontSize = 14, Margin = new Thickness(0, 6, 0, 0) });
         }
@@ -1237,7 +1237,7 @@ public partial class MainWindow : Window
             Application.Current.Shutdown();
             return;
         }
-        Process.Start(new ProcessStartInfo("https://github.com/NotRexed/Hookshot/releases/latest") { UseShellExecute = true });
+        Process.Start(new ProcessStartInfo("https://github.com/TechHammerBR/RecompZel/releases/latest") { UseShellExecute = true });
     }
 
     // ================= the update (Updater.cs): the game started this app with --update <folder> =================
