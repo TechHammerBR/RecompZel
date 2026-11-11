@@ -67,6 +67,8 @@ void sync_preset_budgets(int) {}
 bool row_fixed(const int*) { return false; }
 int upscaler() { return 0; }
 namespace ur {
+enum { GAME = 0, DLSS = 1, DLAA = 2, FSR3 = 3, FSR4 = 4, FSR4_AA = 5, OFF = 6 };
+inline unsigned bit(int u) { return 1u << u; }
 int step_upscaler(int, int, bool) { return 0; }
 int step(int, int v, int dir) { return v + dir; }
 int snap(int, int v) { return v; }

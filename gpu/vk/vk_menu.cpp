@@ -648,7 +648,7 @@ const char* hn_framegen(int v, int variant) {
     static const char* const dlss_off = "Off: pick 2x or more. NVIDIA DLSS Frame Generation makes 1 frame at 2x, 2 at 3x and 3 at 4x, "
                                         "the most this GPU makes.";
     static const char* const dlss_on = "By NVIDIA DLSS Frame Generation, from the scene's depth and motion. It works with the "
-                                       "Upscaler row on NVIDIA DLSS or DLAA.";
+                                       "Upscaler row on the game's own, NVIDIA DLSS or DLAA (choosing the method sets DLSS).";
     const char* nv = v >= 2 ? dlss_on : dlss_off;
     if (variant < 0) {
         if (opts.fgtype == 1 && slfg::max_generated() > 0 && v >= 1) return nv;
@@ -1391,6 +1391,16 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
             // step left a 6 GB card without its texture cap, past its VRAM, and Streamline refused DLSS frames)
             opts.preset = 0; // Custom
         }
+    }
+    // (NVIDIA DLSS Frame Generation takes the depth and motion of vk_temporal.cpp's chain, which the game's own network, DLSS and
+    // DLAA run: AMD FSR 3.1 has inputs of its own and Off has no chain. So the method moves the Upscaler to DLSS (the game's own
+    // where DLSS does not run here), and an Upscaler that cannot feed it takes the method back to RecompZel / AMD FSR 3.1)
+    if (r.value == &opts.fgtype && opts.fgtype == 1 && (upscaler() == ur::FSR3 || upscaler() == ur::OFF)) {
+        opts.dlss = (upscalers_available() & ur::bit(ur::DLSS)) ? (int)ur::DLSS : (int)ur::GAME;
+        opts.resolution = ur::snap_render(upscaler(), opts.resolution);
+        samplers_changed();
+    } else if (r.value == &opts.dlss && opts.fgtype == 1 && (upscaler() == ur::FSR3 || upscaler() == ur::OFF)) {
+        opts.fgtype = 0;
     }
     if (r.value == &opts.mic && can_mic()) mic_chosen();   // (hookshot)
     // (hookshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
