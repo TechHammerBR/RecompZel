@@ -6,14 +6,14 @@ body:
     attributes:
       value: |
         Thanks for testing. Before you start:
-        - **Check the [newest release](https://github.com/NotRexed/Hookshot/releases/latest) first.** Every release includes all the fixes before it, and yours may already be fixed.
+        - **Check the [newest release](https://github.com/TechHammerBR/RecompZel/releases/latest) first.** Every release includes all the fixes before it, and yours may already be fixed.
         - **Search the open issues.** If yours is there, add your details to it instead.
         - English, please.
-        - **Never attach game files**: no hookshot.exe, image.bin, the `.bin` caches, romfs or exefs files, keys or saves.
+        - **Never attach game files**: no RecompZel.exe, image.bin, the `.bin` caches, romfs or exefs files, keys or saves.
   - type: input
     id: version
     attributes:
-      label: Hookshot version
+      label: RecompZel version
       description: The version you built (such as `v2.0.0`, shown by the launcher and on the Releases page), or the first line of `hookshot_log.txt` if it starts with `hookshot`.
       placeholder: v2.0.0
     validations:
@@ -36,7 +36,7 @@ body:
       label: What happened
       description: >-
         What you saw, and what you expected instead. For low FPS or stutter, note the FPS before and after
-        and whether it happens on a second pass through the same spot. See [Low FPS or stutter](https://github.com/NotRexed/Hookshot#low-fps-or-stutter)
+        and whether it happens on a second pass through the same spot. See [Low FPS or stutter](https://github.com/TechHammerBR/RecompZel/blob/main/docs/HOOKSHOT-README.md#low-fps-or-stutter)
         for what to compare and which logs to attach.
     validations:
       required: true
@@ -81,7 +81,7 @@ body:
     id: injectors
     attributes:
       label: Other software hooked into the game
-      description: ReShade, shader-cache tools (SCSKiller and the like), overlays or frame-generation injectors change what Hookshot does. Please test without them before reporting.
+      description: ReShade, shader-cache tools (SCSKiller and the like), overlays or frame-generation injectors change what RecompZel does. Please test without them before reporting.
       options:
         - No, nothing hooked in
         - Yes (named under "Changes from the defaults")
@@ -91,7 +91,7 @@ body:
     id: log
     attributes:
       label: hookshot_log.txt
-      description: Drag the file here. It is beside hookshot.exe and holds the last run; the four runs before are `hookshot_log.1.txt` (the one before) to `.4.txt`. If you started the game again after the problem, attach `hookshot_log.1.txt` too. It has no game files in it.
+      description: Drag the file here. It is beside RecompZel.exe and holds the last run; the four runs before are `hookshot_log.1.txt` (the one before) to `.4.txt`. If you started the game again after the problem, attach `hookshot_log.1.txt` too. It has no game files in it.
     validations:
       required: true
   - type: textarea
@@ -107,5 +107,5 @@ body:
           required: true
         - label: I searched the open issues for this problem.
           required: true
-        - label: I'm not attaching game files, keys, hookshot.exe, the .bin caches or saves.
+        - label: I'm not attaching game files, keys, RecompZel.exe, the .bin caches or saves.
           required: true
