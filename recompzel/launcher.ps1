@@ -146,6 +146,10 @@ $STR['pt'] = @{
     q_build = 'Iniciar o build do jogo? Pode levar mais de uma hora e usa bastante o processador.'
     e_script = 'Nao achei o script de build: {0}'
     e_script2 = 'Nao achei o script: {0}'
+    nup_use = 'Usar este arquivo do jogo?{n}{n}{0}{n}{n}Sim = usar este.   Nao = escolher outro arquivo.'
+    nup_title = 'Escolha o arquivo do jogo (.nup) do Zelda Ocarina of Time'
+    nup_filter = 'Arquivo do jogo (*.nup)|*.nup|Todos os arquivos|*.*'
+    nup_none = 'Sem o arquivo do jogo (.nup) o build nao comeca.'
     rep_copied = 'Relatorio copiado. Cole na conversa com Ctrl+V.'
     started = 'Jogo iniciado. Ao fechar o jogo, o log desta rodada e salvo na pasta rodadas do launcher.'
     saved = 'Rodada salva: {0}'
@@ -279,6 +283,10 @@ $STR['en'] = @{
     q_build = 'Start building the game? It can take over an hour and uses the processor heavily.'
     e_script = 'Could not find the build script: {0}'
     e_script2 = 'Could not find the script: {0}'
+    nup_use = 'Use this game file?{n}{n}{0}{n}{n}Yes = use it.   No = choose another file.'
+    nup_title = 'Choose your Zelda Ocarina of Time game file (.nup)'
+    nup_filter = 'Game file (*.nup)|*.nup|All files|*.*'
+    nup_none = 'The build cannot start without the game file (.nup).'
     rep_copied = 'Report copied. Paste it into the chat with Ctrl+V.'
     started = 'Game started. When you close it, this round''s log is saved in the launcher''s rodadas folder.'
     saved = 'Round saved: {0}'
@@ -811,9 +819,45 @@ function Test-DsrGpu {
 }
 function Test-DsrBuilt { return (Test-Path (Join-Path (Get-OutDir) 'ngx\nvngx_dlss.dll')) }
 function Update-Dsr-Text { Update-Tech }   # (o painel Tecnologias de imagem cuida dos textos)
+# O arquivo do jogo (.nup): usa o ultimo escolhido ou o que achar em Downloads/Desktop/Documentos (pergunta antes) e senao abre a janela de escolher,
+# na frente do launcher. Retorna o caminho ou $null se o usuario cancelou.
+$NupMemo = Join-Path $AppDir 'nup-path.txt'
+function Select-NupFile {
+    $cand = $null
+    try { if (Test-Path -LiteralPath $NupMemo) { $c = (Get-Content -LiteralPath $NupMemo -Raw).Trim(); if ($c -and (Test-Path -LiteralPath $c)) { $cand = $c } } } catch {}
+    if (-not $cand) {
+        $roots = @([Environment]::GetFolderPath('UserProfile') + '\Downloads', [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('MyDocuments')) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+        $all = @(); foreach ($r in $roots) { $all += @(Get-ChildItem -LiteralPath $r -Filter '*.nup' -File -Recurse -Depth 2 -ErrorAction SilentlyContinue) }
+        $hit = $all | Where-Object { $_.Name -like '*0400486024DEC000*' } | Select-Object -First 1
+        if (-not $hit) { $hit = $all | Sort-Object Length -Descending | Select-Object -First 1 }
+        if ($hit) { $cand = $hit.FullName }
+    }
+    if ($cand) {
+        if ([System.Windows.MessageBox]::Show($win, ((T 'nup_use') -f $cand), 'RecompZel', 'YesNo', 'Question') -eq 'Yes') { return $cand }
+    }
+    $dlg = New-Object Microsoft.Win32.OpenFileDialog
+    $dlg.Title = T 'nup_title'
+    $dlg.Filter = T 'nup_filter'
+    $dlg.CheckFileExists = $true
+    if ($cand) { $dlg.InitialDirectory = Split-Path $cand -Parent }
+    if ($dlg.ShowDialog($win) -ne $true) { return $null }
+    return $dlg.FileName
+}
+# Inicia o build: escolhe o .nup aqui no launcher e passa para o build-game.ps1 (-Nup), sem janela escondida atras
+function Start-GameBuild([string]$buildPath) {
+    $nup = Select-NupFile
+    if (-not $nup) { [System.Windows.MessageBox]::Show($win, (T 'nup_none'), 'RecompZel') | Out-Null; return $false }
+    try { Set-Content -LiteralPath $NupMemo -Value $nup -Encoding UTF8 } catch {}
+    $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
+    $a = Get-BuildArgs $buildPath
+    $a += @('-Nup', ('"' + $nup + '"'))   # (aspas: o caminho pode ter espacos)
+    Start-Process powershell.exe -ArgumentList $a
+    return $true
+}
+
 # Os argumentos para abrir o build-game.ps1: com -Dlss quando a caixa do DLSS esta marcada
 function Get-BuildArgs([string]$buildPath) {
-    $a = @('-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $buildPath)
+    $a = @('-NoExit', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $buildPath + '"'))
     if ($chkDsr.IsChecked -and (Test-DsrGpu)) { $a += '-Dlss' }
     return $a
 }
@@ -1107,8 +1151,7 @@ $btnBuild.Add_Click({
     if ($r -eq 'Yes') {
         $s = [string]$script:g.buildScript
         if (Test-Path $s) {
-            $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
-            Start-Process powershell.exe -ArgumentList (Get-BuildArgs $s)
+            Start-GameBuild $s | Out-Null
         } else {
             [System.Windows.MessageBox]::Show(((T 'e_script') -f $s), 'RecompZel') | Out-Null
         }
@@ -1154,8 +1197,7 @@ $btnPlay.Add_Click({
             if ([System.Windows.MessageBox]::Show((T 'fsr_q_rebuild'), 'RecompZel', 'YesNo', 'Question') -eq 'Yes') {
                 $s = [string]$script:g.buildScript
                 if (Test-Path $s) {
-                    $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
-                    Start-Process powershell.exe -ArgumentList (Get-BuildArgs $s)
+                    Start-GameBuild $s | Out-Null
                     return
                 }
             }
@@ -1176,8 +1218,7 @@ $btnPlay.Add_Click({
             if ([System.Windows.MessageBox]::Show((T 'dsr_q'), 'RecompZel', 'YesNo', 'Question') -eq 'Yes') {
                 $s = [string]$script:g.buildScript
                 if (Test-Path $s) {
-                    $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
-                    Start-Process powershell.exe -ArgumentList (Get-BuildArgs $s)
+                    Start-GameBuild $s | Out-Null
                     return
                 }
             }
