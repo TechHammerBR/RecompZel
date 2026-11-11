@@ -50,6 +50,7 @@
 #include "bc_levels.h"
 #include "astc_bc_policy.h"
 #include "vram_compact.h"
+#include "host_commit.h"
 #include "keep_rendered.h"
 #include "target_overlap.h"
 #include "host_shaders/block_linear_unswizzle_2d_comp_spv.h"
@@ -276,6 +277,24 @@ std::mutex pool_mu;
 std::unordered_map<uint64_t, std::vector<Pooled>> target_pool;   // by pool_key_of
 uint64_t pool_bytes, pool_n, st_pool_reused, st_pool_made, st_pool_destroyed;
 bool pool_pressed;   // (VRAM near what the driver allows: texture_frame's budget)
+/// (recompzel) The commit the system can still hand out, in bytes: its limit (RAM plus the page files) less what is committed
+/// (host_commit.h). False where the system does not say
+bool system_commit_room(uint64_t* room) {
+    struct CommitInfo {
+        DWORD cb;
+        SIZE_T CommitTotal, CommitLimit, CommitPeak, PhysicalTotal, PhysicalAvailable, SystemCache, KernelTotal, KernelPaged,
+            KernelNonpaged, PageSize;
+        DWORD HandleCount, ProcessCount, ThreadCount;
+    };
+    typedef BOOL(WINAPI * Fn)(CommitInfo*, DWORD);
+    static Fn fn = (Fn)(void*)GetProcAddress(GetModuleHandleA("kernel32.dll"), "K32GetPerformanceInfo");
+    if (!fn) return false;
+    CommitInfo i{};
+    i.cb = sizeof i;
+    if (!fn(&i, sizeof i) || !i.PageSize) return false;
+    *room = i.CommitTotal < i.CommitLimit ? (uint64_t)(i.CommitLimit - i.CommitTotal) * i.PageSize : 0;
+    return true;
+}
 bool compact_on() {   // (hookshot, RX_VK_COMPACT=1: the textures in a pool of their own, compacted: compact_step)
     static const bool v = getenv("RX_VK_COMPACT") && atoi(getenv("RX_VK_COMPACT")) != 0;
     return v;
@@ -3785,6 +3804,35 @@ void texture_frame(uint64_t completed) {
     if (preset_budget && known) {
         // Safety clamp: do not exceed 75% of driver-allowed memory on constrained VRAM (prevents VK_ERROR_DEVICE_LOST)
         budget = std::min(budget, (allowed / 4) * 3);
+    }
+    {   // (recompzel, host_commit.h) a budget the PC cannot hold. Windows charges the card's memory to the commit limit too, so the
+        // cache is held to half of what the driver allows the game (a 12 GB budget on a 16 GB card filled it to 98%, the card's
+        // memory spilled into RAM and the frame rate fell from 96 to 40 fps) and to the commit the system can still hand out
+        // (Fritchii v5.7, Lichii#1210). RX_VK_VRAM_FORCE=1: the budget as set
+        static const bool force = getenv("RX_VK_VRAM_FORCE") != nullptr;
+        static bool told_ceiling = false, told_commit = false;
+        if (!force) {
+            if (known) {
+                const uint64_t ceiling = host_commit::ceiling(allowed);
+                if (budget > ceiling) {
+                    if (!told_ceiling)
+                        told_ceiling = true, logf("vk: texture budget %llu MB held to %llu MB, half of what the driver allows (RX_VK_VRAM_FORCE=1: as set)",
+                                                  (unsigned long long)(budget >> 20), (unsigned long long)(ceiling >> 20));
+                    budget = ceiling;
+                }
+            }
+            uint64_t room = 0;
+            if (system_commit_room(&room)) {
+                const uint64_t cap = host_commit::commit_cap(total_bytes, room);
+                if (budget > cap) {
+                    if (!told_commit)
+                        told_commit = true, logf("vk: texture budget %llu MB held to %llu MB by the commit the system can still hand out (%llu MB)",
+                                                 (unsigned long long)(budget >> 20), (unsigned long long)(cap >> 20),
+                                                 (unsigned long long)(room >> 20));
+                    budget = cap;
+                }
+            }
+        }
     }
     // (near what the driver allows, the budget shrinks by the excess. The excess of what the process holds less the
     // free space in VMA's blocks, which new images take before VMA makes a block: measured by the blocks alone, the
