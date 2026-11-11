@@ -3,7 +3,8 @@
 # Repo = a pasta do repositorio. Se este script esta em <repo>\recompzel, usa <repo>; senao (copia em C:\DEV) usa C:\DEV\RecompZel.
 # O codigo-fonte: <repo>\recompzel\ (clone ou ZIP); senao C:\DEV\RecompZel (layout antigo) ou %LOCALAPPDATA%\RecompZel\RecompZel;
 # se nao existe em lugar nenhum (quem usa so o RecompZel-Launcher.exe), baixa o codigo do GitHub (so o projeto, sem dados do jogo).
-$Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Split-Path $PSScriptRoot -Parent }
+# (-eq do PowerShell ignora maiusculas: %LOCALAPPDATA%\RecompZel tambem se chama 'RecompZel'; por isso so vale como clone se o pai tem nx2\make_game.py)
+$Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel' -and (Test-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'nx2\make_game.py'))) { Split-Path $PSScriptRoot -Parent }
         elseif (Test-Path 'C:\DEV\RecompZel\nx2\make_game.py') { 'C:\DEV\RecompZel' }
         else { Join-Path $env:LOCALAPPDATA 'RecompZel\RecompZel' }
 if (-not (Test-Path (Join-Path $Repo 'nx2\make_game.py'))) {
@@ -17,8 +18,9 @@ if (-not (Test-Path (Join-Path $Repo 'nx2\make_game.py'))) {
         Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
         $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
         New-Item -ItemType Directory -Force -Path (Split-Path $Repo -Parent) | Out-Null
-        if (Test-Path $Repo) { Remove-Item -LiteralPath $Repo -Recurse -Force }
-        Move-Item -LiteralPath $inner.FullName -Destination $Repo
+        # nunca apaga a pasta: so copia por cima (o destino e sempre uma pasta so do RecompZel)
+        New-Item -ItemType Directory -Force -Path $Repo | Out-Null
+        Copy-Item -Path (Join-Path $inner.FullName '*') -Destination $Repo -Recurse -Force
     } catch {
         throw "Nao consegui baixar o codigo do RecompZel (https://github.com/TechHammerBR/RecompZel). Baixe o ZIP do repositorio, extraia e rode o INSTALAR-RECOMPZEL.bat. Detalhe: $($_.Exception.Message)"
     } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }

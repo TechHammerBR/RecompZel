@@ -8,7 +8,7 @@ Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
 # Os scripts ficam onde este esta (C:\DEV no PC do desenvolvedor, %LOCALAPPDATA%\RecompZel para quem usa o .exe); os dados (perfil, logs, rodadas)
 # ficam na mesma pasta, exceto quando o launcher roda de dentro do repositorio (pasta recompzel): ai vao para %LOCALAPPDATA%\RecompZel.
-$AppDir       = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Join-Path $env:LOCALAPPDATA 'RecompZel' } else { $PSScriptRoot }
+$AppDir       = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel' -and (Test-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'nx2\make_game.py'))) { Join-Path $env:LOCALAPPDATA 'RecompZel' } else { $PSScriptRoot }
 New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
 $ProfilesPath = Join-Path $AppDir 'games.json'
 $Cfg          = Join-Path $AppDir 'launcher-settings.json'

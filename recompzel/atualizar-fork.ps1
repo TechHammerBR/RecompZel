@@ -5,7 +5,7 @@
 #   powershell -ExecutionPolicy Bypass -File C:\DEV\atualizar-fork.ps1 -Aplicar
 param([switch]$Aplicar, [switch]$Enviar)
 
-$Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Split-Path $PSScriptRoot -Parent } else { 'C:\DEV\RecompZel' }
+$Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel' -and (Test-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'nx2\make_game.py'))) { Split-Path $PSScriptRoot -Parent } else { 'C:\DEV\RecompZel' }
 Set-Location $Repo
 git config core.fileMode false
 
