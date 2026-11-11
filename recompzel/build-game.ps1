@@ -8,6 +8,7 @@ $ErrorActionPreference = 'Continue'
 [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal'   # o PC continua utilizavel durante o build
 
 # 1) arquivo do jogo
+$informado = [bool]$Nup
 if (-not $Nup) {
     $dirs = @('Downloads', 'Desktop', 'Documents') | ForEach-Object { Join-Path $env:USERPROFILE $_ } | Where-Object { Test-Path $_ }
     $todos = @(Get-ChildItem -Path $dirs -Recurse -File -Filter '*.nup' -ErrorAction SilentlyContinue | Sort-Object Length -Descending)
@@ -22,12 +23,22 @@ if (-not $Nup) {
 if (-not $Nup -and [Environment]::UserInteractive) {
     # nao achou nenhum: abre uma janela para voce escolher o arquivo
     try {
+        Write-Host 'Nao achei o arquivo do jogo. Abrindo uma janela para voce escolher o .nup (se nao aparecer, olhe a barra de tarefas)...'
         Add-Type -AssemblyName System.Windows.Forms
         $dlg = New-Object System.Windows.Forms.OpenFileDialog
         $dlg.Title = 'Escolha o arquivo do jogo (.nup, Zelda Ocarina of Time v131072)'
         $dlg.Filter = 'Arquivo do jogo (*.nup)|*.nup|Todos os arquivos|*.*'
-        if ($dlg.ShowDialog() -eq 'OK') { $Nup = $dlg.FileName }
+        # um dono TopMost e invisivel: a janela abre na frente das outras, nao escondida atras do console
+        $dono = New-Object System.Windows.Forms.Form
+        $dono.TopMost = $true
+        $dono.ShowInTaskbar = $false
+        if ($dlg.ShowDialog($dono) -eq 'OK') { $Nup = $dlg.FileName }
+        $dono.Dispose()
     } catch {}
+}
+if ($informado -and -not (Test-Path -LiteralPath $Nup)) {
+    Write-Host "O arquivo informado nao existe: $Nup" -ForegroundColor Red
+    exit 2
 }
 if (-not $Nup -or -not (Test-Path -LiteralPath $Nup)) {
     Write-Host 'Nao achei o arquivo do jogo (.nup, versao v131072). Rode de novo assim:'

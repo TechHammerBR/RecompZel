@@ -29,11 +29,11 @@ try {
 foreach ($a in $aviso) { Write-Host ('Aviso: ' + $a) -ForegroundColor Yellow }
 Write-Host ''
 
-try { . (Join-Path $PSScriptRoot 'env-recompzel.ps1') } catch {
-    Write-Host $_.Exception.Message -ForegroundColor Yellow
-    Write-Host ''
+# (so confere se as ferramentas existem; o build-game.ps1 prepara o ambiente, uma vez so)
+$ferramentas = Get-ChildItem "$env:LOCALAPPDATA\HookshotBuilder\versions" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $ferramentas) {
     $url = 'https://github.com/TechHammerBR/RecompZel/releases/tag/nightly'
-    Write-Host 'Falta instalar as ferramentas de compilacao (so uma vez):'
+    Write-Host 'Falta instalar as ferramentas de compilacao (so uma vez):' -ForegroundColor Yellow
     Write-Host "  1) Baixe o RecompZelBuilder.exe em $url"
     Write-Host '     (e o instalador gerado a partir deste repositorio; nao use o do projeto original)'
     Write-Host '  2) Rode, deixe terminar e feche.'
