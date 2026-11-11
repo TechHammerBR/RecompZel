@@ -525,9 +525,9 @@ $script:defaultHelp = ''
 # ---------- Opcoes (a ordem e o indice salvo em launcher-settings.json: nao reordenar) ----------
 $vramOptions = @(
     @{ Key = 'vram_d'; Pt = 'Padrao do jogo (70% da VRAM, ate 6 GB)'; Mb = 0 },
-    @{ Key = '';       Pt = '8 GB';  Mb = 8192 },
-    @{ Key = '';       Pt = '10 GB'; Mb = 10240 },
-    @{ Key = '';       Pt = '12 GB'; Mb = 12288 },
+    @{ Key = '';       Pt = '8 GB (so placa de 16 GB ou mais)';  Mb = 8192 },
+    @{ Key = '';       Pt = '10 GB (so placa de 24 GB)'; Mb = 10240 },
+    @{ Key = '';       Pt = '12 GB (so placa de 24 GB; em 16 GB a VRAM enche, a RAM sobe e o FPS cai)'; Mb = 12288 },
     @{ Key = '';       Pt = '6 GB (economiza VRAM)'; Mb = 6144 },
     @{ Key = '';       Pt = '5 GB (economiza VRAM)'; Mb = 5120 },
     @{ Key = '';       Pt = '4 GB (economiza VRAM)'; Mb = 4096 },
@@ -540,7 +540,8 @@ $vramOptions = @(
 $memProfiles = @(
     @{ Key = '';  Pt = 'Padrao do jogo'; Vram = 0; Mirror = 0; Pool = 0; Tex = 0; PCache = $false },
     @{ Key = '';  Pt = 'Equilibrado (menos VRAM)'; Vram = 6144; Mirror = 1536; Pool = 128; Tex = 0; PCache = $false },
-    @{ Key = '';  Pt = 'Economico (menos VRAM, pode recarregar texturas)'; Vram = 4096; Mirror = 1024; Pool = 64; Tex = 768; PCache = $false }
+    @{ Key = '';  Pt = 'Economico (menos VRAM, pode recarregar texturas)'; Vram = 4096; Mirror = 1024; Pool = 64; Tex = 768; PCache = $false },
+    @{ Key = '';  Pt = 'Compactar VRAM (teste: devolve ao driver o espaco livre das texturas)'; Vram = 0; Mirror = 0; Pool = 0; Tex = 0; PCache = $false; Compact = $true }
 )
 # Upload de texturas (RX_VK_UPLOAD_BUDGET_MS): 40 ms e o padrao do jogo; 0 = sem adiamento
 $uploadOptions = @(
@@ -1251,6 +1252,8 @@ $btnPlay.Add_Click({
     else { [Environment]::SetEnvironmentVariable('RX_VK_MIRROR_MB', $null, 'Process') }
     # perfil de memoria: so mexe no que o perfil escolhido define (o limite de VRAM escolhido acima, se houver, vale mais que o do perfil)
     $mp = $memProfiles[[math]::Max(0, $cbMem.SelectedIndex)]
+    # RX_VK_COMPACT=1: compactacao de VRAM do motor (desligada por padrao la): o driver conta os blocos inteiros, e o espaco livre dentro deles nao volta
+    if ($mp.Compact) { [Environment]::SetEnvironmentVariable('RX_VK_COMPACT', '1', 'Process') } else { [Environment]::SetEnvironmentVariable('RX_VK_COMPACT', $null, 'Process') }
     if ($mp.Vram -gt 0) {
         if ($mb -le 0) { [Environment]::SetEnvironmentVariable('RX_VK_VRAM_MB', [string]$mp.Vram, 'Process') }
         if ($mb -le 0 -or $mb -gt 6144) { [Environment]::SetEnvironmentVariable('RX_VK_MIRROR_MB', [string]$mp.Mirror, 'Process') }
