@@ -60,6 +60,8 @@ struct Reflex {
 struct {int device=1;}dev;
 Reflex& rx(){return state;}
 bool framegen_on(){return fg;}
+namespace slfg{void present_begins(){}void submit_ends(){}void present_starts(){}void present_ends(){}void next_frame(){}void idle_tick(){}}
+bool sl_owns(){return false;}   // (Streamline's Reflex is not running in this fixture)
 int wanted_mode(){return wanted;}
 void apply_mode(){if(!state.swapchain)invalid=true;++modes;}
 void log_timings(){}

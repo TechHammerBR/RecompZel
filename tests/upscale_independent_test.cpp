@@ -38,7 +38,8 @@ struct VkSamplerCreateInfo {
 struct Offset { int x = 0, y = 0, z = 0; };
 struct Layers { int aspect = 0, level = 0, first = 0, count = 0; };
 struct VkImageBlit { Layers srcSubresource, dstSubresource; Offset srcOffsets[2], dstOffsets[2]; };
-struct { int upscale = 0, sharpness = 0, framegen = 0; } opts;
+struct { int upscale = 0, sharpness = 0, framegen = 0, fgtype = 0; } opts;
+namespace slfg { int max_generated() { return 0; } }   // (NVIDIA DLSS Frame Generation: not ready in this fixture)
 struct SpyMutex {
     bool held = false;
     void lock() { CHECK(!held); held = true; }
