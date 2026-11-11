@@ -20,7 +20,12 @@ try {
     $livreGb = [math]::Round((Get-PSDrive ($drv.TrimEnd(':'))).Free / 1GB)
     if ($livreGb -lt 60) { $aviso += "Espaco livre em ${drv}: $livreGb GB. O build usa cerca de 60 GB." }
 } catch {}
-$aviso += 'A placa de video precisa suportar Vulkan com mesh shaders (NVIDIA GTX 16xx/RTX ou mais nova, AMD RX 6000 ou mais nova). Deixe o driver atualizado.'
+try {
+    # so avisa se nenhuma placa for reconhecida como NVIDIA GTX 16xx/RTX, AMD RX 6000 ou mais nova, ou Intel Arc (Vulkan com mesh shaders)
+    $gpus = @(Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name })
+    $ok = $gpus | Where-Object { $_ -match 'RTX|GTX 16|Radeon RX [6-9]\d{3}|Arc' }
+    if (-not $ok) { $aviso += ('A placa de video (' + ($gpus -join ', ') + ') pode nao suportar Vulkan com mesh shaders (precisa de NVIDIA GTX 16xx/RTX, AMD RX 6000 ou mais nova, ou Intel Arc). Deixe o driver atualizado.') }
+} catch {}
 foreach ($a in $aviso) { Write-Host ('Aviso: ' + $a) -ForegroundColor Yellow }
 Write-Host ''
 

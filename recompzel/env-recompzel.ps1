@@ -4,7 +4,7 @@
 $Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Split-Path $PSScriptRoot -Parent } else { 'C:\DEV\RecompZel' }
 $ver = Get-ChildItem "$env:LOCALAPPDATA\HookshotBuilder\versions" -Directory -ErrorAction SilentlyContinue |
        Sort-Object LastWriteTime -Descending | Select-Object -First 1
-if (-not $ver) { throw "As ferramentas de compilacao ainda nao estao instaladas ($env:LOCALAPPDATA\HookshotBuilder\versions). Baixe o HookshotBuilder.exe da release nightly de github.com/TechHammerBR/RecompZel (veja o README), rode uma vez e feche." }
+if (-not $ver) { throw "As ferramentas de compilacao ainda nao estao instaladas ($env:LOCALAPPDATA\HookshotBuilder\versions). O instalador explica como instala-las." }
 $Tools = Join-Path $ver.FullName 'HookshotBuilder\tools'
 $Py = Join-Path $Tools 'python\python.exe'
 if (-not (Test-Path -LiteralPath $Py)) { throw "Python do Builder nao encontrado: $Py" }
