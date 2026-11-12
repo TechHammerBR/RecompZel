@@ -528,14 +528,16 @@ $script:defaultHelp = ''
 # ---------- Opcoes (a ordem e o indice salvo em launcher-settings.json: nao reordenar) ----------
 $vramOptions = @(
     @{ Key = 'vram_d'; Pt = 'Padrao do jogo (70% da VRAM, ate 6 GB)'; Mb = 0 },
+    @{ Key = '';       Pt = '3 GB (economiza VRAM, texturas podem recarregar)'; Mb = 3072 },
+    @{ Key = '';       Pt = '4 GB (economiza VRAM)'; Mb = 4096 },
+    @{ Key = '';       Pt = '5 GB (economiza VRAM)'; Mb = 5120 },
+    @{ Key = '';       Pt = '6 GB (economiza VRAM)'; Mb = 6144 },
     @{ Key = '';       Pt = '8 GB (so placa de 16 GB ou mais)';  Mb = 8192 },
     @{ Key = '';       Pt = '10 GB (so placa de 24 GB)'; Mb = 10240 },
-    @{ Key = '';       Pt = '12 GB (so placa de 24 GB; em 16 GB a VRAM enche, a RAM sobe e o FPS cai)'; Mb = 12288 },
-    @{ Key = '';       Pt = '6 GB (economiza VRAM)'; Mb = 6144 },
-    @{ Key = '';       Pt = '5 GB (economiza VRAM)'; Mb = 5120 },
-    @{ Key = '';       Pt = '4 GB (economiza VRAM)'; Mb = 4096 },
-    @{ Key = '';       Pt = '3 GB (economiza VRAM, texturas podem recarregar)'; Mb = 3072 }
+    @{ Key = '';       Pt = '12 GB (so placa de 24 GB; em 16 GB a VRAM enche, a RAM sobe e o FPS cai)'; Mb = 12288 }
 )
+# (recompzel) em ordem crescente; a escolha e salva pelo tamanho (vramMb). A ordem antiga, para ler o vramIndex de quem ja tinha:
+$vramOldOrderMb = @(0, 8192, 10240, 12288, 6144, 5120, 4096, 3072)
 # Perfil de memoria: junta as opcoes de economia num clique (o 'Padrao' nao muda nada e as caixas e o limite de VRAM abaixo continuam valendo).
 # Os valores sao conservadores e ainda estao sendo ajustados com medidas reais (Jogo agora: RAM/VRAM na linha de status).
 #   Vram = RX_VK_VRAM_MB (orcamento de texturas), Mirror = RX_VK_MIRROR_MB (copia da memoria do console na VRAM),
@@ -616,7 +618,9 @@ try {
     if (Test-Path $Cfg) {
         $c = Get-Content $Cfg -Raw | ConvertFrom-Json
         if ($c.lang -eq 'en') { $script:lang = 'en'; $cbLang.SelectedIndex = 1 }
-        if ($c.vramIndex -ge 0 -and $c.vramIndex -lt $vramOptions.Count) { $cbVram.SelectedIndex = [int]$c.vramIndex }
+        $vmb = -1
+        if ($null -ne $c.vramMb) { $vmb = [int]$c.vramMb } elseif ($c.vramIndex -ge 0 -and $c.vramIndex -lt $vramOldOrderMb.Count) { $vmb = $vramOldOrderMb[[int]$c.vramIndex] }
+        for ($i = 0; $i -lt $vramOptions.Count; $i++) { if ($vramOptions[$i].Mb -eq $vmb) { $cbVram.SelectedIndex = $i } }
         if ($c.uploadIndex -ge 0 -and $c.uploadIndex -lt $uploadOptions.Count) { $cbUpload.SelectedIndex = [int]$c.uploadIndex }
         if ($c.memIndex -ge 0 -and $c.memIndex -lt $memProfiles.Count) { $cbMem.SelectedIndex = [int]$c.memIndex }
         if ($c.diag -eq $true) { $chkDiag.IsChecked = $true }
@@ -636,7 +640,7 @@ $cbFg.SelectedIndex = 0; $txtFgT.Visibility = 'Collapsed'; $cbFg.Visibility = 'C
 function Save-Settings {
     if ($script:loading) { return }
     try {
-        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; memIndex = $cbMem.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; ramSave = [bool]$chkRam.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; dlssLinear = [bool]$chkLinear.IsChecked; lang = $script:lang } |
+        @{ vramMb = $vramOptions[[math]::Max(0, $cbVram.SelectedIndex)].Mb; vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; memIndex = $cbMem.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; ramSave = [bool]$chkRam.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; dlssLinear = [bool]$chkLinear.IsChecked; lang = $script:lang } |
             ConvertTo-Json | Set-Content $Cfg -Encoding ASCII
     } catch {}
 }
