@@ -2,14 +2,14 @@
     "games":  [
                   {
                       "id":  "zelda-oot",
-                      "buildScript":  "C:\\DEV\\build-game.ps1",
+                      "buildScript":  "D:\\PSN nativo\\ZELDA OCT\\RecompZel-main\\DEV\\build-game.ps1",
                       "subtitle":  "Switch 2, recompilado para PC",
-                      "logPath":  "C:\\DEV\\build.log",
-                      "outDir":  "C:\\Games\\RecompZel",
+                      "logPath":  "D:\\PSN nativo\\ZELDA OCT\\RecompZel-main\\DEV\\build.log",
+                      "outDir":  "D:\\PSN nativo\\ZELDA OCT\\RecompZel-main\\Jogo",
                       "name":  "Zelda: Ocarina of Time",
                       "needs":  "Voce precisa do seu proprio arquivo do jogo (.nup). Nada e baixado da internet.",
                       "totalFiles":  186583,
-                      "workDir":  "C:\\DEV\\build-work"
+                      "workDir":  "D:\\PSN nativo\\ZELDA OCT\\RecompZel-main\\DEV\\build-work"
                   }
               ]
 }

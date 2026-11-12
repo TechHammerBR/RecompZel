@@ -1,6 +1,6 @@
-# Compila o jogo a partir do seu .nup, usando as ferramentas de compilacao do RecompZel/Hookshot Builder.
+﻿# Compila o jogo a partir do seu .nup, usando as ferramentas de compilacao do RecompZel/Hookshot Builder.
 # Uso:  powershell -ExecutionPolicy Bypass -File .\build-game.ps1 [-Nup <arquivo.nup>] [-Out <pasta do jogo>]
-# Sem parametros: procura o .nup em Downloads, Desktop e Documentos e instala em C:\Games\RecompZel (ou %USERPROFILE%\Games\RecompZel).
+# Sem parametros: procura o .nup em Downloads, Desktop e Documentos e instala em D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo (ou %USERPROFILE%\Games\RecompZel).
 # Ao terminar com sucesso, cria o atalho na area de trabalho (post-install.ps1).
 param([string]$Nup, [string]$Out, [string]$Work, [string]$Log, [switch]$Dlss)
 $ErrorActionPreference = 'Continue'
@@ -20,15 +20,15 @@ if (-not $Nup -or -not (Test-Path -LiteralPath $Nup)) {
     exit 2
 }
 
-# 2) pastas: mantem o layout antigo (C:\DEV) se ele existir, senao usa uma pasta propria
+# 2) pastas: mantem o layout antigo (D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV) se ele existir, senao usa uma pasta propria
 if (-not $Out) {
-    $Out = 'C:\Games\RecompZel'
+    $Out = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo'
     if (-not (Test-Path $Out) -and (Test-Path 'C:\Games\HookshotDev')) {   # pasta antiga: renomeie para RecompZel quando o jogo estiver fechado
         $Out = 'C:\Games\HookshotDev'
-        Write-Host 'Aviso: usando a pasta antiga C:\Games\HookshotDev. Renomeie para C:\Games\RecompZel quando o jogo estiver fechado.'
+        Write-Host 'Aviso: usando a pasta antiga C:\Games\HookshotDev. Renomeie para D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo quando o jogo estiver fechado.'
     }
 }
-$base = if (Test-Path 'C:\DEV') { 'C:\DEV' } else { Join-Path $env:LOCALAPPDATA 'RecompZel' }
+$base = if (Test-Path 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV') { 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV' } else { Join-Path $env:LOCALAPPDATA 'RecompZel' }
 if (-not $Work) { $Work = Join-Path $base 'build-work' }
 if (-not $Log)  { $Log  = Join-Path $base 'build.log' }
 

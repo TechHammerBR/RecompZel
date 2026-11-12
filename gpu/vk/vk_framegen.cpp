@@ -33,6 +33,7 @@
 #include "shaders/fg_median_comp_spv.h"
 #include "shaders/fg_scale_comp_spv.h"
 #include "shaders/fg_synth_comp_spv.h"
+#include "shaders/fg_hudguard_comp_spv.h"
 #include "shaders/hdr_encode_comp_spv.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
@@ -77,7 +78,7 @@ struct State {
     bool init = false;
     std::atomic<bool> failed{false};   // also read by Reflex's game-thread eligibility check
     uint32_t w = 0, h = 0;
-    Pipe copy, luma, flow, median, synth;
+    Pipe copy, luma, flow, median, synth, hudguard;
     VkSampler nearest = VK_NULL_HANDLE, linear = VK_NULL_HANDLE;
     Img frames[2], lumas[2], flows[2];
     OutSet sets[3];   // (one shown, one waiting its place on the line, one being made: the pacer never holds the game back)
@@ -203,7 +204,7 @@ bool make_pipe(Pipe& p, const uint32_t* code, size_t bytes, std::initializer_lis
 
 // The optional interpolation is disabled after setup fails: retain none of its unused setup objects.
 void drop_setup() {
-    for (Pipe* p : {&fg.copy, &fg.luma, &fg.flow, &fg.median, &fg.synth}) drop_pipe(*p);
+    for (Pipe* p : {&fg.copy, &fg.luma, &fg.flow, &fg.median, &fg.synth, &fg.hudguard}) drop_pipe(*p);
     if (fg.nearest) vkDestroySampler(dev.device, fg.nearest, nullptr);
     if (fg.linear) vkDestroySampler(dev.device, fg.linear, nullptr);
     fg.nearest = fg.linear = VK_NULL_HANDLE;
@@ -223,7 +224,8 @@ bool init() {
         !make_pipe(fg.luma, FG_LUMA_COMP_SPV, sizeof FG_LUMA_COMP_SPV, {S, I}, 0) ||
         !make_pipe(fg.flow, FG_FLOW_COMP_SPV, sizeof FG_FLOW_COMP_SPV, {S, S, I}, 0, &spec) ||
         !make_pipe(fg.median, FG_MEDIAN_COMP_SPV, sizeof FG_MEDIAN_COMP_SPV, {S, I}, 0) ||
-        !make_pipe(fg.synth, FG_SYNTH_COMP_SPV, sizeof FG_SYNTH_COMP_SPV, {S, S, S, I}, 4))
+        !make_pipe(fg.synth, FG_SYNTH_COMP_SPV, sizeof FG_SYNTH_COMP_SPV, {S, S, S, I}, 4) ||
+        !make_pipe(fg.hudguard, FG_HUDGUARD_COMP_SPV, sizeof FG_HUDGUARD_COMP_SPV, {S, S, I, S}, 8))
         return undo();
     VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -706,6 +708,12 @@ int fsr3fi_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_
     const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
                         {uw, uh, 1}};
     vkCmdCopyImage(cmd, fsr3fi::made_image(), VK_IMAGE_LAYOUT_GENERAL, set.frame[0].image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    full_barrier(cmd);
+    // (the HUD and subtitles put back where they stand: FSR 3.1 moved them with the scene, fg_hudguard.comp)
+    // (and in the HUD's bands, what the scene's motion does not explain: the HUD's own animation, the beating heart)
+    const float mv_scale[2] = {f.width ? (float)uw / (float)f.width : 1.0f, f.height ? (float)uh / (float)f.height : 1.0f};
+    pass(cmd, fg.hudguard, {{fg.frames[cur ^ 1].view, fg.nearest}, {fg.frames[cur].view, fg.nearest},
+                            {set.frame[0].view, VK_NULL_HANDLE}, {f.motion, fg.nearest}}, uw, uh, mv_scale, sizeof mv_scale);
     made++;
     static bool told = false;
     if (!told) {

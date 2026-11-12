@@ -24,6 +24,7 @@
 #include "vk_temporal.h"
 
 #ifdef HOOKSHOT_FSR
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -89,6 +90,9 @@ struct Library {
     PfnFfxQuery query = nullptr;
     PfnFfxDispatch dispatch = nullptr;
     uint64_t version_id = 0;
+    // (every 4.x the library lists, newest first, with its name: a newer model may refuse the chain's inputs, as 4.1.1 asks for
+    // inverted depth, and an older one is tried then)
+    std::vector<std::pair<uint64_t, std::string>> fallbacks;
     VkDeviceContext device_context{};
 };
 // (lib() and st() are never destroyed: Hookshot leaves through ExitProcess / exit() with the device alive, and a destructor
@@ -248,11 +252,13 @@ bool load() {
     }
     std::string listed;
     unsigned best[3] = {0, 0, 0};
+    std::vector<std::pair<unsigned, std::pair<uint64_t, std::string>>> fours;   // (major.minor.patch packed, id and name)
     for (uint64_t i = 0; i < count; i++) {
         const char* name = names[i] ? names[i] : "";
         listed += (listed.empty() ? "" : ", ") + std::string(name);
         unsigned v[3] = {0, 0, 0};
         sscanf(name, "%u.%u.%u", &v[0], &v[1], &v[2]);
+        if (v[0] == 4) fours.push_back({(v[1] << 16) | v[2], {ids[i], name}});
         // (the first of equal versions: a Vulkan FSR 4 build lists its Auto, which picks the GPU's model, before INT8 and FP8)
         if (v[0] == 4 && (!l.version_id || v[1] > best[1] || (v[1] == best[1] && v[2] > best[2]))) {
             std::memcpy(best, v, sizeof best);
@@ -263,6 +269,10 @@ bool load() {
         logf("vk: AMD FSR 4: no FSR 4 for this GPU (AMD's library has: %s)", listed.c_str());
         return no(FSR_NO_MODEL);
     }
+    // (stable: of equal versions the first listed stays first, as for version_id)
+    std::stable_sort(fours.begin(), fours.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (const auto& f : fours)
+        if (f.second.first != l.version_id) l.fallbacks.push_back(f.second);
     logf("vk: AMD FSR 4: upscalers %s; using %u.%u.%u", listed.c_str(), best[0], best[1], best[2]);
     l.ok = true;
     g_why = FSR_OK;
@@ -290,18 +300,36 @@ std::shared_ptr<Context> make_context(uint32_t w, uint32_t h) {
     }
     c->upscale.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
     c->upscale.header.pNext = &c->backend.header;
-    // (the chain's colour is tonemapped and square-root encoded already: LDR, perceptual, no auto exposure; depth not
-    // inverted. The render size changes under the one context)
-    c->upscale.flags = FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE | FFX_UPSCALE_ENABLE_DYNAMIC_RESOLUTION;
+    // (the chain's colour is tonemapped and square-root encoded already: LDR, perceptual, no auto exposure; depth inverted,
+    // 1 at the near plane: the prep pass stores 1 - d for FSR 4 (vk_temporal.cpp), as its Vulkan models refuse a context
+    // without it. The render size changes under the one context)
+    c->upscale.flags = FFX_UPSCALE_ENABLE_NON_LINEAR_COLORSPACE | FFX_UPSCALE_ENABLE_DYNAMIC_RESOLUTION |
+                       FFX_UPSCALE_ENABLE_DEPTH_INVERTED;
     c->upscale.maxRenderSize = {w, h};
     c->upscale.maxUpscaleSize = {w, h};
     c->upscale.fpMessage = &on_message;
     const auto t0 = std::chrono::steady_clock::now();
-    const ffxReturnCode_t r = l.create(&c->context, &c->upscale.header, nullptr);
+    ffxReturnCode_t r = l.create(&c->context, &c->upscale.header, nullptr);
+    if (r != FFX_API_RETURN_OK || !c->context) {
+        // (the newest model refused: the older 4.x the library lists, newest first. The one made is kept for the next
+        // contexts, so a refusal is paid once)
+        for (const auto& [id, name] : l.fallbacks) {
+            logf("vk: AMD FSR 4: its upscaler was not made (%d) for %ux%u; trying %s", (int)r, w, h, name.c_str());
+            c->context = nullptr;
+            c->version.versionId = id;
+            r = l.create(&c->context, &c->upscale.header, nullptr);
+            if (r == FFX_API_RETURN_OK && c->context) {
+                l.version_id = id;
+                break;
+            }
+        }
+    }
     const double made_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (r != FFX_API_RETURN_OK || !c->context) {
         logf("vk: AMD FSR 4: its upscaler was not made (%d) for %ux%u", (int)r, w, h);
         c->context = nullptr;
+        // (no model of the library takes the chain's inputs: the menu stops offering FSR 4 and shows the upscaler that runs)
+        g_why = FSR_NO_MODEL;
         return nullptr;
     }
     c->width = w, c->height = h;
@@ -319,9 +347,14 @@ std::shared_ptr<Context> make_context(uint32_t w, uint32_t h) {
     return c;
 }
 
-FfxApiResource resource(const TemporalImage& im, VkImageUsageFlags usage, uint32_t state) {
+// (w, h: the size to describe, when not the image's own. The inputs are kept as large as the largest render size seen
+// (prepare), and FSR 4's Vulkan library rejects a colour, depth or motion description that is not the render size:
+// "invalid color resource: dimensions=2560x1440 expected=2382x1340", and after one failure the game's upscale ran for
+// the rest of the session. The render size's texels are at the image's top left, so it is described at that size)
+FfxApiResource resource(const TemporalImage& im, VkImageUsageFlags usage, uint32_t state, uint32_t w = 0, uint32_t h = 0) {
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ci.imageType = VK_IMAGE_TYPE_2D, ci.format = im.format, ci.extent = {im.width, im.height, 1};
+    ci.imageType = VK_IMAGE_TYPE_2D, ci.format = im.format;
+    ci.extent = {w ? std::min(w, im.width) : im.width, h ? std::min(h, im.height) : im.height, 1};
     ci.mipLevels = 1, ci.arrayLayers = 1, ci.samples = VK_SAMPLE_COUNT_1_BIT, ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = usage, ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     return ffxApiGetResourceVK((void*)im.image, ffxApiGetImageResourceDescriptionVK(im.image, ci, 0), state);
@@ -417,9 +450,10 @@ bool evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
     ffxDispatchDescUpscale d{};
     d.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
     d.commandList = cmd;
-    d.color = resource(f.color, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-    d.depth = resource(f.depth, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ);
-    d.motionVectors = resource(f.motion, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    const uint32_t rw = f.render_w, rh = f.render_h;
+    d.color = resource(f.color, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ, rw, rh);
+    d.depth = resource(f.depth, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ, rw, rh);
+    d.motionVectors = resource(f.motion, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ, rw, rh);
     d.output = resource(f.output, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
     if (l.direct) d.exposure = resource(exposure, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ);
     d.jitterOffset = {f.jitter[0], f.jitter[1]};   // (render pixels, as the projection was offset: the same as DLSS's)

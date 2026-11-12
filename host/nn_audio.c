@@ -298,6 +298,9 @@ typedef struct {
     float line[4][REV_LINE];
     int pos[4], len[4];
     float lp[4];                    /* damping filter states */
+    /* the plain ReverbType's own parameters (linear gains, modes), turned into the ones above by plain_reverb_update */
+    float p_early, p_late, p_reverb, p_out, p_coloration;
+    int p_early_mode, p_late_mode;
 } Reverb;
 static Reverb reverbs[MAX_EFFECTS];
 static float mb_gain(float mb) { return powf(10.0f, mb / 2000.0f); }
@@ -1686,6 +1689,77 @@ HLE(_ZN2nn5audio25SetI3dl2ReverbInputOutputEPNS0_15I3dl2ReverbTypeEPKaS4_i) {
     AUT("audio: i3dl2 reverb %d channels: in %d %d out %d %d", n, rv->in[0], rv->in[1], rv->out[0], rv->out[1]);
 }
 HLE(_ZN2nn5audio25GetI3dl2ReverbInputOutputEPKNS0_15I3dl2ReverbTypeEPaS4_Pii) {
+    Reverb *rv = reverb_of(ARG(0));
+    const int n = rv ? rv->n : 0;
+    for (int k = 0; k < n && k < (int)ARG(4); k++) {
+        *(int8_t *)GP(ARG(1) + k) = rv->in[k];
+        *(int8_t *)GP(ARG(2) + k) = rv->out[k];
+    }
+    if (ARG(3)) G32(ARG(3)) = (uint32_t)n;
+}
+
+/* ---- the plain reverb: AddReverb(config, ReverbType*, buffer, size, SubMixType*, channels) ------------------------
+   The game's room echo goes through this one, not I3DL2: without it every Set* was an unimplemented import and the
+   echo was not there. Its parameters are linear gains (0..1) and modes; they are turned into the I3DL2 ones and the
+   same network (reverb_frame) plays them. EarlyMode: small room, large room, hall, cathedral, none (4).
+   LateMode: room, hall, plate, cave, none (4). */
+static float lin_mb(float g) { return g > 0.0001f ? 2000.0f * log10f(g) : -10000.0f; }
+static void plain_reverb_update(Reverb *rv) {
+    static const float early_delay_ms[5] = {5, 10, 15, 25, 0};
+    static const float late_density[5] = {50, 100, 75, 100, 100};
+    const int em = rv->p_early_mode >= 0 && rv->p_early_mode < 5 ? rv->p_early_mode : 2;
+    const int lm = rv->p_late_mode >= 0 && rv->p_late_mode < 5 ? rv->p_late_mode : 1;
+    rv->refl = em == 4 ? -10000.0f : lin_mb(rv->p_early);
+    rv->reverb = lm == 4 ? -10000.0f : lin_mb(rv->p_late * rv->p_reverb);
+    rv->room = lin_mb(rv->p_out);
+    rv->density = late_density[lm];
+    rv->diffusion = fmaxf(10.0f, (1.0f - fminf(fmaxf(rv->p_coloration, 0.0f), 1.0f)) * 100.0f);
+    rv->late_delay_ns = (int64_t)(early_delay_ms[em] * 1e6f);
+}
+static void add_plain_reverb(Ctx *c) {
+    add_reverb(c);
+    if (c->x[0] != 0) return;
+    au_lock();
+    Reverb *rv = reverb_of(ARG(1));
+    if (rv) {
+        rv->p_early_mode = 2, rv->p_late_mode = 1;
+        rv->p_early = 0.7f, rv->p_late = 0.7f, rv->p_reverb = 1.0f, rv->p_out = 0.7f, rv->p_coloration = 0.0f;
+        rv->hf_ratio = 0.5f, rv->dry = 1.0f, rv->decay_ns = 1500000000ll, rv->refl_delay_ns = 10000000;
+        plain_reverb_update(rv);
+    }
+    au_unlock();
+}
+HLE(_ZN2nn5audio9AddReverbEPNS0_19AudioRendererConfigEPNS0_10ReverbTypeEPvmPNS0_10SubMixTypeEi) { add_plain_reverb(c); }
+HLE(_ZN2nn5audio9AddReverbEPNS0_19AudioRendererConfigEPNS0_10ReverbTypeEPvmPNS0_12FinalMixTypeEi) { add_plain_reverb(c); }
+/* (each HLE written out: the build's stub list finds the implemented imports by their text, not through a macro) */
+HLE(_ZN2nn5audio18SetReverbEarlyGainEPNS0_10ReverbTypeEf) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->p_early = farg(c, 0), plain_reverb_update(rv); }
+HLE(_ZN2nn5audio17SetReverbLateGainEPNS0_10ReverbTypeEf) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->p_late = farg(c, 0), plain_reverb_update(rv); }
+HLE(_ZN2nn5audio19SetReverbReverbGainEPNS0_10ReverbTypeEf) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->p_reverb = farg(c, 0), plain_reverb_update(rv); }
+HLE(_ZN2nn5audio16SetReverbOutGainEPNS0_10ReverbTypeEf) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->p_out = farg(c, 0), plain_reverb_update(rv); }
+HLE(_ZN2nn5audio19SetReverbColorationEPNS0_10ReverbTypeEf) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->p_coloration = farg(c, 0), plain_reverb_update(rv); }
+HLE(_ZN2nn5audio16SetReverbDryGainEPNS0_10ReverbTypeEf) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->dry = farg(c, 0); }
+HLE(_ZN2nn5audio32SetReverbHighFrequencyDecayRatioEPNS0_10ReverbTypeEf) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->hf_ratio = farg(c, 0); }
+HLE(_ZN2nn5audio18SetReverbDecayTimeEPNS0_10ReverbTypeENS_8TimeSpanE) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->decay_ns = (int64_t)ARG(1); }
+HLE(_ZN2nn5audio21SetReverbPredelayTimeEPNS0_10ReverbTypeENS_8TimeSpanE) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->refl_delay_ns = (int64_t)ARG(1); }
+HLE(_ZN2nn5audio18SetReverbEarlyModeEPNS0_10ReverbTypeENS1_9EarlyModeE) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->p_early_mode = (int)ARG(1), plain_reverb_update(rv); }
+HLE(_ZN2nn5audio17SetReverbLateModeEPNS0_10ReverbTypeENS1_8LateModeE) { Reverb *rv = reverb_of(ARG(0)); if (rv) rv->p_late_mode = (int)ARG(1), plain_reverb_update(rv); }
+HLE(_ZN2nn5audio16SetReverbEnabledEPNS0_10ReverbTypeEb) {
+    Reverb *rv = reverb_of(ARG(0));
+    if (rv) rv->enabled = (int)(ARG(1) & 1);
+    AUT("audio: reverb %s", ARG(1) & 1 ? "on" : "off");
+}
+HLE(_ZN2nn5audio15IsReverbEnabledEPKNS0_10ReverbTypeE) { Reverb *rv = reverb_of(ARG(0)); RET(rv ? rv->enabled : 0); }
+HLE(_ZN2nn5audio20SetReverbInputOutputEPNS0_10ReverbTypeEPKaS4_i) {
+    Reverb *rv = reverb_of(ARG(0));
+    if (!rv) return;
+    const int n = (int)ARG(3) > MAX_CH ? MAX_CH : (int)ARG(3);
+    for (int k = 0; k < n; k++) {
+        rv->in[k] = *(int8_t *)GP(ARG(1) + k);
+        rv->out[k] = *(int8_t *)GP(ARG(2) + k);
+    }
+    rv->n = n;
+}
+HLE(_ZN2nn5audio20GetReverbInputOutputEPKNS0_10ReverbTypeEPaS4_Pii) {
     Reverb *rv = reverb_of(ARG(0));
     const int n = rv ? rv->n : 0;
     for (int k = 0; k < n && k < (int)ARG(4); k++) {

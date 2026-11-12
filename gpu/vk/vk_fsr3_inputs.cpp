@@ -349,6 +349,12 @@ bool take(Frame& out) {
     return have;
 }
 
+void offer(const Frame& f) {
+    State& s = st();
+    std::lock_guard lk(s.mu);
+    s.frame = f, s.have_frame = true;
+}
+
 void upscaled(uint32_t rw, uint32_t rh, uint32_t dw, uint32_t dh) {
     State& s = st();
     s.jitter.publish(rw, rh, (uint32_t)dlss_jitter_phases(rw, rh, dw, dh), texture_frame_no());

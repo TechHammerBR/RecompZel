@@ -323,7 +323,9 @@ uint32_t asked() {
         return e && *e ? std::max(0, atoi(e)) : -1;
     }();
     if (env >= 0) return env ? 1u : 0u;
-    return 0u;   // (opt-in: the renderer's own blend at 2x, see above)
+    // (opt-in again: with FSR 4 fixed, FSR 3.1's frames really run, and they still leave a ghost trail behind Link that
+    // fg_hudguard.comp does not cover. The renderer's own blend is the stable one. The launcher's "AMD FSR 3.1" row asks for it)
+    return 0u;
 }
 
 /// A memory dependency over the whole queue, in the synchronization2 form this renderer loads.

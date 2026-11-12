@@ -60,6 +60,10 @@ bool prepare(VkCommandBuffer cmd, Texture* in, VkImageView in_view, Frame& out);
 /// (or it is older than the frame before), so a present never interpolates with another frame's depth and motion
 bool take(Frame& out);
 
+/// A frame's inputs made elsewhere: vk_temporal.cpp's, while AMD FSR 4 draws (its depth inverted, reversed as FSR 3.1's,
+/// and its motion in render pixels), for the frame interpolation's take() as if prepare made them
+void offer(const Frame& f);
+
 /// FSR 3.1's upscaler drew this frame, rw x rh into dw x dh: the host's jitter follows FSR (jitter_size)
 void upscaled(uint32_t rw, uint32_t rh, uint32_t dw, uint32_t dh);
 

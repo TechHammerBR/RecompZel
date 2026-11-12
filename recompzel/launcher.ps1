@@ -1,13 +1,13 @@
-# launcher.ps1  -  RecompZel Launcher v3 (original, feito para o nosso projeto)
-# Uso: powershell -ExecutionPolicy Bypass -File C:\DEV\launcher.ps1
+﻿# launcher.ps1  -  RecompZel Launcher v3 (original, feito para o nosso projeto)
+# Uso: powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\launcher.ps1
 # Le o build.log e a pasta de trabalho. Nao apaga nada. Reconstruir pede confirmacao.
-# Idioma: Portugues (Brasil) ou English, no canto superior esquerdo. Perfis de jogos: C:\DEV\games.json.
-# A pasta do jogo e C:\Games\RecompZel. Se ainda existir so a antiga (C:\Games\HookshotDev), ela continua sendo usada.
+# Idioma: Portugues (Brasil) ou English, no canto superior esquerdo. Perfis de jogos: D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\games.json.
+# A pasta do jogo e D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo. Se ainda existir so a antiga (C:\Games\HookshotDev), ela continua sendo usada.
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
-$ProfilesPath = 'C:\DEV\games.json'
-$Cfg          = 'C:\DEV\launcher-settings.json'
+$ProfilesPath = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\games.json'
+$Cfg          = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\launcher-settings.json'
 $W = @{ read = 15; lift = 10; compile = 60; finish = 15 }   # pesos do percentual total
 $script:lang = 'pt'
 
@@ -111,7 +111,7 @@ $STR['pt'] = @{
     e_script = 'Nao achei o script de build: {0}'
     e_script2 = 'Nao achei o script: {0}'
     rep_copied = 'Relatorio copiado. Cole na conversa com Ctrl+V.'
-    started = 'Jogo iniciado. Ao fechar o jogo, o log desta rodada e salvo em C:\DEV\rodadas.'
+    started = 'Jogo iniciado. Ao fechar o jogo, o log desta rodada e salvo em D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\rodadas.'
     saved = 'Rodada salva: {0}'
 }
 $STR['en'] = @{
@@ -212,7 +212,7 @@ $STR['en'] = @{
     e_script = 'Could not find the build script: {0}'
     e_script2 = 'Could not find the script: {0}'
     rep_copied = 'Report copied. Paste it into the chat with Ctrl+V.'
-    started = 'Game started. When you close it, this round''s log is saved in C:\DEV\rodadas.'
+    started = 'Game started. When you close it, this round''s log is saved in D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\rodadas.'
     saved = 'Round saved: {0}'
 }
 
@@ -231,10 +231,10 @@ if (-not (Test-Path $ProfilesPath)) {
             id          = 'zelda-oot'
             name        = 'Zelda: Ocarina of Time'
             subtitle    = 'Switch 2, recompilado para PC'
-            logPath     = 'C:\DEV\build.log'
-            workDir     = 'C:\DEV\build-work'
-            outDir      = 'C:\Games\RecompZel'
-            buildScript = 'C:\DEV\build-game.ps1'
+            logPath     = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\build.log'
+            workDir     = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\build-work'
+            outDir      = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo'
+            buildScript = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\build-game.ps1'
             totalFiles  = 186583
             needs       = 'Voce precisa do seu proprio arquivo do jogo (.nup). Nada e baixado da internet.'
         }
@@ -372,7 +372,7 @@ $xaml = @'
 
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
-try { if (Test-Path 'C:\DEV\recompzel.ico') { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]'C:\DEV\recompzel.ico') } } catch {}
+try { if (Test-Path 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\recompzel.ico') { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\recompzel.ico') } } catch {}
 foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
@@ -636,7 +636,7 @@ function Find-GameExe {
 # ---------- Atalhos: cria os que faltam e garante o icone do RecompZel e o exe novo (roda ao abrir o launcher) ----------
 function Update-Shortcuts {
     try {
-        $ico = 'C:\DEV\recompzel.ico'
+        $ico = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\recompzel.ico'
         $iconOk = Test-Path -LiteralPath $ico
         $desk = [Environment]::GetFolderPath('Desktop')
         $sh = New-Object -ComObject WScript.Shell
@@ -654,8 +654,8 @@ function Update-Shortcuts {
                 if ($isGame) { $l.Description = 'Zelda Ocarina of Time recompilado (RecompZel)' }
                 else {
                     $l.TargetPath = $ps
-                    $l.Arguments = '-ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\DEV\launcher.ps1"'
-                    $l.WorkingDirectory = 'C:\DEV'
+                    $l.Arguments = '-ExecutionPolicy Bypass -WindowStyle Hidden -File "D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\launcher.ps1"'
+                    $l.WorkingDirectory = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV'
                     $l.Description = 'Launcher do RecompZel'
                 }
                 $dirty = $true
@@ -902,7 +902,8 @@ function Update-View {
     $stage = 'inicio'; $totalFiles = [int]$g.totalFiles; $filesDone = 0
     $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $done = $false
     foreach ($l in $lines) {
-        if ($l -match '^@@stage\s+(\S+)') { $stage = $Matches[1] }
+        # (uma etapa nova depois de "the build took": o motor terminou, mas o build segue, como na etapa de shaders)
+        if ($l -match '^@@stage\s+(\S+)') { $stage = $Matches[1]; if ($stage -ne 'done') { $done = $false } }
         if ($l -match 'title 1 .*romfs\s+(\d+)\s+files') { $totalFiles = [int]$Matches[1] }
         if ($l -match '^\s*[\d\.]+\s+MiB written \((\d+) files completed\)') { $filesDone = [int]$Matches[1] }
         if ($l -match '^done:\s+(\d+)\s+files written') { $filesDone = [int]$Matches[1] }
@@ -931,6 +932,15 @@ function Update-View {
 
     $exe = Find-GameExe
     $ready = ($null -ne $exe) -and ($done -or ((($err.Count -eq 0)) -and $later))
+    # (a etapa de shaders roda o proprio jogo, --prepare-shaders: o build ainda nao terminou)
+    if ($stage -eq 'shaders' -and -not $done) {
+        $ready = $false
+        $finPct = 50
+        if ($prog -ge 0) { $finPct = [math]::Min(99, 100.0 * $prog) }
+        $total = [math]::Min(99, ($readPct*$W.read + $liftPct*$W.lift + 100*$W.compile + $finPct*$W.finish) / 100.0)
+    }
+    # sem build.log (jogo construido em outra pasta de trabalho ou log apagado): o exe instalado basta
+    if (($null -ne $exe) -and $lines.Count -eq 0) { $ready = $true; $done = $true; $total = 100 }
 
     # textos gerais (o texto do jogo vem do games.json em portugues; em ingles usa o da tabela para o Zelda)
     $isZ = ([string]$g.id -eq 'zelda-oot')
@@ -1032,7 +1042,7 @@ $btnPlay.Add_Click({
     } else {
         [Environment]::SetEnvironmentVariable('RX_VK_FRAMEGEN', $null, 'Process')
         if ($fgSel.Fsr) { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', '1', 'Process') }
-        else { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', $null, 'Process') }
+        else { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', '0', 'Process') }   # (o motor liga o FSR 3.1 por padrao: Hookshot pede o proprio)
     }
     if ($chkDiag.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', 'da7a7ab28b8e73d9', 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', $null, 'Process') }
@@ -1053,7 +1063,9 @@ $btnPlay.Add_Click({
         } elseif (Install-Fsr) {
             $useFsr = $true
             [Environment]::SetEnvironmentVariable('RX_VK_FSR_DIR', (Get-FsrDir), 'Process')
-            [Environment]::SetEnvironmentVariable('RX_VK_FSR4', '1', 'Process')
+            # (sem RX_VK_FSR4: ele vale mais que o menu do jogo e prende a linha Upscaler no FSR 4. A caixa so escolhe o FSR 4
+            # no hookshot_options.ini quando o Upscaler ainda esta no do jogo (dlss=0); o menu Insert troca para o FSR 3.1 e volta)
+            if ((Get-IniInt 'dlss' 0) -eq 0) { Set-IniInt 'dlss' 4 }
         }
         Update-Fsr-Text
     }
@@ -1105,7 +1117,7 @@ function Check-Game {
     try { if (-not $script:gameProc.HasExited) { return } } catch { $script:gameProc = $null; return }
     $script:gameProc = $null
     try {
-        $dir = 'C:\DEV\rodadas'
+        $dir = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\rodadas'
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         $n = @(Get-ChildItem $dir -Filter 'rodada-*.txt' -ErrorAction SilentlyContinue).Count + 2
         $name = ('rodada-{0:00}-{1}' -f $n, (Get-Date -Format 'yyyyMMdd-HHmmss'))
@@ -1120,7 +1132,7 @@ function Check-Game {
             $txtNotas.Text = ''
             try {
                 $res = Join-Path $dir ($name + '-resumo.txt')
-                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\DEV\medir-rodada.ps1' -Log $arq -Saida $res | Out-Null
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\medir-rodada.ps1' -Log $arq -Saida $res | Out-Null
                 if (Test-Path $res) { $txtResumo.Tag = 'real'; $txtResumo.Text = ((Get-Content $res | Select-Object -First 12) -join [Environment]::NewLine) }
             } catch {}
             $ini = Join-Path $script:gameOut 'hookshot_options.ini'

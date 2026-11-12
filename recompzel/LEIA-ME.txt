@@ -1,8 +1,8 @@
-RecompZel: ferramentas do projeto.
+﻿RecompZel: ferramentas do projeto.
  instalar.ps1       instala do zero (chamado por INSTALAR-RECOMPZEL.bat na raiz do repositorio)
  build-game.ps1     compila o jogo a partir do .nup e, ao terminar, chama post-install.ps1
  post-install.ps1   cria o atalho na area de trabalho, a entrada no menu Iniciar e "Jogar RecompZel.bat"
  launcher.ps1       launcher com progresso do build e opcoes
  atualizar-fork.ps1 traz as novidades do Hookshot original
-O codigo e as ferramentas vivem so neste repositorio (C:\DEV\RecompZel); o launcher e o build-game.ps1 de C:\DEV sao copias dele.
+O codigo e as ferramentas vivem so neste repositorio (D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\RecompZel); o launcher e o build-game.ps1 de D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV sao copias dele.
 Componentes de terceiros (por exemplo o fsr4vk, GPLv3) nunca ficam neste repositorio: o launcher baixa e confere o hash.

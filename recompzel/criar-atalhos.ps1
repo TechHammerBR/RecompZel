@@ -1,8 +1,8 @@
-# criar-atalhos.ps1 - cria atalhos na area de trabalho (nao apaga nada)
+﻿# criar-atalhos.ps1 - cria atalhos na area de trabalho (nao apaga nada)
 # Uso: powershell -ExecutionPolicy Bypass -File .\criar-atalhos.ps1   (para so o atalho do jogo, use post-install.ps1)
 
 $Desktop = [Environment]::GetFolderPath('Desktop')
-$GameDir = 'C:\Games\RecompZel'
+$GameDir = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo'
 if (-not (Test-Path $GameDir) -and (Test-Path 'C:\Games\HookshotDev')) { $GameDir = 'C:\Games\HookshotDev' }   # (pasta antiga, ate renomear)
 $GameExe = Join-Path $GameDir 'RecompZel.exe'
 if (-not (Test-Path $GameExe)) { $GameExe = Join-Path $GameDir 'hookshot.exe' }   # (build antigo, antes do exe proprio)

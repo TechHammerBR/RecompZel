@@ -198,7 +198,13 @@ unsigned upscalers_available() {
            (fsr3::supported() ? ur::bit(ur::FSR3) : 0u) | ur::fsr4_bits(fsr4_why() == FSR_OK);
 }
 /// (FSR 3.1 has inputs of its own; DLSS and FSR 4 run on the frame chain they share, temporal_mode; Off is neither)
-int upscaler() { return fsr3_wanted() ? (int)ur::FSR3 : temporal_off() ? (int)ur::OFF : temporal_mode(); }
+int upscaler() {
+    if (fsr3_wanted()) return ur::FSR3;
+    if (temporal_off()) return ur::OFF;
+    const int m = temporal_mode();
+    // (FSR 4 chosen but not running here, its upscaler refused: the game's own runs in its place, and the row says so)
+    return ur::is_fsr4(m) && fsr4_why() != FSR_OK ? (int)ur::GAME : m;
+}
 const char* tx_upscaler(int) {
     static const char* t[ur::kUpscalers] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA", "AMD FSR 3.1", "AMD FSR 4",
                                             "AMD FSR 4 Native AA", "Off (no upscaling)"};

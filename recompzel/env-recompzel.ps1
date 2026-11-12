@@ -1,7 +1,7 @@
-# Prepara o ambiente de build usando as ferramentas que o HookshotBuilder ja instalou.
+﻿# Prepara o ambiente de build usando as ferramentas que o HookshotBuilder ja instalou.
 # Nao e para rodar sozinho: os outros scripts chamam este com ". $PSScriptRoot\env-recompzel.ps1"
-# Repo = a pasta do repositorio. Se este script esta em <repo>\recompzel, usa <repo>; senao (copia em C:\DEV) usa C:\DEV\RecompZel.
-$Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Split-Path $PSScriptRoot -Parent } else { 'C:\DEV\RecompZel' }
+# Repo = a pasta do repositorio. Se este script esta em <repo>\recompzel, usa <repo>; senao (copia em D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV) usa D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\RecompZel.
+$Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Split-Path $PSScriptRoot -Parent } else { 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\RecompZel' }
 $ver = Get-ChildItem "$env:LOCALAPPDATA\HookshotBuilder\versions" -Directory |
        Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $ver) { throw "As ferramentas de compilacao ainda nao estao instaladas ($env:LOCALAPPDATA\HookshotBuilder\versions). Rode primeiro o instalador do RecompZel (veja o README) para baixa-las." }

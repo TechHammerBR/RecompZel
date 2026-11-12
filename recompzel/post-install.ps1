@@ -1,17 +1,17 @@
-# post-install.ps1 - roda depois da instalacao: deixa o jogo facil de abrir.
+﻿# post-install.ps1 - roda depois da instalacao: deixa o jogo facil de abrir.
 # Cria: atalho "Zelda OoT (RecompZel)" (abre o jogo) e, se houver launcher, "RecompZel Launcher" na area de trabalho, entrada no menu Iniciar e "Jogar RecompZel.bat" dentro da pasta do jogo.
 # Nao apaga nada. Pode rodar quantas vezes quiser (ex.: se mover a pasta do jogo).
-# Uso: powershell -ExecutionPolicy Bypass -File .\post-install.ps1 [-GameDir C:\Games\RecompZel]
+# Uso: powershell -ExecutionPolicy Bypass -File .\post-install.ps1 [-GameDir D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo]
 param([string]$GameDir)
 $ErrorActionPreference = 'Continue'
 
 if (-not $GameDir) {
-    foreach ($d in 'C:\Games\RecompZel', (Join-Path $env:USERPROFILE 'Games\RecompZel'), 'C:\Games\HookshotDev') {
+    foreach ($d in 'D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo', (Join-Path $env:USERPROFILE 'Games\RecompZel'), 'C:\Games\HookshotDev') {
         if (Test-Path -LiteralPath (Join-Path $d 'RecompZel.exe')) { $GameDir = $d; break }
     }
 }
 $exe = if ($GameDir) { Join-Path $GameDir 'RecompZel.exe' } else { '' }
-if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { Write-Host 'Nao achei o RecompZel.exe. Informe a pasta: .\post-install.ps1 -GameDir "C:\Games\RecompZel"'; exit 1 }
+if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { Write-Host 'Nao achei o RecompZel.exe. Informe a pasta: .\post-install.ps1 -GameDir "D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo"'; exit 1 }
 
 # icone: o do proprio executavel
 $Sh = New-Object -ComObject WScript.Shell
@@ -30,13 +30,13 @@ $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'RecompZel'
 New-Item -ItemType Directory -Force -Path $menu | Out-Null
 Novo-Atalho (Join-Path $menu 'Zelda OoT (RecompZel).lnk')
 
-# Launcher (menu com Jogar, progresso e opcoes), se esta maquina tem o launcher.ps1 em C:\DEV
-$launcher = 'C:\DEV\launcher.ps1'
+# Launcher (menu com Jogar, progresso e opcoes), se esta maquina tem o launcher.ps1 em D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV
+$launcher = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\launcher.ps1'
 if (Test-Path -LiteralPath $launcher) {
     $b = $Sh.CreateShortcut((Join-Path $desktop 'RecompZel Launcher.lnk'))
     $b.TargetPath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
     $b.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
-    $b.WorkingDirectory = 'C:\DEV'
+    $b.WorkingDirectory = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV'
     $b.IconLocation = "$exe,0"
     $b.Description = 'Launcher do RecompZel'
     $b.Save()

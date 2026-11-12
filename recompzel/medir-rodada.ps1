@@ -1,14 +1,14 @@
-# medir-rodada.ps1 - resume o desempenho de uma rodada a partir do log (somente leitura, nao abre o jogo)
+﻿# medir-rodada.ps1 - resume o desempenho de uma rodada a partir do log (somente leitura, nao abre o jogo)
 # Ideia inspirada no medir-partida.ps1 do ocarina-recomp (GPL-3.0); codigo escrito do zero para o log do Hookshot.
-#   powershell -ExecutionPolicy Bypass -File C:\DEV\medir-rodada.ps1                  a ultima rodada de C:\DEV\rodadas
-#   powershell -ExecutionPolicy Bypass -File C:\DEV\medir-rodada.ps1 -Log <arquivo>   um log qualquer
-#   powershell -ExecutionPolicy Bypass -File C:\DEV\medir-rodada.ps1 -Comparar        todas as rodadas, uma linha cada
+#   powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\medir-rodada.ps1                  a ultima rodada de D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\rodadas
+#   powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\medir-rodada.ps1 -Log <arquivo>   um log qualquer
+#   powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\medir-rodada.ps1 -Comparar        todas as rodadas, uma linha cada
 #   -Saida <arquivo> grava o texto do resumo
 param([string]$Log, [switch]$Comparar, [string]$Saida)
 
 $inv = [Globalization.CultureInfo]::InvariantCulture
 function Num($s) { return [double]::Parse($s, $inv) }
-$Dir = 'C:\DEV\rodadas'
+$Dir = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\rodadas'
 
 function Ler([string]$caminho) {
     $r = [ordered]@{
@@ -48,7 +48,7 @@ function Ler([string]$caminho) {
         elseif ($l -match '###\s*NOTA: (.+)$') { $r.Nota = $Matches[1].Trim() }
         elseif ($l -match 'fsr3: (\d+x\d+) -> (\d+x\d+)') { $r.Resolucao = ('{0} -> {1} (FSR 3.1)' -f $Matches[1], $Matches[2]) }
         elseif ($l -match '(?i)device lost|\bFATAL\b|\bcrash(ed)?\b') { if ($r.Fatais.Count -lt 3) { $r.Fatais += $l.Trim() } }
-        elseif ($l -match 'VRAM=(.+?)(\s*###|$)' -and $l -match '###') { $r.Config = $Matches[1].Trim() }
+        elseif ($l -match '###' -and $l -match 'VRAM=(.+?)(\s*###|$)') { $r.Config = $Matches[1].Trim() }   # (o ultimo -match e o que fica em $Matches)
     }
     $sr.Close(); $fs.Close()
     return [pscustomobject]$r
@@ -89,7 +89,7 @@ if ($Comparar) {
 } else {
     if (-not $Log) {
         $ult = Get-ChildItem $Dir -Filter 'rodada-*.txt' -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
-        if ($ult) { $Log = $ult.FullName } else { $gd = 'C:\Games\RecompZel'; if (-not (Test-Path $gd)) { $gd = 'C:\Games\HookshotDev' }; $Log = Join-Path $gd 'hookshot_log.txt' }
+        if ($ult) { $Log = $ult.FullName } else { $gd = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo'; if (-not (Test-Path $gd)) { $gd = 'C:\Games\HookshotDev' }; $Log = Join-Path $gd 'hookshot_log.txt' }
     }
     if (-not (Test-Path $Log)) { Write-Host "Nao achei o log: $Log"; exit 1 }
     $out = Resumo (Ler $Log)

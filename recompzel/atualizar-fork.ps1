@@ -1,11 +1,11 @@
-# atualizar-fork.ps1 - traz as novidades do Hookshot original (NotRexed) para o nosso fork local em C:\DEV\RecompZel
+﻿# atualizar-fork.ps1 - traz as novidades do Hookshot original (NotRexed) para o nosso fork local em D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\RecompZel
 # Sem -Aplicar: so mostra o que mudou. Com -Aplicar: atualiza (junta o upstream; se der conflito, desfaz tudo). Nao apaga nada.
 # Com -Aplicar -Enviar: depois de atualizar, envia o resultado para o nosso fork no GitHub (origin). So commits sao enviados.
-#   powershell -ExecutionPolicy Bypass -File C:\DEV\atualizar-fork.ps1
-#   powershell -ExecutionPolicy Bypass -File C:\DEV\atualizar-fork.ps1 -Aplicar
+#   powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\atualizar-fork.ps1
+#   powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\atualizar-fork.ps1 -Aplicar
 param([switch]$Aplicar, [switch]$Enviar)
 
-$Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Split-Path $PSScriptRoot -Parent } else { 'C:\DEV\RecompZel' }
+$Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel') { Split-Path $PSScriptRoot -Parent } else { 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\RecompZel' }
 Set-Location $Repo
 git config core.fileMode false
 

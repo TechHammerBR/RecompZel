@@ -8,7 +8,7 @@
 //    frame before's, from the camera's two matrices, its jitter taken off). Only the camera's motion: what moves by itself gets
 //    the motion of what is behind it, until vk_dlss.cpp's actor motion draws the skinned draws' own over it (dlss_actor.vert). pc.flags bit 0: motion (none on the first frame);
 //    bit 1: the motion shown as the colour instead (RX_VK_DLSS_DEBUG=motion); bit 2: only that, from the motion image as it is
-//    then (after vk_dlss.cpp's actor motion drew into it: dlss_actor.vert)
+//    then (after vk_dlss.cpp's actor motion drew into it: dlss_actor.vert); bit 3: the depth stored inverted (AMD FSR 4)
 // The game's clip space: depth from -1 to 1 (NVN's default), y up, the picture's rows top down.
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D scene;
@@ -35,7 +35,8 @@ void main() {
     const vec3 c = textureLod(scene, uv, 0.0).rgb;
     imageStore(color, g, vec4(clamp(c, 0.0, 1.0), 1.0));
     const float d = textureLod(scene_depth, uv, 0.0).r;
-    imageStore(depth, g, vec4(d));
+    // (bit 3: the depth inverted, 1 at the near plane, for AMD FSR 4's models that take only that: vk_fsr4.cpp)
+    imageStore(depth, g, vec4((pc.flags & 8) != 0 ? 1.0 - d : d));
     vec2 mv = vec2(0.0);
     if ((pc.flags & 1) != 0 && d >= 0.0 && d <= 1.0) {
         const vec4 clip = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, d * 2.0 - 1.0, 1.0);

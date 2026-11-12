@@ -57,6 +57,8 @@
 #include "vk_dlss.h"
 #include "vk_draw.h"
 #include "vk_fsr3.h"   // (fsr3_wanted: AMD FSR 3.1 upscales with inputs of its own)
+#include "vk_fsr3_inputs.h"   // (FSR 4's depth and motion handed to FSR 3.1's frame interpolation)
+#include "vk_fsr3fi.h"
 #include "vk_fsr4.h"
 #include "vk_menu.h"
 #include "vk_streamline.h"   // (recompzel: DLSS Frame Generation takes the depth and motion from here)
@@ -123,6 +125,7 @@ struct Camera {
     float current[16]{};      // (its view-projection)
     float jitter[2]{};        // (the projection's offset of the picture's centre, in clip space: nx2/oot_jitter.py)
     float near_z = 0, far_z = 0, fov_y = 0;   // (its projection's, 0 when it is not a plain perspective one)
+    float projection[16]{};   // (the projection itself, jittered: FSR 3.1's frame interpolation reads its camera from it)
     uint32_t width = 0, height = 0;
     Texture* depth = nullptr;
     uint64_t depth_gen = 0;   // (texture_destroy_generation when taken: a depth texture destroyed since is not used)
@@ -160,6 +163,7 @@ struct State {
     int reason_repeats = 0;
     const TemporalEngine* told_first = nullptr;
     bool told_camera = false;
+    std::chrono::steady_clock::time_point fi_last{};   // (the last frame handed to FSR 3.1's frame interpolation)
     // (actor motion: the skinned draws into the scene since the last upscale; the poses the engine last drew, by draw: the
     // frame before's, where they were copied to in one of the two pose buffers (each frame's poses go to the other one))
     struct Skin {
@@ -648,6 +652,7 @@ void temporal_note_scene_draw(const Texture* color0, uint32_t width, uint32_t he
         return;
     Camera& k = s.cam;
     std::memcpy(k.current, c + 0x30 / 4, sizeof k.current);
+    std::memcpy(k.projection, c + 0x70 / 4, sizeof k.projection);
     // (the offset sead's projection gave the frustum, in its third column: 2 * offset, which moves the picture by -that)
     k.jitter[0] = -c[0x78 / 4], k.jitter[1] = -c[0x88 / 4];
     // (its planes and field of view, for an engine that wants them (FSR's depth heuristics): an OpenGL-style projection, depth
@@ -904,6 +909,11 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     }
     if (ready == 0) return fail(why ? why : "not this frame");
     if (ready == 2) s.engines_made++, s.last_frame = 0;   // (made just now: a new history)
+    // (recompzel) AMD FSR 3.1's frame interpolation takes these same depth and motion images (below, fsr3_inputs::offer)
+    // and reads them as wholes of the render size: kept at the largest render size seen (after Native, or the game's
+    // dynamic resolution), they were read at the wrong scale, a rectangle of the wrong picture and smears beside Link.
+    // While it runs they are the render size exactly
+    if (engine.e == fsr4_engine() && fsr3fi::frames_wanted() != 0) iw = rw, ih = rh;
     if (!make_image(cmd, s.color, VK_FORMAT_R16G16B16A16_SFLOAT, iw, ih) ||
         !make_image(cmd, s.depth, VK_FORMAT_R32_SFLOAT, iw, ih) ||
         !make_image(cmd, s.motion, VK_FORMAT_R16G16_SFLOAT, iw, ih, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) ||
@@ -930,6 +940,8 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     if (!motion) reset = true;   // (without a valid reprojection, prior history has no mapping to this camera)
     pc.jitter[0] = cam.jitter[0], pc.jitter[1] = cam.jitter[1];
     pc.size[0] = (int32_t)rw, pc.size[1] = (int32_t)rh, pc.flags = (motion ? 1 : 0) | (show_motion ? 2 : 0);
+    // (AMD FSR 4's Vulkan models take the depth inverted only: the prep pass stores 1 - d for it, vk_fsr4.cpp's flag says so)
+    if (engine.e == fsr4_engine()) pc.flags |= 8;
 
     const auto prep = [&] {
         const VkDescriptorImageInfo info[5] = {{s.point, in_view, VK_IMAGE_LAYOUT_GENERAL},
@@ -987,6 +999,28 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
         gi.near_z = f.near_z, gi.far_z = f.far_z, gi.fov_y = f.fov_y;
         gi.reset = f.reset;
         slfg::frame_inputs(gi);
+    }
+    // (FSR 4 draws: its depth (inverted for it, the reversed depth FSR 3.1 takes) and motion are AMD FSR 3.1's frame
+    // interpolation inputs too. Without them it had none, and the renderer's own colour-only interpolation made the frames:
+    // the ghosts of what moves)
+    if (engine.e == fsr4_engine() && fsr3fi::frames_wanted() != 0) {
+        float projection[16];
+        std::memcpy(projection, cam.projection, sizeof projection);
+        dlss_math::unjitter(projection, cam.jitter);
+        fsr3_inputs::Frame fi;
+        if (fsr3_math::camera_from_projection(projection, fi.camera) && fi.camera.flip_depth) {
+            const auto t = std::chrono::steady_clock::now();
+            fi.color = f.color.view, fi.depth = f.depth.view, fi.motion = f.motion.view;
+            fi.width = rw, fi.height = rh;
+            fi.jitter[0] = f.jitter[0], fi.jitter[1] = f.jitter[1];
+            fi.reset = f.reset;
+            fi.frame_ms = s.fi_last.time_since_epoch().count() && !f.reset
+                              ? (float)std::min(250.0, std::chrono::duration<double, std::milli>(t - s.fi_last).count())
+                              : 16.667f;
+            fi.frame = texture_frame_no();
+            s.fi_last = t;
+            fsr3_inputs::offer(fi);
+        }
     }
     full_barrier(cmd);
     {

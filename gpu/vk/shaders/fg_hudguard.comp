@@ -1,0 +1,43 @@
+#version 450
+// (recompzel) after AMD FSR 3.1 made the frame between two of the game's: the HUD guard. This game draws its HUD and
+// subtitles into the same picture as the scene, so FSR 3.1, which has no HUD-less colour, moved them with the scene's
+// motion: a smeared HUD and ghosts beside every icon and letter.
+// - What stands still between the two frames (the HUD, a subtitle) is put back as it is.
+// - In the HUD's bands (top and bottom of the screen), a change the scene's motion does not explain (the beating heart,
+//   a counter, a button's flash) is the HUD's own animation: the game's new frame stands in, not a frame made by moving it.
+// - Where FSR 3.1 made a colour neither frame has, next to something that stands still, the new frame stands in too.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D fa;       // the frame before
+layout(binding = 1) uniform sampler2D fb;       // the game's new frame
+layout(binding = 2, rgba8) uniform image2D made;   // FSR 3.1's frame, guarded in place
+layout(binding = 3) uniform sampler2D motion;   // the scene's motion: render pixels, towards the frame before
+layout(push_constant) uniform P { vec2 scale; } pc;   // render pixels -> the made frame's pixels
+float gap(vec3 x, vec3 y) { const vec3 d = abs(x - y); return max(d.r, max(d.g, d.b)); }
+float still_at(ivec2 q, ivec2 size) {
+    q = clamp(q, ivec2(0), size - 1);
+    return 1.0 - smoothstep(0.008, 0.025, gap(texelFetch(fa, q, 0).rgb, texelFetch(fb, q, 0).rgb));
+}
+void main() {
+    const ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    const ivec2 size = imageSize(made);
+    if (any(greaterThanEqual(g, size))) return;
+    const vec2 sz = vec2(size), p = vec2(g) + 0.5;
+    const vec3 a0 = texelFetch(fa, g, 0).rgb, b0 = texelFetch(fb, g, 0).rgb;
+    const vec3 f = imageLoad(made, g).rgb;
+    const float here = still_at(g, size);
+    // (something still within 6 pixels: a HUD edge, where a carried copy shows)
+    float near_still = 0.0;
+    for (int y = -6; y <= 6; y += 3)
+        for (int x = -6; x <= 6; x += 3) near_still = max(near_still, still_at(g + ivec2(x, y), size));
+    const float invented = smoothstep(0.10, 0.22, min(gap(f, a0), gap(f, b0)));
+    // (the HUD's bands: hearts, magic, buttons and rupees at the top; rupees, the map, the text box at the bottom)
+    const float band = 1.0 - step(0.2, p.y / sz.y) * step(p.y / sz.y, 0.7);
+    // (the change explained by the scene's motion: where this pixel was in the frame before matches it)
+    const vec2 v = texture(motion, p / sz).xy * pc.scale;
+    const float explained = 1.0 - smoothstep(0.06, 0.14, gap(texture(fa, (p + v) / sz).rgb, b0));
+    vec3 o = mix(f, mix(a0, b0, 0.5), here);
+    // (in the bands, a colour neither frame has is a carried copy of the HUD, however far from it: the hearts' ghosts lay
+    // some 20 pixels aside, a button prompt's beside it)
+    o = mix(o, b0, (1.0 - here) * max(max(near_still, band) * invented, band * (1.0 - explained)));
+    imageStore(made, g, vec4(o, 1.0));
+}
