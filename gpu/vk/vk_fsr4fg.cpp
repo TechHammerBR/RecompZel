@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "vk_menu.h"   // (opts.fgtype: the Frame generation method row)
+#include "vk_texture.h"   // (full_barrier)
 
 #ifdef HOOKSHOT_FSR
 #include <chrono>
