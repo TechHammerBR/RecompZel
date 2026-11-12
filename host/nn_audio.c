@@ -50,7 +50,7 @@ void hos_system_event_signal(uint64_t key);
 #define MAX_WB 32            /* queued wave buffers per voice */
 #define MAX_REL 128
 
-enum { K_VOICE = 1, K_MIX, K_SPLITTER, K_SINK, K_POOL, K_EFFECT, K_CONFIG, K_DELAY };
+enum { K_VOICE = 1, K_MIX, K_SPLITTER, K_SINK, K_POOL, K_EFFECT, K_CONFIG, K_DELAY, K_AUX };
 enum { FMT_INVALID, FMT_PCM8, FMT_PCM16, FMT_PCM24, FMT_PCM32, FMT_FLOAT, FMT_ADPCM };
 enum { PLAY_STARTED, PLAY_STOPPED, PLAY_PAUSED };
 enum { DEST_NONE, DEST_MIX, DEST_SPLITTER };
@@ -442,11 +442,72 @@ static void delay_frame(Delay *dl, Mix *m) {
     }
 }
 
+/* ---- (recompzel) aux sends: the effects the game computes itself ---------------------------------------------------
+   OoT's room reverb is the game's own, through two aux sends on its sub mixes (6 channels each): every audio frame the
+   mix's input buffers go out (the game reads them, ReadAuxSendBuffer), and what the game writes back (WriteAuxReturnBuffer)
+   is played in the output buffers. Before, GetAuxSampleCount said 0 and the reads were empty: the game never had a sample
+   to reverberate, and no room echoed. Samples are int32 at 16-bit scale, each frame a channel's FRAME samples after the
+   other's. A return not there yet: an insert (out = in) passes the sound through, a send's return bus stays silent.
+   HOS_AUDIO_NO_AUX=1: as before (nothing sent). */
+#define AUX_FRAMES 16
+typedef struct {
+    int used, mix, enabled, n;
+    int8_t in[MAX_CH], out[MAX_CH];
+    int32_t *send, *ret;   /* rings of AUX_FRAMES frames */
+    int cap, s_head, s_count, r_head, r_count;
+    long frames_sent, frames_back;
+    int units;   /* frames x channels of the game's send and return buffers (AddAux's size): GetAuxSampleCount's count is
+                    a frame's samples times them, as the DSP's count_max */
+} Aux;
+static Aux auxes[MAX_EFFECTS];
+static void ring_push(int32_t *r, int cap, int *head, int *count, const int32_t *src, int n) {
+    for (int i = 0; i < n; i++) {
+        if (*count == cap) *head = (*head + 1) % cap, (*count)--;   /* (full: the oldest goes) */
+        r[(*head + *count) % cap] = src[i];
+        (*count)++;
+    }
+}
+static int ring_pop(int32_t *r, int cap, int *head, int *count, int32_t *dst, int n) {
+    if (n > *count) n = *count;
+    for (int i = 0; i < n; i++) dst[i] = r[(*head + i) % cap];
+    *head = (*head + n) % cap, *count -= n;
+    return n;
+}
+static void aux_frame(Aux *ax, Mix *m) {
+    static int off = -1;
+    if (off < 0) off = getenv("HOS_AUDIO_NO_AUX") != NULL;
+    if (off || !ax->enabled || ax->n <= 0 || !ax->send) return;
+    int32_t tmp[MAX_CH * FRAME];
+    for (int c = 0; c < ax->n; c++) {
+        const int b = ax->in[c];
+        for (int i = 0; i < FRAME; i++) {
+            float x = b >= 0 && b < m->buffers ? m->buf[b][i] * 32768.0f : 0.0f;
+            if (!isfinite(x)) x = 0.0f;
+            tmp[c * FRAME + i] = (int32_t)(x > 2147483000.0f ? 2147483000.0f : x < -2147483000.0f ? -2147483000.0f : x);
+        }
+    }
+    ring_push(ax->send, ax->cap, &ax->s_head, &ax->s_count, tmp, ax->n * FRAME);
+    ax->frames_sent++;
+    const int have = ax->r_count >= ax->n * FRAME;
+    if (have) ring_pop(ax->ret, ax->cap, &ax->r_head, &ax->r_count, tmp, ax->n * FRAME), ax->frames_back++;
+    for (int c = 0; c < ax->n; c++) {
+        const int bo = ax->out[c];
+        if (bo < 0 || bo >= m->buffers) continue;
+        if (have) {
+            for (int i = 0; i < FRAME; i++) m->buf[bo][i] = tmp[c * FRAME + i] * (1.0f / 32768.0f);
+        } else if (bo != ax->in[c]) {
+            for (int i = 0; i < FRAME; i++) m->buf[bo][i] = 0.0f;
+        }
+    }
+}
+
 static void effects_frame(int mix) {
     for (int e = 0; e < MAX_EFFECTS; e++)
         if (reverbs[e].used && reverbs[e].mix == mix) reverb_frame(&reverbs[e], &mixes[mix]);
     for (int e = 0; e < MAX_EFFECTS; e++)
         if (delays[e].used && delays[e].mix == mix) delay_frame(&delays[e], &mixes[mix]);
+    for (int e = 0; e < MAX_EFFECTS; e++)
+        if (auxes[e].used && auxes[e].mix == mix) aux_frame(&auxes[e], &mixes[mix]);
 }
 
 /* ---- the mixer ------------------------------------------------------------------------------------------------- */
@@ -1663,13 +1724,87 @@ static void aux_tell(void) {
     hos_log("audio: aux: %ld added, %ld enabled, %ld routed; %ld reads (%ld samples asked), %ld writes (%ld samples given), %ld counts",
             aux_add, aux_en, aux_io, aux_read, aux_read_asked, aux_write, aux_write_given, aux_count);
 }
-HLE(_ZN2nn5audio6AddAuxEPNS0_19AudioRendererConfigEPNS0_7AuxTypeEPNS0_10SubMixTypeEPvS7_m) { aux_add++; hos_log("audio: aux added on a sub mix (buffers %llu bytes)", (unsigned long long)ARG(5)); RET(0); }
-HLE(_ZN2nn5audio6AddAuxEPNS0_19AudioRendererConfigEPNS0_7AuxTypeEPNS0_12FinalMixTypeEPvS7_m) { aux_add++; hos_log("audio: aux added on the final mix (buffers %llu bytes)", (unsigned long long)ARG(5)); RET(0); }
-HLE(_ZN2nn5audio12IsAuxEnabledEPKNS0_7AuxTypeE) { RET(1); }
+static Aux *aux_of(uint64_t obj) {
+    const int i = get_handle(obj, K_AUX);
+    return i >= 0 && i < MAX_EFFECTS && auxes[i].used ? &auxes[i] : NULL;
+}
+static void add_aux(Ctx *c, const char *where) {
+    aux_add++;
+    au_lock();
+    int e = 0;
+    while (e < MAX_EFFECTS && auxes[e].used) e++;
+    const int m = mix_index(ARG(2));
+    if (e == MAX_EFFECTS || m < 0) {
+        au_unlock();
+        hos_log("audio: aux refused (mix %d)", m);
+        RET(0x1A9 << 9 | 153);
+        return;
+    }
+    Aux *ax = &auxes[e];
+    free(ax->send), free(ax->ret);
+    memset(ax, 0, sizeof *ax);
+    ax->cap = AUX_FRAMES * MAX_CH * FRAME;
+    ax->send = (int32_t *)calloc((size_t)ax->cap, sizeof(int32_t));
+    ax->ret = (int32_t *)calloc((size_t)ax->cap, sizeof(int32_t));
+    ax->used = 1, ax->mix = m, ax->n = 2;
+    /* (the buffers' size, GetRequiredBufferSizeForAuxSendReturnBuffer's: frames x channels x 4 + 0x100) */
+    ax->units = ARG(5) > 0x100 ? (int)((ARG(5) - 0x100) / 4) : 0;
+    for (int k = 0; k < MAX_CH; k++) ax->in[k] = ax->out[k] = (int8_t)k;
+    put_handle(ARG(1), K_AUX, e);
+    au_unlock();
+    hos_log("audio: aux %d added on %s %d", e, where, m);
+    RET(0);
+}
+HLE(_ZN2nn5audio6AddAuxEPNS0_19AudioRendererConfigEPNS0_7AuxTypeEPNS0_10SubMixTypeEPvS7_m) { add_aux(c, "sub mix"); }
+HLE(_ZN2nn5audio6AddAuxEPNS0_19AudioRendererConfigEPNS0_7AuxTypeEPNS0_12FinalMixTypeEPvS7_m) { add_aux(c, "the final mix"); }
+HLE(_ZN2nn5audio12IsAuxEnabledEPKNS0_7AuxTypeE) { Aux *ax = aux_of(ARG(0)); RET(ax ? ax->enabled : 0); }
 HLE(_ZN2nn5audio14IsAuxRemovableEPKNS0_7AuxTypeE) { RET(1); }
-HLE(_ZN2nn5audio17ReadAuxSendBufferEPNS0_7AuxTypeEPii) { aux_read++, aux_read_asked += (long)(int)ARG(2); aux_tell(); RET(0); }
-HLE(_ZN2nn5audio20WriteAuxReturnBufferEPNS0_7AuxTypeEPKii) { aux_write++, aux_write_given += (long)(int)ARG(2); aux_tell(); RET((int)ARG(2)); }
-HLE(_ZN2nn5audio17GetAuxSampleCountEPKNS0_7AuxTypeE) { aux_count++; aux_tell(); RET(0); }
+HLE(_ZN2nn5audio17ReadAuxSendBufferEPNS0_7AuxTypeEPii) {
+    aux_read++, aux_read_asked += (long)(int)ARG(2);
+    au_lock();
+    Aux *ax = aux_of(ARG(0));
+    int got = 0;
+    if (ax && ARG(1) && (int)ARG(2) > 0) {
+        int32_t tmp[MAX_CH * FRAME];
+        int want = (int)ARG(2);
+        while (want > 0) {
+            const int k = ring_pop(ax->send, ax->cap, &ax->s_head, &ax->s_count, tmp, want < MAX_CH * FRAME ? want : MAX_CH * FRAME);
+            if (!k) break;
+            memcpy(GP(ARG(1) + (uint64_t)got * 4), tmp, (size_t)k * 4);
+            got += k, want -= k;
+        }
+    }
+    au_unlock();
+    aux_tell();
+    RET(got);
+}
+HLE(_ZN2nn5audio20WriteAuxReturnBufferEPNS0_7AuxTypeEPKii) {
+    aux_write++, aux_write_given += (long)(int)ARG(2);
+    au_lock();
+    Aux *ax = aux_of(ARG(0));
+    const int n = (int)ARG(2);
+    if (ax && ARG(1) && n > 0) {
+        for (int at = 0; at < n; at += MAX_CH * FRAME) {
+            const int k = n - at < MAX_CH * FRAME ? n - at : MAX_CH * FRAME;
+            int32_t tmp[MAX_CH * FRAME];
+            memcpy(tmp, GP(ARG(1) + (uint64_t)at * 4), (size_t)k * 4);
+            ring_push(ax->ret, ax->cap, &ax->r_head, &ax->r_count, tmp, k);
+        }
+    }
+    au_unlock();
+    aux_tell();
+    RET(n > 0 ? n : 0);
+}
+/* (the DSP's count_max: a frame's samples x the buffers' frames x channels, 240 x 5 x 6 here. The game reads a frame of
+   it each time, count_max / its frame count, every channel's 240 samples one after the other. 240 alone had it read 48
+   at a time, which it took for all six channels: the return came back scrambled) */
+HLE(_ZN2nn5audio17GetAuxSampleCountEPKNS0_7AuxTypeE) {
+    aux_count++;
+    aux_tell();
+    Aux *ax = aux_of(ARG(0));
+    const int units = ax ? (ax->units > 0 ? ax->units : 5 * ax->n) : 5 * 2;
+    RET(FRAME * units);
+}
 HLE(_ZN2nn5audio17IsReverbRemovableEPKNS0_10ReverbTypeE) { RET(1); }
 HLE(_ZN2nn5audio22IsBufferMixerRemovableEPKNS0_15BufferMixerTypeE) { RET(1); }
 HLE(_ZN2nn5audio22IsI3dl2ReverbRemovableEPKNS0_15I3dl2ReverbTypeE) { RET(1); }
@@ -1921,5 +2056,20 @@ HLE(_ZN2nn5audio19SetDelayInputOutputEPNS0_9DelayTypeEPKaS4_i) {
 }
 HLE(_ZN2nn5audio16IsDelayRemovableEPKNS0_9DelayTypeE) { RET(1); }
 /* (the aux sends pass through, as the renderer's own: their switch and routing taken, nothing to do) */
-HLE(_ZN2nn5audio13SetAuxEnabledEPNS0_7AuxTypeEb) { aux_en++; hos_log("audio: aux %s", ARG(1) & 1 ? "on" : "off"); }
-HLE(_ZN2nn5audio17SetAuxInputOutputEPNS0_7AuxTypeEPKaS4_i) { aux_io++; hos_log("audio: aux routed, %d channels", (int)ARG(3)); }
+HLE(_ZN2nn5audio13SetAuxEnabledEPNS0_7AuxTypeEb) { aux_en++; Aux *ax = aux_of(ARG(0)); if (ax) ax->enabled = (int)(ARG(1) & 1); hos_log("audio: aux %s", ARG(1) & 1 ? "on" : "off"); }
+HLE(_ZN2nn5audio17SetAuxInputOutputEPNS0_7AuxTypeEPKaS4_i) {
+    aux_io++;
+    au_lock();
+    Aux *ax = aux_of(ARG(0));
+    const int n = (int)ARG(3) > MAX_CH ? MAX_CH : (int)ARG(3) < 1 ? 1 : (int)ARG(3);
+    if (ax) {
+        for (int k = 0; k < n; k++) {
+            ax->in[k] = *(int8_t *)GP(ARG(1) + k);
+            ax->out[k] = *(int8_t *)GP(ARG(2) + k);
+        }
+        ax->n = n, ax->s_count = ax->r_count = 0;
+    }
+    au_unlock();
+    hos_log("audio: aux routed, %d channels: in %d %d .. out %d %d", n, ax ? ax->in[0] : -1, ax ? ax->in[1] : -1,
+            ax ? ax->out[0] : -1, ax ? ax->out[1] : -1);
+}
