@@ -1114,6 +1114,20 @@ function Get-LastBuildSeconds {
     $script:lbsAt = $now; $script:lbsVal = $val
     return $val
 }
+# (recompzel) quando este build comecou: o processo do make_game.py (o log e reaproveitado entre builds, a data de criacao
+# dele nao serve); sem ele, a ultima vez que o log foi zerado nao se sabe, entao a data de criacao do log
+function Get-BuildStart([string]$lp) {
+    $now = [datetime]::Now
+    if ($script:bsAt -and ($now - $script:bsAt).TotalSeconds -lt 30 -and $script:bsVal) { return $script:bsVal }
+    $start = $null
+    try {
+        $p = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction Stop | Where-Object { $_.CommandLine -match 'make_game\.py' } | Select-Object -First 1
+        if ($p) { $start = $p.CreationDate }
+    } catch { }
+    if (-not $start) { $start = (Get-Item -LiteralPath $lp).CreationTime }
+    $script:bsAt = $now; $script:bsVal = $start
+    return $start
+}
 function Format-Min([double]$sec) {
     $m = [int][math]::Ceiling($sec / 60)
     if ($m -lt 1) { return (T 'lt1') }
@@ -1244,7 +1258,7 @@ function Update-View {
         # da pasta de trabalho), menos o tempo que este ja leva desde que o log comecou
         $prev = Get-LastBuildSeconds
         if ($prev -gt 0) {
-            $elapsed = ([datetime]::Now - (Get-Item $lp).CreationTime).TotalSeconds
+            $elapsed = ([datetime]::Now - (Get-BuildStart $lp)).TotalSeconds
             $left = [math]::Max(60, $prev - $elapsed)
             $parts += ((T 'eta_pre') + (Format-Min $left) + (T 'eta_post') + $(if ($script:lang -eq 'en') { ' (by the last build)' } else { ' (pelo ultimo build)' }))
         }
