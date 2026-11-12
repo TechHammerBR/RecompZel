@@ -53,6 +53,16 @@ Se preferir o launcher (menu com Jogar, progresso do build e opções), use **Re
 
 Dentro do jogo, **Insert** abre o menu (idioma, qualidade, geração de quadros, upscaling).
 
+## Atualizar para a versão mais nova
+
+O jogo já instalado **não** atualiza sozinho. Para pegar correções e melhorias novas:
+
+1. Abra o **RecompZel Launcher**.
+2. Clique em **Reconstruir o jogo**. Ele busca a versão mais nova sozinho e recompila (leva uns 5 minutos; o que já foi compilado antes é reaproveitado).
+3. Quando terminar, clique em **Jogar**.
+
+O botão **Atualizar o RecompZel** é outra coisa, separada: ele só atualiza o launcher (o painel com os botões), não o jogo. Quem busca a versão nova do jogo e recompila é o **Reconstruir o jogo**.
+
 ## O que tem em cada pasta
 
 | Caminho | O que é |
