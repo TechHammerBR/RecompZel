@@ -1096,6 +1096,38 @@ function Get-Step([double]$p, [string]$cur, [string]$stage) {
     return '[  ]'
 }
 
+# (recompzel) quanto o ultimo build levou, fora os shaders: o build_times.json mais novo entre a pasta de trabalho do perfil e
+# a do %LOCALAPPDATA%. 0 quando nao ha nenhum
+function Get-LastBuildSeconds {
+    $now = [datetime]::Now
+    if ($script:lbsAt -and ($now - $script:lbsAt).TotalSeconds -lt 30) { return $script:lbsVal }
+    $best = $null
+    foreach ($w in @([string]$script:g.workDir, (Join-Path $env:LOCALAPPDATA 'RecompZel\build-work'))) {
+        if (-not $w) { continue }
+        $f = Join-Path $w 'build_times.json'
+        if ((Test-Path -LiteralPath $f) -and (-not $best -or (Get-Item -LiteralPath $f).LastWriteTime -gt (Get-Item -LiteralPath $best).LastWriteTime)) { $best = $f }
+    }
+    $val = 0
+    if ($best) {
+        try { $b = @((Get-Content -LiteralPath $best -Raw | ConvertFrom-Json).builds); if ($b.Count) { $val = [double]$b[-1].total_seconds } } catch { }
+    }
+    $script:lbsAt = $now; $script:lbsVal = $val
+    return $val
+}
+# (recompzel) quando este build comecou: o processo do make_game.py (o log e reaproveitado entre builds, a data de criacao
+# dele nao serve); sem ele, a ultima vez que o log foi zerado nao se sabe, entao a data de criacao do log
+function Get-BuildStart([string]$lp) {
+    $now = [datetime]::Now
+    if ($script:bsAt -and ($now - $script:bsAt).TotalSeconds -lt 30 -and $script:bsVal) { return $script:bsVal }
+    $start = $null
+    try {
+        $p = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction Stop | Where-Object { $_.CommandLine -match 'make_game\.py' } | Select-Object -First 1
+        if ($p) { $start = $p.CreationDate }
+    } catch { }
+    if (-not $start) { $start = (Get-Item -LiteralPath $lp).CreationTime }
+    $script:bsAt = $now; $script:bsVal = $start
+    return $start
+}
 function Format-Min([double]$sec) {
     $m = [int][math]::Ceiling($sec / 60)
     if ($m -lt 1) { return (T 'lt1') }
@@ -1124,7 +1156,7 @@ function Update-View {
     $g = $script:g
     $lines = Read-LogLines
     $stage = 'inicio'; $totalFiles = [int]$g.totalFiles; $filesDone = 0
-    $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $done = $false; $shEnd = $false
+    $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $done = $false; $shEnd = $false; $shDone = -1; $shAll = 0; $shLeft = -1
     foreach ($l in $lines) {
         if ($l -match '^@@stage\s+(\S+)') { $stage = $Matches[1]; if ($stage -eq 'shaders') { $shEnd = $false; $prog = -1 } }
         if ($l -match '^(done shaders|the shaders were not prepared now|\[script\] codigo de saida)') { $shEnd = $true }
@@ -1134,6 +1166,8 @@ function Update-View {
         if ($l -match '^@@plan\s+(\d+)') { $planTotal = [int]$Matches[1] }
         if ($l -match '^@@progress\s+([\d\.]+)') { $prog = [double]$Matches[1] }
         if ($l -match '^@@eta\s+(\d+)') { $eta = [int]$Matches[1] }
+        # (os shaders: quantos pipelines prontos, de quantos, e o tempo que o proprio build estima)
+        if ($l -match 'predicted pipelines:\s+(\d+) of (\d+) pipelines in \d+ s, about (\d+) s left') { $shDone = [int]$Matches[1]; $shAll = [int]$Matches[2]; $shLeft = [int]$Matches[3] }
         if (($l -match '^(error|fatal)\b') -or ($l -match 'Traceback') -or ($l -match '(?i)Terminou com codigo [1-9]') -or ($l -match '^compiled in .*,\s*[1-9]\d* failed')) { $err += $l }
         if ($l -match '(?i)^@@done|^@@stage\s+done|^the build took|build complete|build finished') { $done = $true }
     }
@@ -1166,6 +1200,13 @@ function Update-View {
     if ($script:lang -eq 'en' -and $isZ) { $txtGameSub.Text = T 'subtitle' } else { $txtGameSub.Text = [string]$g.subtitle }
     $txtPct.Text = ('{0}%' -f [int][math]::Floor($total))
     $pbTotal.Value = $total
+    # (recompzel) os shaders valem pouco na barra geral mas levam a maior parte do tempo: enquanto rodam, o numero grande e a
+    # barra mostram o progresso real desta etapa, nao um 92-100% parado
+    if ($shRunning -and $prog -ge 0) {
+        $shPct = [math]::Max(0, [math]::Min(100, 100.0 * $prog))
+        $txtPct.Text = ('{0}%' -f [int][math]::Floor($shPct))
+        $pbTotal.Value = $shPct
+    }
 
     # status, "agora" e "proximo passo" em linguagem simples
     if ($err.Count -gt 0) {
@@ -1179,6 +1220,11 @@ function Update-View {
     } elseif ($shRunning) {
         $txtStatus.Text = T 'st_shaders'; $txtStatus.Foreground = '#6FD3A0'
         $txtNow.Text = T 'now_shaders'
+        if ($shDone -ge 0 -and $shAll -gt 0) {
+            $min = [math]::Max(1, [math]::Ceiling($shLeft / 60.0))
+            if ($script:lang -eq 'en') { $txtNow.Text += ("`n{0:N0} of {1:N0} pipelines ready, about {2} min left." -f $shDone, $shAll, $min) }
+            else { $txtNow.Text += ("`n{0:N0} de {1:N0} pipelines prontos, faltam cerca de {2} min." -f $shDone, $shAll, $min) }
+        }
         $txtNext.Text = T 'next_shaders'
     } elseif ($stage -eq 'inicio') {
         $txtStatus.Text = T 'st_none'; $txtStatus.Foreground = '#8FA89C'
@@ -1205,8 +1251,21 @@ function Update-View {
         $ago = ([datetime]::Now - $last).TotalSeconds
         $parts += ((T 'act_pre') + (Format-Min $ago) + (T 'act_post'))
     }
-    if ($stage -eq 'compile' -and $eta -ge 0) {
+    if ($shRunning) {
+        # (os shaders: o tempo que o proprio build estima; antes da primeira estimativa, so que esta preparando)
+        if ($shLeft -ge 0) { $parts += ((T 'eta_pre') + (Format-Min $shLeft) + (T 'eta_post')) }
+        else { $parts += $(if ($script:lang -eq 'en') { 'Estimating the time left...' } else { 'Calculando o tempo restante...' }) }
+    } elseif ($stage -eq 'compile' -and $eta -ge 0) {
         $parts += ((T 'eta_pre') + (Format-Min $eta) + (T 'eta_post'))
+    } elseif ($stage -in @('read','lift','compile','finish') -and -not $done -and (Test-Path $lp)) {
+        # (recompzel) antes da compilacao o build nao estima nada: a previsao vem da duracao do ultimo build (build_times.json
+        # da pasta de trabalho), menos o tempo que este ja leva desde que o log comecou
+        $prev = Get-LastBuildSeconds
+        if ($prev -gt 0) {
+            $elapsed = ([datetime]::Now - (Get-BuildStart $lp)).TotalSeconds
+            $left = [math]::Max(60, $prev - $elapsed)
+            $parts += ((T 'eta_pre') + (Format-Min $left) + (T 'eta_post') + $(if ($script:lang -eq 'en') { ' (by the last build)' } else { ' (pelo ultimo build)' }))
+        }
     }
     if ($script:memText) { $parts += $script:memText }
     $txtTime.Text = ($parts -join '  |  ')
@@ -1306,7 +1365,8 @@ $btnPlay.Add_Click({
         } elseif (Install-Fsr) {
             $useFsr = $true
             [Environment]::SetEnvironmentVariable('RX_VK_FSR_DIR', (Get-FsrDir), 'Process')
-            [Environment]::SetEnvironmentVariable('RX_VK_FSR4', '1', 'Process')
+            # (recompzel: so a pasta do FSR 4. RX_VK_FSR4=1 forcava o FSR 4 comum por cima do menu: a linha Upscaler ficava
+            # presa nele (sem Desligado nem FSR 3.1) e a Escala de resolucao perdia o Nativo. O menu do jogo escolhe)
         }
         Update-Fsr-Text
     }

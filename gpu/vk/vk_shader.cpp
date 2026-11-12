@@ -339,6 +339,12 @@ Shader::TextureType handle_texture_type(uint32_t handle) {
 
 namespace {
 
+/// A movie upscaler network left out on a card that cannot run it as the console does (translate_program): on purpose,
+/// so told apart from a program that failed
+struct NetworkLeftOut : std::runtime_error {
+    NetworkLeftOut() : std::runtime_error("a network left out on this card") {}
+};
+
 bool handle_is_integer(uint32_t handle) {
     nvn_tex t;
     nvn_view v;
@@ -1607,7 +1613,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                     at = e == std::string::npos ? keep.size() : e + 1;
                 }
                 if ((!kept_one && (Shader::Backend::SPIRV::mma_software || dev.props.vendorID != 0x10DE)) || getenv("RX_VK_NO_F16"))
-                    throw std::runtime_error("a network left out on this card");
+                    throw NetworkLeftOut();
             }
             const std::vector<uint32_t> spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_pinned(), rt, t->program, bindings);
             // (EvilOOT) RX_VK_DUMP_SPV=<folder>: the SPIR-V of the programs RX_VK_MISS_LOG_PROG names (all: unset), for spirv-val
@@ -1701,6 +1707,11 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
         ptr_diag_log(p.key, csc ? "compute" : fsc ? "graphics" : "vertex");
         if (seed_capture) *seed_capture = std::move(kept);
         else program_cache_save(p, kept);
+    } catch (const NetworkLeftOut&) {
+        // (a movie network left out on purpose: not a failure, so not in the status line's "failed" count; once in all)
+        p.failed = true;
+        static std::atomic<int> left;
+        if (left++ == 0) logf("vk: the movie upscaler's networks are left out on this card (a linear upscale in their place)");
     } catch (const std::exception& e) {
         p.failed = true;
         const bool trial = forced && !forced->want.empty();   // (an answer seed_compute tries: it may well not translate)

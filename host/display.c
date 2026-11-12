@@ -481,7 +481,11 @@ static DWORD WINAPI display_main(void *p) {
         SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     else
         ShowWindow(hwnd, SW_SHOW);
-    if (getenv("HOS_FULLSCREEN") && atoi(getenv("HOS_FULLSCREEN"))) set_fullscreen(hwnd, 1);
+    /* (the menu's Fullscreen row, hookshot_options.ini's fullscreen=, taken before the renderer starts: applied later by
+       vk_menu.cpp's fullscreen_tick, the first swapchain was made at the 1280x720 window and made again a moment after) */
+    extern int hos_ini_option(const char *key, int otherwise);
+    const char *fs_env = getenv("HOS_FULLSCREEN");
+    if (fs_env ? atoi(fs_env) != 0 : hos_ini_option("fullscreen", 0) != 0) set_fullscreen(hwnd, 1);
     RAWINPUTDEVICE rid = {1, 2, 0, hwnd};   /* generic desktop mouse: WM_INPUT while the window is in front */
     RegisterRawInputDevices(&rid, 1, sizeof rid);
     pointer_update(hwnd, 0, 0);

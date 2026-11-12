@@ -66,7 +66,11 @@ if (-not $Out) {
     }
 }
 # mesma regra do launcher: a pasta dos scripts (C:\DEV no PC do desenvolvedor, %LOCALAPPDATA%\RecompZel com o .exe); rodando de dentro do repositorio, %LOCALAPPDATA%\RecompZel
-$base = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel' -and (Test-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'nx2\make_game.py'))) { Join-Path $env:LOCALAPPDATA 'RecompZel' } else { $PSScriptRoot }
+$base = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel' -and (Test-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'nx2\make_game.py'))) {
+            # (recompzel: tudo no D. Rodando de dentro do repositorio, a pasta DEV ao lado dele, se existir)
+            $devD = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'DEV'
+            if (Test-Path -LiteralPath $devD) { $devD } else { Join-Path $env:LOCALAPPDATA 'RecompZel' }
+        } else { $PSScriptRoot }
 if (-not $Work) { $Work = Join-Path $base 'build-work' }
 if (-not $Log)  { $Log  = Join-Path $base 'build.log' }
 
@@ -126,7 +130,8 @@ Add-Content -Path $Log -Value "`r`n[script] codigo de saida $code, $min minutos"
 
 # 3) pos-instalacao: atalho na area de trabalho e "Jogar RecompZel.bat" na pasta do jogo
 if ($code -eq 0 -and (Test-Path -LiteralPath (Join-Path $Out 'RecompZel.exe'))) {
-    & (Join-Path $PSScriptRoot 'post-install.ps1') -GameDir $Out
+    # (recompzel) os atalhos nao sao mais criados a cada build: quem joga decide os seus. RECOMPZEL_ATALHOS=1 cria como antes
+& (Join-Path $PSScriptRoot 'post-install.ps1') -GameDir $Out
 }
 if ($code -ne 0) { Pause-Fechar }
 exit $code

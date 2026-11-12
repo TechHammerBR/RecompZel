@@ -24,13 +24,15 @@ inline ImU32 alpha(ImU32 c, float k) {
 }
 
 // ---- the palette ----
-constexpr ImU32 kInk = rgba(240, 232, 214), kInkBright = rgba(255, 250, 240), kSoft = rgba(214, 204, 184), kDim = rgba(168, 156, 136),
-                kGold = rgba(222, 152, 40), kGoldHi = rgba(238, 168, 52), kGoldInk = rgba(36, 24, 8), kAccent = rgba(214, 170, 96),
-                kEdge = rgba(122, 98, 64, 150), kCellDark = rgba(30, 25, 19, 246), kCellName = rgba(60, 47, 32, 240),
-                kCellNameSel = rgba(92, 70, 42, 248), kBronze = rgba(84, 64, 38), kColumn = rgba(34, 26, 17, 228),
-                kBannerTop = rgba(184, 146, 96, 246), kBanner = rgba(176, 138, 88, 246), kBannerInk = rgba(46, 30, 12),
-                kBannerEdge = rgba(70, 48, 24), kTabInset = rgba(84, 56, 30, 250), kBox = rgba(36, 28, 19, 248),
-                kBoxEdge = rgba(122, 98, 64, 220), kBar = rgba(22, 17, 11, 232), kListen = rgba(150, 120, 40);
+// (recompzel) Zelda green in place of the beige and browns: the banner and tabs a tunic green, the cells and columns deep
+// forest greens; the gold (the Triforce's) and the cream ink kept
+constexpr ImU32 kInk = rgba(236, 240, 222), kInkBright = rgba(250, 255, 240), kSoft = rgba(204, 214, 188), kDim = rgba(150, 168, 140),
+                kGold = rgba(222, 172, 40), kGoldHi = rgba(240, 192, 60), kGoldInk = rgba(20, 30, 8), kAccent = rgba(214, 186, 96),
+                kEdge = rgba(84, 132, 72, 150), kCellDark = rgba(15, 30, 18, 246), kCellName = rgba(28, 60, 33, 240),
+                kCellNameSel = rgba(44, 96, 50, 248), kBronze = rgba(52, 100, 50), kColumn = rgba(12, 26, 15, 228),
+                kBannerTop = rgba(64, 140, 66, 246), kBanner = rgba(52, 124, 56, 246), kBannerInk = rgba(10, 30, 12),
+                kBannerEdge = rgba(22, 60, 24), kTabInset = rgba(30, 80, 34, 250), kBox = rgba(16, 32, 19, 248),
+                kBoxEdge = rgba(84, 132, 72, 220), kBar = rgba(10, 21, 12, 232), kListen = rgba(150, 140, 40);
 constexpr int kDimAlpha = 185;   // (the game behind the menu)
 
 /// The unit: pixels per point. By the window's height and the Menu size (1 Small, 2 Medium, 3 Large; anything else, as the

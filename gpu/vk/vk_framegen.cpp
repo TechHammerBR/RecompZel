@@ -22,6 +22,7 @@
 #include "vk_framegen.h"
 #include "vk_fsr3_inputs.h"   // (AMD FSR 3.1 frame interpolation's depth and motion)
 #include "vk_fsr3fi.h"
+#include "vk_fsr4fg.h"
 #include "vk_menu.h"
 #include "vk_present_rect.h"
 #include "vk_streamline.h"   // (recompzel: DLSS-G makes the frames while it runs)
@@ -33,6 +34,7 @@
 #include "shaders/fg_median_comp_spv.h"
 #include "shaders/fg_scale_comp_spv.h"
 #include "shaders/fg_synth_comp_spv.h"
+#include "shaders/fg_hudguard_comp_spv.h"
 #include "shaders/hdr_encode_comp_spv.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
@@ -77,7 +79,7 @@ struct State {
     bool init = false;
     std::atomic<bool> failed{false};   // also read by Reflex's game-thread eligibility check
     uint32_t w = 0, h = 0;
-    Pipe copy, luma, flow, median, synth;
+    Pipe copy, luma, flow, median, synth, hudguard;
     VkSampler nearest = VK_NULL_HANDLE, linear = VK_NULL_HANDLE;
     Img frames[2], lumas[2], flows[2];
     OutSet sets[3];   // (one shown, one waiting its place on the line, one being made: the pacer never holds the game back)
@@ -203,7 +205,7 @@ bool make_pipe(Pipe& p, const uint32_t* code, size_t bytes, std::initializer_lis
 
 // The optional interpolation is disabled after setup fails: retain none of its unused setup objects.
 void drop_setup() {
-    for (Pipe* p : {&fg.copy, &fg.luma, &fg.flow, &fg.median, &fg.synth}) drop_pipe(*p);
+    for (Pipe* p : {&fg.copy, &fg.luma, &fg.flow, &fg.median, &fg.synth, &fg.hudguard}) drop_pipe(*p);
     if (fg.nearest) vkDestroySampler(dev.device, fg.nearest, nullptr);
     if (fg.linear) vkDestroySampler(dev.device, fg.linear, nullptr);
     fg.nearest = fg.linear = VK_NULL_HANDLE;
@@ -223,7 +225,8 @@ bool init() {
         !make_pipe(fg.luma, FG_LUMA_COMP_SPV, sizeof FG_LUMA_COMP_SPV, {S, I}, 0) ||
         !make_pipe(fg.flow, FG_FLOW_COMP_SPV, sizeof FG_FLOW_COMP_SPV, {S, S, I}, 0, &spec) ||
         !make_pipe(fg.median, FG_MEDIAN_COMP_SPV, sizeof FG_MEDIAN_COMP_SPV, {S, I}, 0) ||
-        !make_pipe(fg.synth, FG_SYNTH_COMP_SPV, sizeof FG_SYNTH_COMP_SPV, {S, S, S, I}, 4))
+        !make_pipe(fg.synth, FG_SYNTH_COMP_SPV, sizeof FG_SYNTH_COMP_SPV, {S, S, S, I}, 4) ||
+        !make_pipe(fg.hudguard, FG_HUDGUARD_COMP_SPV, sizeof FG_HUDGUARD_COMP_SPV, {S, S, I, S}, 8))
         return undo();
     VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -709,6 +712,12 @@ int fsr3fi_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_
     const VkImageCopy c{{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0},
                         {uw, uh, 1}};
     vkCmdCopyImage(cmd, fsr3fi::made_image(), VK_IMAGE_LAYOUT_GENERAL, set.frame[0].image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
+    full_barrier(cmd);
+    // (the HUD and subtitles put back where they stand: FSR 3.1 moved them with the scene, fg_hudguard.comp)
+    // (and in the HUD's bands, what the scene's motion does not explain: the HUD's own animation, the beating heart)
+    const float mv_scale[2] = {f.width ? (float)uw / (float)f.width : 1.0f, f.height ? (float)uh / (float)f.height : 1.0f};
+    pass(cmd, fg.hudguard, {{fg.frames[cur ^ 1].view, fg.nearest}, {fg.frames[cur].view, fg.nearest},
+                            {set.frame[0].view, VK_NULL_HANDLE}, {f.motion, fg.nearest}}, uw, uh, mv_scale, sizeof mv_scale);
     made++;
     static bool told = false;
     if (!told) {
@@ -716,6 +725,36 @@ int fsr3fi_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_
         logf("vk: fsr3fi: AMD FSR 3.1 makes the frame between each two of the game's (%ux%u, its depth and motion %ux%u)", uw,
              uh, f.width, f.height);
     }
+    return 1;
+}
+
+// (recompzel) The made frame of a 2x set by AMD FSR Frame Generation 4 ("Redstone", vk_fsr4fg.h): AMD's machine-learning
+// interpolation, from this frame's colour and FSR 4's depth and motion, written straight into the set's made frame; the HUD
+// guard then puts back what stands still, as after FSR 3.1. 0 when it made none (the renderer's own interpolation then)
+int fsr4fg_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh) {
+    static uint64_t asked = 0, made = 0, no_inputs = 0;
+    if (++asked % 600 == 0)
+        logf("vk: fsr4fg: %llu of the last 600 made frames by AMD FSR 4 frame generation, %llu without its inputs", (unsigned long long)made,
+             (unsigned long long)no_inputs),
+            made = no_inputs = 0;
+    fsr3_inputs::Frame f;
+    if (!fsr3_inputs::take(f) || !f.depth_image || !f.motion_image) return no_inputs++, 0;
+    fsr4fg::Inputs in;
+    in.color_image = fg.frames[cur].image;
+    in.output_image = set.frame[0].image;
+    in.width = uw, in.height = uh;
+    in.depth_image = f.depth_image, in.motion_image = f.motion_image;
+    in.render_w = f.width, in.render_h = f.height;
+    in.jitter[0] = f.jitter[0], in.jitter[1] = f.jitter[1];
+    in.near_z = f.camera.near_plane, in.far_z = f.camera.far_plane, in.fov_y = f.camera.fov_y;
+    in.frame_ms = f.frame_ms;
+    in.reset = f.reset;
+    if (!fsr4fg::generate(cmd, in)) return 0;
+    full_barrier(cmd);
+    const float mv_scale[2] = {f.width ? (float)uw / (float)f.width : 1.0f, f.height ? (float)uh / (float)f.height : 1.0f};
+    pass(cmd, fg.hudguard, {{fg.frames[cur ^ 1].view, fg.nearest}, {fg.frames[cur].view, fg.nearest},
+                            {set.frame[0].view, VK_NULL_HANDLE}, {f.motion, fg.nearest}}, uw, uh, mv_scale, sizeof mv_scale);
+    made++;
     return 1;
 }
 
@@ -795,7 +834,8 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     }
     // (hookshot) At 2x, AMD FSR 3.1's frame interpolation where it runs; it makes the midpoint only, so 3x and more (and Auto,
     // above) stay with the interpolation below, as does any present it does not take
-    if (blend && m == 2 && fsr3fi::frames_wanted()) set->made = fsr3fi_frame(cmd, *set, cur, uw, uh, sequence);
+    if (blend && m == 2 && fsr4fg::wanted()) set->made = fsr4fg_frame(cmd, *set, cur, uw, uh);
+    else if (blend && m == 2 && fsr3fi::frames_wanted()) set->made = fsr3fi_frame(cmd, *set, cur, uw, uh, sequence);
     if (set->made == 0 && blend && m > 1) {
         pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
                             {fg.flows[0].view, VK_NULL_HANDLE}}, cw, ch);

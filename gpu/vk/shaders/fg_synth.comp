@@ -29,7 +29,14 @@ void main() {
     const vec2 size = vec2(d);
     const vec3 a = textureLod(fa, (p - t * v) / size, 0.0).rgb;
     const vec3 b = textureLod(fb, (p + (1.0 - t) * v) / size, 0.0).rgb;
-    const float agree = 1.0 - smoothstep(0.05, 0.16, gap(a, b));
+    // (the HUD and subtitles stand still over a moving scene: a scene vector that reaches into them carried their pixels
+    // aside, a ghost of every icon and letter. A sample taken from where both frames agree is from something still, not
+    // from what moved to this pixel: rejected, and the nearer frame stands in)
+    const vec2 qa = (p - t * v) / size, qb = (p + (1.0 - t) * v) / size;
+    const float still_a = 1.0 - smoothstep(0.01, 0.03, gap(textureLod(fa, qa, 0.0).rgb, textureLod(fb, qa, 0.0).rgb));
+    const float still_b = 1.0 - smoothstep(0.01, 0.03, gap(textureLod(fa, qb, 0.0).rgb, textureLod(fb, qb, 0.0).rgb));
+    const float far = step(1.5, length(v));   // (a vector under two pixels moves nothing far enough to show)
+    const float agree = (1.0 - smoothstep(0.05, 0.16, gap(a, b))) * (1.0 - far * max(still_a, still_b));
     // (where no vector explains the change, the nearer of the two frames as it is: a blend there was a double image, and
     // over a camera cut or a fade a picture that neither frame shows)
     const vec3 near = t <= 0.5 ? a0 : b0;

@@ -323,8 +323,8 @@ A draw keeps its descriptors while the texture slots it samples are unchanged, s
 What a sampler holds is kept beside it on the replay thread, so resolving a sampler that was not registered anew takes no lock. Helps while the game streams textures. Applies after restart.	O que um sampler guarda fica junto dele na thread de replay, então resolver um sampler que não foi registrado de novo não usa trava. Ajuda enquanto o jogo carrega texturas. Vale após reiniciar.
 Restart	Reiniciar
 Starts the game again. Save your progress first. Press Enter or A twice to restart. Esc or B cancels.	Inicia o jogo de novo. Salve seu progresso antes. Aperte Enter ou A duas vezes para reiniciar. Esc ou B cancela.
-Quit	Sair
-Save your progress first. Press Enter or A twice to quit. Esc or B cancels.	Salve seu progresso antes. Aperte Enter ou A duas vezes para sair. Esc ou B cancela.
+Quit	Sair para a área de trabalho
+Save your progress first. Press Enter or A twice to quit. Esc or B cancels.	Fecha o jogo e volta para a área de trabalho. Salve seu progresso antes. Aperte Enter ou A duas vezes para sair. Esc ou B cancela.
 Deku Seeds	Sementes Deku
 Deku Nuts	Nozes Deku
 Deku Sticks	Gravetos Deku

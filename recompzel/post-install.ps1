@@ -48,3 +48,12 @@ $bat = Join-Path $GameDir 'Jogar RecompZel.bat'
 
 Write-Host "Pronto. Para jogar, use o atalho 'Zelda OoT (RecompZel)' na area de trabalho."
 Write-Host "Tambem: $bat"
+
+# (recompzel) AMD FSR 4 Frame Generation (Redstone): as DLLs da AMD (FSR SDK 2.4, MIT) que vem no pacote, na pasta fsr4fg do jogo
+$rs = Join-Path (Split-Path $PSScriptRoot -Parent) 'extras\redstone-fsr4fg'
+if (Test-Path -LiteralPath $rs) {
+    $dst = Join-Path (Split-Path $exe -Parent) 'fsr4fg'
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Copy-Item -Path (Join-Path $rs '*.dll') -Destination $dst -Force
+    Write-Host 'AMD FSR 4 Frame Generation (Redstone) instalado em' $dst
+}

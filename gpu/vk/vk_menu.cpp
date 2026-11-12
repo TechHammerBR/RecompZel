@@ -41,6 +41,7 @@
 #include "../../host/hos_wide_size.h"   // (the widescreen picture's size, as host/hos_main.c works it out)
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
+#include "vk_fsr4fg.h"    // (recompzel: AMD FSR 4 frame generation, the method row's fourth)
 #include "vk_fsr4.h"
 #include "vk_temporal.h"
 #include "vk_reflex.h"
@@ -112,18 +113,18 @@ const char* tx_framegen(int v) {
         return t[v];
     }
     if (v == 1) return "Auto (RecompZel)";
-    snprintf(t[v], sizeof t[v], "%dx (%s)", v, v == 2 && fsr3fi::frames_wanted() != 0 ? "AMD FSR 3.1" : "RecompZel");
+    snprintf(t[v], sizeof t[v], "%dx (%s)", v, v == 2 && fsr4fg::wanted() ? "AMD FSR 4" : v == 2 && fsr3fi::frames_wanted() != 0 ? "AMD FSR 3.1" : "RecompZel");
     return t[v];
 }
 /// The Frame generation method (opts.fgtype): 0 RecompZel's own interpolation (any GPU), 1 NVIDIA DLSS Frame Generation (where
 /// Streamline is loaded and DLSS-G runs on this GPU), 2 AMD FSR 3.1 (2x, where this GPU can run its passes)
 bool fgtype_available(int v) {
-    return v == 0 || (v == 1 && slfg::max_generated() > 0) || (v == 2 && fsr3fi::capable());
+    return v == 0 || (v == 1 && slfg::max_generated() > 0) || (v == 2 && fsr3fi::capable()) || (v == 3 && fsr4fg::available());
 }
 const char* tx_fgtype(int v) {
-    static const char* const on[] = {"RecompZel", "NVIDIA DLSS-G", "AMD FSR 3.1"};
-    static const char* const off[] = {"RecompZel", "NVIDIA DLSS-G (not here)", "AMD FSR 3.1 (not here)"};
-    v = std::clamp(v, 0, 2);
+    static const char* const on[] = {"RecompZel", "NVIDIA DLSS-G", "AMD FSR 3.1", "AMD FSR 4 (Redstone)"};
+    static const char* const off[] = {"RecompZel", "NVIDIA DLSS-G (not here)", "AMD FSR 3.1 (not here)", "AMD FSR 4 (Redstone) (not here)"};
+    v = std::clamp(v, 0, 3);
     return fgtype_available(v) ? on[v] : off[v];
 }
 const char* hn_fgtype(int v, int variant) {
@@ -133,8 +134,11 @@ const char* hn_fgtype(int v, int variant) {
         "multiplier: 2x on an RTX 40, up to 4x on an RTX 50. Choosing it sets the Upscaler to NVIDIA DLSS. Needs the NVIDIA files "
         "beside the game (the launcher installs them).",
         "AMD FSR 3.1's frame interpolation, at 2x (higher values use RecompZel's own). Works on most GPUs. The HUD can smear "
-        "while it moves: the game draws it into the same picture."};
-    return variant <= 0 && v >= 0 && v <= 2 ? t[v] : nullptr;
+        "while it moves: the game draws it into the same picture.",
+        "AMD FSR 4 frame generation (Redstone): AMD's machine-learning interpolation at 2x, from FSR 4's depth and motion: "
+        "less ghosting than FSR 3.1. Needs the Upscaler on AMD FSR 4, an RX 9000 GPU and AMD's files in the game's fsr4fg "
+        "folder."};
+    return variant <= 0 && v >= 0 && v <= 3 ? t[v] : nullptr;
 }
 const char* tx_language(int v) {
     static const char* const names[] = {"Auto", "English", "Portugu\xc3\xaas (Brasil)"};
@@ -214,7 +218,13 @@ unsigned upscalers_available() {
            (fsr3::supported() ? ur::bit(ur::FSR3) : 0u) | ur::fsr4_bits(fsr4_why() == FSR_OK);
 }
 /// (FSR 3.1 has inputs of its own; DLSS and FSR 4 run on the frame chain they share, temporal_mode; Off is neither)
-int upscaler() { return fsr3_wanted() ? (int)ur::FSR3 : temporal_off() ? (int)ur::OFF : temporal_mode(); }
+int upscaler() {
+    if (fsr3_wanted()) return ur::FSR3;
+    if (temporal_off()) return ur::OFF;
+    const int m = temporal_mode();
+    // (FSR 4 chosen but not running here, its upscaler refused: the game's own runs in its place, and the row says so)
+    return ur::is_fsr4(m) && fsr4_why() != FSR_OK ? (int)ur::GAME : m;
+}
 const char* tx_upscaler(int) {
     static const char* t[ur::kUpscalers] = {"Game's own", "NVIDIA DLSS", "NVIDIA DLAA", "AMD FSR 3.1", "AMD FSR 4",
                                             "AMD FSR 4 Native AA", "Off (no upscaling)"};
@@ -782,8 +792,8 @@ Row rows[] = {
      "Fills the whole screen with the game, without the window's border. The same as F11.", nullptr, false, true},
     {TAB_GRAPHICS, "GPU device", &opts.gpu_device, 0, 8, 1, tx_gpu,
      "Which graphics card the game runs on. Applies after a restart.", hn_gpu, true, true},
-    {TAB_GRAPHICS, "Frame generation method", &opts.fgtype, 0, 2, 1, tx_fgtype,
-     "Who makes the frames between the game's own: RecompZel's interpolation, NVIDIA DLSS Frame Generation or AMD FSR 3.1. "
+    {TAB_GRAPHICS, "Frame generation method", &opts.fgtype, 0, 3, 1, tx_fgtype,
+     "Who makes the frames between the game's own: RecompZel's interpolation, NVIDIA DLSS Frame Generation, AMD FSR 3.1 or AMD FSR 4 (Redstone). "
      "A method that cannot run on this GPU says so and is skipped.", hn_fgtype, false, true},
     {TAB_GRAPHICS, "Frame generation", &opts.framegen, 0, 8, 1, tx_framegen,
      "Makes frames between the game's own, for smoother motion, at a little input delay. Fast motion or camera cuts can "
@@ -1397,10 +1407,13 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         v = res;
     }
     if (r.value == &opts.fgtype) {   // (only the methods that can run here: the next one that can, in the arrow's direction)
-        int c = ((v % 3) + 3) % 3;
-        for (int i = 0; i < 3 && !fgtype_available(c); i++) c = (c + (dir < 0 ? 2 : 1)) % 3;
+        int c = ((v % 4) + 4) % 4;
+        for (int i = 0; i < 4 && !fgtype_available(c); i++) c = (c + (dir < 0 ? 3 : 1)) % 4;
         v = c;
     }
+    // (recompzel) AMD FSR 3.1 makes the midpoint only: with it as the method, the Frame generation row is Off or 2x, not the
+    // Auto and 3x to 8x that went to RecompZel's own interpolation behind its back
+    if (r.value == &opts.framegen && (opts.fgtype == 2 || opts.fgtype == 3) && fgtype_available(opts.fgtype)) v = *r.value == 2 ? 0 : 2;
     if (r.value == &opts.output_res) {   // (smallest to largest: step_output_choice)
         v = step_output_choice(*r.value, dir);
         if (v == *r.value) return;
@@ -1434,6 +1447,8 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     } else if (r.value == &opts.dlss && opts.fgtype == 1 && (upscaler() == ur::FSR3 || upscaler() == ur::OFF)) {
         opts.fgtype = 0;
     }
+    // (recompzel) AMD FSR 3.1 chosen as the method: frame generation that was on (Auto, 3x...) becomes its 2x
+    if (r.value == &opts.fgtype && (opts.fgtype == 2 || opts.fgtype == 3) && opts.framegen != 0 && opts.framegen != 2) opts.framegen = 2;
     if (r.value == &opts.mic && can_mic()) mic_chosen();   // (hookshot)
     // (hookshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
     if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset)
