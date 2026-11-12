@@ -45,5 +45,12 @@ void main() {
     // (in the bands, a colour neither frame has is a carried copy of the HUD, however far from it: the hearts' ghosts lay
     // some 20 pixels aside, a button prompt's beside it)
     o = mix(o, b0, (1.0 - here) * max(max(near_still, band) * invented, band * (1.0 - explained)));
+    // (anywhere: a colour none of the four candidates has, the two frames as they are and each moved halfway along the
+    // scene's motion, is the interpolation's own invention, as glows and particles without motion vectors (Gohma's eyes)
+    // came out: a red smear with white wedges across the screen. Real motion matches the moved frames and is kept)
+    const vec3 am = texture(fa, (p + 0.5 * v) / sz).rgb, bm = texture(fb, (p - 0.5 * v) / sz).rgb;
+    const float wild = smoothstep(0.22, 0.38, min(min(gap(f, a0), gap(f, b0)), min(gap(f, am), gap(f, bm))));
+    const vec3 fix = gap(am, bm) < 0.12 ? mix(am, bm, 0.5) : b0;
+    o = mix(o, fix, wild * (1.0 - here));
     imageStore(made, g, vec4(o, 1.0));
 }
