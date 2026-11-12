@@ -1652,13 +1652,24 @@ HLE(_ZN2nn5audio25GetVoicePlayedSampleCountEPKNS0_9VoiceTypeE) {
 HLE(_ZN2nn5audio20IsVoiceDroppedFlagOnEPKNS0_9VoiceTypeE) { RET(0); }
 
 /* ---- effects: accepted, not processed (the dry signal goes through) -------------------------------------------- */
-HLE(_ZN2nn5audio6AddAuxEPNS0_19AudioRendererConfigEPNS0_7AuxTypeEPNS0_10SubMixTypeEPvS7_m) { RET(0); }
-HLE(_ZN2nn5audio6AddAuxEPNS0_19AudioRendererConfigEPNS0_7AuxTypeEPNS0_12FinalMixTypeEPvS7_m) { RET(0); }
+/* (recompzel) how the game uses the aux sends: the effects it computes itself (its own reverb) go out through ReadAuxSendBuffer
+   and come back through WriteAuxReturnBuffer. Counted and told every ~10 s, before the aux path is made real */
+static volatile long aux_add, aux_read, aux_write, aux_count, aux_en, aux_io, aux_read_asked, aux_write_given;
+static void aux_tell(void) {
+    static uint64_t last;
+    const uint64_t now = au_ms();
+    if (now - last < 10000) return;
+    last = now;
+    hos_log("audio: aux: %ld added, %ld enabled, %ld routed; %ld reads (%ld samples asked), %ld writes (%ld samples given), %ld counts",
+            aux_add, aux_en, aux_io, aux_read, aux_read_asked, aux_write, aux_write_given, aux_count);
+}
+HLE(_ZN2nn5audio6AddAuxEPNS0_19AudioRendererConfigEPNS0_7AuxTypeEPNS0_10SubMixTypeEPvS7_m) { aux_add++; hos_log("audio: aux added on a sub mix (buffers %llu bytes)", (unsigned long long)ARG(5)); RET(0); }
+HLE(_ZN2nn5audio6AddAuxEPNS0_19AudioRendererConfigEPNS0_7AuxTypeEPNS0_12FinalMixTypeEPvS7_m) { aux_add++; hos_log("audio: aux added on the final mix (buffers %llu bytes)", (unsigned long long)ARG(5)); RET(0); }
 HLE(_ZN2nn5audio12IsAuxEnabledEPKNS0_7AuxTypeE) { RET(1); }
 HLE(_ZN2nn5audio14IsAuxRemovableEPKNS0_7AuxTypeE) { RET(1); }
-HLE(_ZN2nn5audio17ReadAuxSendBufferEPNS0_7AuxTypeEPii) { RET(0); }
-HLE(_ZN2nn5audio20WriteAuxReturnBufferEPNS0_7AuxTypeEPKii) { RET((int)ARG(2)); }
-HLE(_ZN2nn5audio17GetAuxSampleCountEPKNS0_7AuxTypeE) { RET(0); }
+HLE(_ZN2nn5audio17ReadAuxSendBufferEPNS0_7AuxTypeEPii) { aux_read++, aux_read_asked += (long)(int)ARG(2); aux_tell(); RET(0); }
+HLE(_ZN2nn5audio20WriteAuxReturnBufferEPNS0_7AuxTypeEPKii) { aux_write++, aux_write_given += (long)(int)ARG(2); aux_tell(); RET((int)ARG(2)); }
+HLE(_ZN2nn5audio17GetAuxSampleCountEPKNS0_7AuxTypeE) { aux_count++; aux_tell(); RET(0); }
 HLE(_ZN2nn5audio17IsReverbRemovableEPKNS0_10ReverbTypeE) { RET(1); }
 HLE(_ZN2nn5audio22IsBufferMixerRemovableEPKNS0_15BufferMixerTypeE) { RET(1); }
 HLE(_ZN2nn5audio22IsI3dl2ReverbRemovableEPKNS0_15I3dl2ReverbTypeE) { RET(1); }
@@ -1910,5 +1921,5 @@ HLE(_ZN2nn5audio19SetDelayInputOutputEPNS0_9DelayTypeEPKaS4_i) {
 }
 HLE(_ZN2nn5audio16IsDelayRemovableEPKNS0_9DelayTypeE) { RET(1); }
 /* (the aux sends pass through, as the renderer's own: their switch and routing taken, nothing to do) */
-HLE(_ZN2nn5audio13SetAuxEnabledEPNS0_7AuxTypeEb) { (void)c; }
-HLE(_ZN2nn5audio17SetAuxInputOutputEPNS0_7AuxTypeEPKaS4_i) { (void)c; }
+HLE(_ZN2nn5audio13SetAuxEnabledEPNS0_7AuxTypeEb) { aux_en++; hos_log("audio: aux %s", ARG(1) & 1 ? "on" : "off"); }
+HLE(_ZN2nn5audio17SetAuxInputOutputEPNS0_7AuxTypeEPKaS4_i) { aux_io++; hos_log("audio: aux routed, %d channels", (int)ARG(3)); }
