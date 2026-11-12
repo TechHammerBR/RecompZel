@@ -1,13 +1,17 @@
-﻿# launcher.ps1  -  RecompZel Launcher v3 (original, feito para o nosso projeto)
-# Uso: powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\launcher.ps1
+# launcher.ps1  -  RecompZel Launcher v3 (original, feito para o nosso projeto)
+# Uso: powershell -ExecutionPolicy Bypass -File launcher.ps1   (ou o RecompZel-Launcher.exe)
 # Le o build.log e a pasta de trabalho. Nao apaga nada. Reconstruir pede confirmacao.
-# Idioma: Portugues (Brasil) ou English, no canto superior esquerdo. Perfis de jogos: D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\games.json.
+# Idioma: Portugues (Brasil) ou English, no canto superior esquerdo. Perfis de jogos: games.json, na pasta do launcher.
 # A pasta do jogo e D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo. Se ainda existir so a antiga (C:\Games\HookshotDev), ela continua sendo usada.
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
-$ProfilesPath = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\games.json'
-$Cfg          = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\launcher-settings.json'
+# Os scripts ficam onde este esta (D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV no PC do desenvolvedor, %LOCALAPPDATA%\RecompZel para quem usa o .exe); os dados (perfil, logs, rodadas)
+# ficam na mesma pasta, exceto quando o launcher roda de dentro do repositorio (pasta recompzel): ai vao para %LOCALAPPDATA%\RecompZel.
+$AppDir       = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel' -and (Test-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'nx2\make_game.py'))) { Join-Path $env:LOCALAPPDATA 'RecompZel' } else { $PSScriptRoot }
+New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
+$ProfilesPath = Join-Path $AppDir 'games.json'
+$Cfg          = Join-Path $AppDir 'launcher-settings.json'
 $W = @{ read = 15; lift = 10; compile = 60; finish = 15 }   # pesos do percentual total
 $script:lang = 'pt'
 
@@ -25,6 +29,13 @@ $STR['pt'] = @{
     folder_tip = 'Abre a pasta onde o jogo foi montado.'
     report = 'Copiar relatorio para suporte'
     report_tip = 'Copia o final do registro do build. Cole numa conversa para pedir ajuda.'
+    upd = 'Atualizar o RecompZel'
+    upd_avail = 'Atualizar o RecompZel (ha novidade!)'
+    upd_tip = 'Baixa a versao mais nova do launcher e do codigo do jogo direto do GitHub. Depois, Reconstruir aplica as mudancas do jogo.'
+    upd_ask = 'Baixar e instalar a atualizacao do RecompZel agora? O launcher fecha e abre de novo sozinho.'
+    upd_none = 'Voce ja esta com a versao mais nova.'
+    upd_fail = 'Nao consegui atualizar agora: {0}'
+    upd_src_ok = 'Codigo do jogo atualizado. Clique em Reconstruir para aplicar (so recompila o que mudou).'
     vram_t = 'Memoria de video para texturas'
     vram_d = 'Padrao do jogo (70% da VRAM, ate 6 GB)'
     vram_tip = 'Quanta memoria da placa de video o jogo pode usar para texturas. Valores maiores ajudam nas texturas embaralhadas, se a placa tiver folga. Padrao: o jogo decide.'
@@ -39,14 +50,19 @@ $STR['pt'] = @{
     mesh_fail = 'Nao consegui salvar: {0}'
     mesh_ok = 'Valor atual lido das opcoes do jogo.'
     up_t = 'Upload de texturas por quadro'
+    mem_t = 'Perfil de memoria (RAM e VRAM)'
     up_0 = 'Padrao do jogo (40 ms)'
     up_1 = '120 ms'
     up_2 = 'Sem adiamento (0 ms)'
     fg_t = 'Metodo de geracao de quadros'
-    fg_0 = 'Hookshot (padrao, 2x a 8x)'
+    fg_0 = 'RecompZel (padrao, 2x a 8x)'
     fg_1 = 'AMD FSR 3.1 (so 2x)'
     fg_2 = 'Desligado (sem geracao de quadros)'
     diag = 'Registrar diagnostico (buffer sem conexao)'
+    linear = 'DLSS com cor linear (teste: tira o halo e a borda escura?)'
+    ram_save = 'Nao carregar o cache de pipelines (teste: nos logs nao reduziu a RAM e a abertura demora mais)'
+    ram_tip = 'RX_VK_PCACHE_LOAD=0'
+    mem_now = 'Jogo agora: RAM {0}, VRAM {1}'
     fsr = 'Usar AMD FSR 4 (mais quadros por segundo)'
     fsr_off = 'Desligado. Se ligar, o launcher cuida do resto.'
     fsr_rebuild = 'O jogo sera reconstruido uma vez, com FSR 4, ao clicar em Jogar.'
@@ -77,6 +93,38 @@ $STR['pt'] = @{
     fsr_e_hash = 'o arquivo baixado nao confere com o esperado (hash diferente)'
     fsr_q_rebuild = 'Este jogo foi construido sem suporte ao FSR 4. Para usar, ele precisa ser reconstruido uma vez (o que ja esta pronto e reaproveitado, entao demora bem menos que a primeira vez).{n}{n}Reconstruir agora? Se escolher Nao, o jogo abre sem FSR 4.'
     help = 'Passe o mouse sobre um botao para ver o que ele faz.'
+    tech_t = 'Tecnologias de imagem'
+    tech_gpu = 'Sua placa: {0}'
+    tech_gpu_none = 'nao consegui ler a placa de video'
+    tech_all = 'Instalar tudo para a minha placa'
+    tech_all_q = 'Vou preparar para a sua placa: {0}.{n}{n}Isso baixa componentes de terceiros conforme a placa (NVIDIA: Streamline, cerca de 276 MB; AMD: componente do FSR 4, cerca de 14 MB), confere o hash de cada arquivo e liga as opcoes certas. O DLSS (reescalonamento) pede reconstruir o jogo uma vez.{n}{n}Aceita as licencas da NVIDIA (NVIDIA RTX SDKs) e do componente do FSR 4 (GPLv3) e quer continuar? Se escolher Nao, nada e baixado.'
+    tech_none = 'Nao encontrei uma placa compativel com DLSS (NVIDIA RTX) ou FSR 4 (AMD) neste PC. O jogo usa o upscaler e a geracao de quadros dele.'
+    tech_done = 'Tudo pronto para a sua placa. Escolha o upscaler e o metodo de geracao de quadros dentro do jogo (menu Insert, aba Graficos).'
+    tech_done_rebuild = 'Componentes instalados. Falta so reconstruir o jogo uma vez (botao Reconstruir o jogo) para ligar o DLSS.'
+    tech_fail = 'Algumas opcoes nao foram instaladas. O jogo abre sem elas.'
+    safe = 'Modo seguro (jogar sem tecnologias extras)'
+    safe_on = 'Ligado: o jogo abre sem DLSS, FSR 4 e Streamline, so com o upscaler e a geracao de quadros dele.'
+    safe_off = 'Desligado. Ligue se o jogo travar, para testar sem as tecnologias acima.'
+    help_tech = 'O launcher detecta a sua placa e so oferece o que ela suporta. Dentro do jogo (menu Insert, aba Graficos) voce escolhe o upscaler e o metodo de geracao de quadros.'
+    badge_ok = 'Ativo'
+    badge_off = 'Nao incluido'
+    badge_todo = 'Falta instalar'
+    badge_no = 'Sem suporte'
+    badge_exp = 'Experimental'
+    badge_safe = 'Modo seguro'
+    tn_dsr = 'NVIDIA DLSS (reescalonamento e DLAA)'
+    tn_dlss = 'NVIDIA DLSS Frame Generation'
+    tn_fsr = 'AMD FSR 4'
+    tech_intro = 'Tudo que a sua placa suporta fica ativo. Depois e so escolher no jogo (menu Insert, aba Graficos): o Upscaler e o metodo de geracao de quadros.'
+    st_dsr_on = 'Ativo. No jogo, a linha Upscaler escolhe DLSS ou DLAA.'
+    st_dsr_todo = 'Ativado na proxima reconstrucao do jogo (uma vez; o launcher cuida disso).'
+    st_dlss_on = 'Ativo. No jogo, a linha Metodo de geracao de quadros escolhe o DLSS e a linha Geracao de quadros, o multiplicador.'
+    st_dlss_todo = 'Os componentes da NVIDIA (cerca de 276 MB) sao baixados uma vez, ao clicar em Jogar ou em Instalar tudo.'
+    st_fsr_on = 'Ativo. No jogo, a linha Upscaler escolhe o FSR 4.'
+    st_fsr_rebuild = 'Ativado na proxima reconstrucao do jogo (uma vez).'
+    st_fsr_todo = 'O componente do FSR 4 (cerca de 14 MB) e baixado uma vez, ao clicar em Jogar ou em Instalar tudo.'
+    st_fsr_other = 'Pensado para placas AMD e nao incluido nesta placa. O FSR 3.1 do proprio jogo continua no menu.'
+    st_safe = 'Modo seguro ligado: nao usado.'
     help_tune = 'Rodada 2: texturas ASTC novas ficam provisorias quando o carregamento passa do limite por quadro. Teste 120 ms ou Sem adiamento. O diagnostico registra o buffer sem conexao no log.'
     lbl_now = 'O que esta acontecendo agora'
     lbl_steps = 'Etapas'
@@ -97,6 +145,9 @@ $STR['pt'] = @{
     now_lift = 'Convertendo o codigo do Switch 2 para codigo de PC. E uma etapa rapida.'
     now_compile = 'Transformando esse codigo em programa. E a etapa mais longa e deixa o processador bem ocupado.'
     now_finish = 'Finalizando: juntando as pecas e preparando os efeitos graficos.'
+    now_shaders = 'Preparando os efeitos graficos (shaders) da sua placa de video. Leva alguns minutos, so desta vez.'
+    st_shaders = 'Preparando os shaders'
+    next_shaders = 'Quando terminar, o botao Jogar liga sozinho. A janela do build fecha sozinha.'
     next_build = 'Nao precisa fazer nada. Pode deixar esta janela aberta e usar o PC normalmente.'
     act_pre = 'Ultima atividade ha '
     act_post = ''
@@ -110,8 +161,12 @@ $STR['pt'] = @{
     q_build = 'Iniciar o build do jogo? Pode levar mais de uma hora e usa bastante o processador.'
     e_script = 'Nao achei o script de build: {0}'
     e_script2 = 'Nao achei o script: {0}'
+    nup_use = 'Usar este arquivo do jogo?{n}{n}{0}{n}{n}Sim = usar este.   Nao = escolher outro arquivo.'
+    nup_title = 'Escolha o arquivo do jogo (.nup) do Zelda Ocarina of Time'
+    nup_filter = 'Arquivo do jogo (*.nup)|*.nup|Todos os arquivos|*.*'
+    nup_none = 'Sem o arquivo do jogo (.nup) o build nao comeca.'
     rep_copied = 'Relatorio copiado. Cole na conversa com Ctrl+V.'
-    started = 'Jogo iniciado. Ao fechar o jogo, o log desta rodada e salvo em D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\rodadas.'
+    started = 'Jogo iniciado. Ao fechar o jogo, o log desta rodada e salvo na pasta rodadas do launcher.'
     saved = 'Rodada salva: {0}'
 }
 $STR['en'] = @{
@@ -126,6 +181,13 @@ $STR['en'] = @{
     folder_tip = 'Opens the folder where the game was built.'
     report = 'Copy report for support'
     report_tip = 'Copies the end of the build log. Paste it into a chat to ask for help.'
+    upd = 'Update RecompZel'
+    upd_avail = 'Update RecompZel (news!)'
+    upd_tip = 'Downloads the newest launcher and game code straight from GitHub. Then Rebuild applies the game changes.'
+    upd_ask = 'Download and install the RecompZel update now? The launcher closes and opens again by itself.'
+    upd_none = 'You already have the newest version.'
+    upd_fail = 'Could not update now: {0}'
+    upd_src_ok = 'Game code updated. Click Rebuild to apply it (only what changed is recompiled).'
     vram_t = 'Video memory for textures'
     vram_d = 'Game default (70% of VRAM, up to 6 GB)'
     vram_tip = 'How much graphics card memory the game may use for textures. Larger values help with scrambled textures, if the card has room. Default: the game decides.'
@@ -140,14 +202,19 @@ $STR['en'] = @{
     mesh_fail = 'Could not save: {0}'
     mesh_ok = 'Current value read from the game options.'
     up_t = 'Texture upload per frame'
+    mem_t = 'Memory profile (RAM and VRAM)'
     up_0 = 'Game default (40 ms)'
     up_1 = '120 ms'
     up_2 = 'No deferral (0 ms)'
     fg_t = 'Frame generation method'
-    fg_0 = 'Hookshot (default, 2x to 8x)'
+    fg_0 = 'RecompZel (default, 2x to 8x)'
     fg_1 = 'AMD FSR 3.1 (2x only)'
     fg_2 = 'Off (no frame generation)'
     diag = 'Log diagnostics (unbound buffer)'
+    linear = 'DLSS with linear color (test: removes the halo and the dark edge?)'
+    ram_save = 'Do not load the pipeline cache (a test: logs show no RAM saving and the start takes longer)'
+    ram_tip = 'RX_VK_PCACHE_LOAD=0'
+    mem_now = 'Game now: RAM {0}, VRAM {1}'
     fsr = 'Use AMD FSR 4 (higher frame rate)'
     fsr_off = 'Off. If you turn it on, the launcher handles the rest.'
     fsr_rebuild = 'The game will be rebuilt once, with FSR 4, when you click Play.'
@@ -178,6 +245,38 @@ $STR['en'] = @{
     fsr_e_hash = 'the downloaded file does not match the expected one (different hash)'
     fsr_q_rebuild = 'This game was built without FSR 4 support. To use it, it must be rebuilt once (what is already done is reused, so it takes much less than the first time).{n}{n}Rebuild now? If you choose No, the game opens without FSR 4.'
     help = 'Hover over a button to see what it does.'
+    tech_t = 'Image technologies'
+    tech_gpu = 'Your GPU: {0}'
+    tech_gpu_none = 'could not read the graphics card'
+    tech_all = 'Install everything for my GPU'
+    tech_all_q = 'I will set up for your GPU: {0}.{n}{n}This downloads third-party components depending on the card (NVIDIA: Streamline, about 276 MB; AMD: the FSR 4 component, about 14 MB), checks each file''s hash and turns the right options on. DLSS (upscaling) needs the game rebuilt once.{n}{n}Do you accept NVIDIA''s license (NVIDIA RTX SDKs) and the FSR 4 component''s (GPLv3) and want to continue? If you choose No, nothing is downloaded.'
+    tech_none = 'No DLSS-capable (NVIDIA RTX) or FSR 4-capable (AMD) card found in this PC. The game uses its own upscaler and frame generation.'
+    tech_done = 'All set for your GPU. Pick the upscaler and the frame generation method inside the game (Insert menu, Graphics tab).'
+    tech_done_rebuild = 'Components installed. Only one rebuild of the game is left (Rebuild the game button) to turn DLSS on.'
+    tech_fail = 'Some options were not installed. The game opens without them.'
+    safe = 'Safe mode (play without extra technologies)'
+    safe_on = 'On: the game opens without DLSS, FSR 4 and Streamline, only with its own upscaler and frame generation.'
+    safe_off = 'Off. Turn it on if the game crashes, to test without the technologies above.'
+    help_tech = 'The launcher detects your GPU and only offers what it supports. Inside the game (Insert menu, Graphics tab) you pick the upscaler and the frame generation method.'
+    badge_ok = 'On'
+    badge_off = 'Not included'
+    badge_todo = 'Needs install'
+    badge_no = 'Not supported'
+    badge_exp = 'Experimental'
+    badge_safe = 'Safe mode'
+    tn_dsr = 'NVIDIA DLSS (upscaling and DLAA)'
+    tn_dlss = 'NVIDIA DLSS Frame Generation'
+    tn_fsr = 'AMD FSR 4'
+    tech_intro = 'Everything your GPU supports is on. Then just pick inside the game (Insert menu, Graphics tab): the Upscaler and the frame generation method.'
+    st_dsr_on = 'On. In the game, the Upscaler row picks DLSS or DLAA.'
+    st_dsr_todo = 'Turned on at the next rebuild of the game (once; the launcher handles it).'
+    st_dlss_on = 'On. In the game, the Frame generation method row picks DLSS and the Frame generation row the multiplier.'
+    st_dlss_todo = 'The NVIDIA components (about 276 MB) are downloaded once, when you click Play or Install everything.'
+    st_fsr_on = 'On. In the game, the Upscaler row picks FSR 4.'
+    st_fsr_rebuild = 'Turned on at the next rebuild of the game (once).'
+    st_fsr_todo = 'The FSR 4 component (about 14 MB) is downloaded once, when you click Play or Install everything.'
+    st_fsr_other = 'Made for AMD cards and not included on this card. The game''s own FSR 3.1 stays in the menu.'
+    st_safe = 'Safe mode on: not used.'
     help_tune = 'Round 2: new ASTC textures stay provisional when loading goes over the per-frame limit. Try 120 ms or No deferral. Diagnostics log the unbound buffer to the log.'
     lbl_now = 'What is happening now'
     lbl_steps = 'Steps'
@@ -198,6 +297,9 @@ $STR['en'] = @{
     now_lift = 'Converting the Switch 2 code into PC code. This is a quick step.'
     now_compile = 'Turning that code into a program. This is the longest step and keeps the processor busy.'
     now_finish = 'Finishing: putting the pieces together and preparing the graphics effects.'
+    now_shaders = 'Preparing the graphics effects (shaders) for your video card. It takes a few minutes, this time only.'
+    st_shaders = 'Preparing the shaders'
+    next_shaders = 'When it ends, the Play button turns on by itself. The build window closes by itself.'
     next_build = 'You do not need to do anything. Leave this window open and use the PC normally.'
     act_pre = 'Last activity '
     act_post = ' ago'
@@ -211,8 +313,12 @@ $STR['en'] = @{
     q_build = 'Start building the game? It can take over an hour and uses the processor heavily.'
     e_script = 'Could not find the build script: {0}'
     e_script2 = 'Could not find the script: {0}'
+    nup_use = 'Use this game file?{n}{n}{0}{n}{n}Yes = use it.   No = choose another file.'
+    nup_title = 'Choose your Zelda Ocarina of Time game file (.nup)'
+    nup_filter = 'Game file (*.nup)|*.nup|All files|*.*'
+    nup_none = 'The build cannot start without the game file (.nup).'
     rep_copied = 'Report copied. Paste it into the chat with Ctrl+V.'
-    started = 'Game started. When you close it, this round''s log is saved in D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\rodadas.'
+    started = 'Game started. When you close it, this round''s log is saved in the launcher''s rodadas folder.'
     saved = 'Round saved: {0}'
 }
 
@@ -231,10 +337,10 @@ if (-not (Test-Path $ProfilesPath)) {
             id          = 'zelda-oot'
             name        = 'Zelda: Ocarina of Time'
             subtitle    = 'Switch 2, recompilado para PC'
-            logPath     = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\build.log'
-            workDir     = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\build-work'
+            logPath     = (Join-Path $AppDir 'build.log')
+            workDir     = (Join-Path $AppDir 'build-work')
             outDir      = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo'
-            buildScript = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\build-game.ps1'
+            buildScript = (Join-Path $PSScriptRoot 'build-game.ps1')
             totalFiles  = 186583
             needs       = 'Voce precisa do seu proprio arquivo do jogo (.nup). Nada e baixado da internet.'
         }
@@ -294,7 +400,8 @@ $xaml = @'
       <ColumnDefinition Width="*"/>
     </Grid.ColumnDefinitions>
 
-    <StackPanel Grid.Column="0">
+    <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+    <StackPanel Margin="0,0,8,0">
       <DockPanel>
         <ComboBox x:Name="cbLang" DockPanel.Dock="Right" Width="124" Height="24" VerticalAlignment="Center"/>
         <TextBlock Text="RecompZel" Foreground="#6FD3A0" FontSize="26" FontWeight="SemiBold"/>
@@ -305,6 +412,7 @@ $xaml = @'
       <Button x:Name="btnBuild" Style="{StaticResource Row}"/>
       <Button x:Name="btnFolder" Style="{StaticResource Row}"/>
       <Button x:Name="btnReport" Style="{StaticResource Row}"/>
+      <Button x:Name="btnUpdate" Style="{StaticResource Row}"/>
       <Border x:Name="vramBox" Background="#1B2A25" BorderBrush="#2E4A40" BorderThickness="1" CornerRadius="3" Padding="16,10">
         <StackPanel>
           <TextBlock x:Name="txtVramT" Foreground="#E6F2EC" FontSize="13"/>
@@ -320,20 +428,59 @@ $xaml = @'
       </Border>
       <Border x:Name="tuneBox" Background="#1B2A25" BorderBrush="#2E4A40" BorderThickness="1" CornerRadius="3" Padding="16,10" Margin="0,8,0,0">
         <StackPanel>
+          <TextBlock x:Name="txtMemT" Foreground="#E6F2EC" FontSize="13"/>
+          <ComboBox x:Name="cbMem" Margin="0,6,0,8" Height="26"/>
           <TextBlock x:Name="txtUpT" Foreground="#E6F2EC" FontSize="13"/>
           <ComboBox x:Name="cbUpload" Margin="0,6,0,8" Height="26"/>
           <TextBlock x:Name="txtFgT" Foreground="#E6F2EC" FontSize="13"/>
           <ComboBox x:Name="cbFg" Margin="0,6,0,8" Height="26"/>
+          <CheckBox x:Name="chkRam" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
+          <CheckBox x:Name="chkLinear" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkDiag" Foreground="#E6F2EC" FontSize="12"/>
-          <CheckBox x:Name="chkFsr" Foreground="#E6F2EC" FontSize="12" Margin="0,8,0,0"/>
-          <TextBlock x:Name="txtFsr" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
-          <CheckBox x:Name="chkDsr" Foreground="#E6F2EC" FontSize="12" Margin="0,8,0,0"/>
-          <TextBlock x:Name="txtDsr" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
-          <CheckBox x:Name="chkDlss" Foreground="#E6F2EC" FontSize="12" Margin="0,8,0,0"/>
-          <TextBlock x:Name="txtDlss" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
+        </StackPanel>
+      </Border>
+      <Border x:Name="techBox" Background="#1B2A25" BorderBrush="#2E4A40" BorderThickness="1" CornerRadius="3" Padding="14,10" Margin="0,8,0,0">
+        <StackPanel>
+          <TextBlock x:Name="txtTechT" Foreground="#6FD3A0" FontSize="14" FontWeight="SemiBold"/>
+          <TextBlock x:Name="txtGpu" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,4"/>
+          <TextBlock x:Name="txtTechIntro" Foreground="#E6F2EC" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,2"/>
+          <Border Background="#14201C" BorderBrush="#2E4A40" BorderThickness="1" CornerRadius="3" Padding="10,8" Margin="0,6,0,0">
+            <StackPanel>
+              <DockPanel>
+                <TextBlock x:Name="badgeDsr" DockPanel.Dock="Right" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                <CheckBox x:Name="chkDsr" Visibility="Collapsed"/>
+                <TextBlock x:Name="ttlDsr" Foreground="#E6F2EC" FontSize="12"/>
+              </DockPanel>
+              <TextBlock x:Name="txtDsr" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
+            </StackPanel>
+          </Border>
+          <Border Background="#14201C" BorderBrush="#2E4A40" BorderThickness="1" CornerRadius="3" Padding="10,8" Margin="0,6,0,0">
+            <StackPanel>
+              <DockPanel>
+                <TextBlock x:Name="badgeDlss" DockPanel.Dock="Right" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                <CheckBox x:Name="chkDlss" Visibility="Collapsed"/>
+                <TextBlock x:Name="ttlDlss" Foreground="#E6F2EC" FontSize="12"/>
+              </DockPanel>
+              <TextBlock x:Name="txtDlss" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
+            </StackPanel>
+          </Border>
+          <Border Background="#14201C" BorderBrush="#2E4A40" BorderThickness="1" CornerRadius="3" Padding="10,8" Margin="0,6,0,0">
+            <StackPanel>
+              <DockPanel>
+                <TextBlock x:Name="badgeFsr" DockPanel.Dock="Right" FontSize="10" FontWeight="SemiBold" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                <CheckBox x:Name="chkFsr" Visibility="Collapsed"/>
+                <TextBlock x:Name="ttlFsr" Foreground="#E6F2EC" FontSize="12"/>
+              </DockPanel>
+              <TextBlock x:Name="txtFsr" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
+            </StackPanel>
+          </Border>
+          <Button x:Name="btnTechAll" Style="{StaticResource Row}" Height="40" FontSize="12" Margin="0,10,0,0"/>
+          <CheckBox x:Name="chkSafe" Foreground="#E6F2EC" FontSize="12" Margin="0,2,0,0"/>
+          <TextBlock x:Name="txtSafe" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="20,2,0,0"/>
         </StackPanel>
       </Border>
     </StackPanel>
+    </ScrollViewer>
 
     <Border Grid.Column="2" Background="#14201C" BorderBrush="#2E4A40" BorderThickness="1" CornerRadius="3" Padding="22">
       <StackPanel>
@@ -372,8 +519,8 @@ $xaml = @'
 
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
-try { if (Test-Path 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\recompzel.ico') { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri]'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\recompzel.ico') } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary') {
+try { if (Test-Path (Join-Path $PSScriptRoot 'recompzel.ico')) { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri](Join-Path $PSScriptRoot 'recompzel.ico')) } } catch {}
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','btnUpdate','cbMem','txtMemT','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary','chkLinear') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -381,9 +528,23 @@ $script:defaultHelp = ''
 # ---------- Opcoes (a ordem e o indice salvo em launcher-settings.json: nao reordenar) ----------
 $vramOptions = @(
     @{ Key = 'vram_d'; Pt = 'Padrao do jogo (70% da VRAM, ate 6 GB)'; Mb = 0 },
-    @{ Key = '';       Pt = '8 GB';  Mb = 8192 },
-    @{ Key = '';       Pt = '10 GB'; Mb = 10240 },
-    @{ Key = '';       Pt = '12 GB'; Mb = 12288 }
+    @{ Key = '';       Pt = '8 GB (so placa de 16 GB ou mais)';  Mb = 8192 },
+    @{ Key = '';       Pt = '10 GB (so placa de 24 GB)'; Mb = 10240 },
+    @{ Key = '';       Pt = '12 GB (so placa de 24 GB; em 16 GB a VRAM enche, a RAM sobe e o FPS cai)'; Mb = 12288 },
+    @{ Key = '';       Pt = '6 GB (economiza VRAM)'; Mb = 6144 },
+    @{ Key = '';       Pt = '5 GB (economiza VRAM)'; Mb = 5120 },
+    @{ Key = '';       Pt = '4 GB (economiza VRAM)'; Mb = 4096 },
+    @{ Key = '';       Pt = '3 GB (economiza VRAM, texturas podem recarregar)'; Mb = 3072 }
+)
+# Perfil de memoria: junta as opcoes de economia num clique (o 'Padrao' nao muda nada e as caixas e o limite de VRAM abaixo continuam valendo).
+# Os valores sao conservadores e ainda estao sendo ajustados com medidas reais (Jogo agora: RAM/VRAM na linha de status).
+#   Vram = RX_VK_VRAM_MB (orcamento de texturas), Mirror = RX_VK_MIRROR_MB (copia da memoria do console na VRAM),
+#   Pool = RX_VK_TARGET_POOL_MB (alvos de renderizacao guardados), Tex = RX_VK_TEX_MAX_MB (maior textura), PCache = sem cache de pipelines
+$memProfiles = @(
+    @{ Key = '';  Pt = 'Padrao do jogo'; Vram = 0; Mirror = 0; Pool = 0; Tex = 0; PCache = $false },
+    @{ Key = '';  Pt = 'Equilibrado (menos VRAM)'; Vram = 6144; Mirror = 1536; Pool = 128; Tex = 0; PCache = $false },
+    @{ Key = '';  Pt = 'Economico (menos VRAM, pode recarregar texturas)'; Vram = 4096; Mirror = 1024; Pool = 64; Tex = 768; PCache = $false },
+    @{ Key = '';  Pt = 'Compactar VRAM (teste: devolve ao driver o espaco livre das texturas)'; Vram = 0; Mirror = 0; Pool = 0; Tex = 0; PCache = $false; Compact = $true }
 )
 # Upload de texturas (RX_VK_UPLOAD_BUDGET_MS): 40 ms e o padrao do jogo; 0 = sem adiamento
 $uploadOptions = @(
@@ -391,9 +552,9 @@ $uploadOptions = @(
     @{ Key = 'up_1'; Pt = '120 ms'; Ms = 120 },
     @{ Key = 'up_2'; Pt = 'Sem adiamento (0 ms)'; Ms = 0 }
 )
-# Metodo de geracao de quadros: o do Hookshot (padrao), o FSR 3.1 (RX_VK_FSR_FG=1, so 2x) ou desligado
+# Metodo de geracao de quadros: o do RecompZel (padrao), o FSR 3.1 (RX_VK_FSR_FG=1, so 2x) ou desligado
 $fgOptions = @(
-    @{ Key = 'fg_0'; Pt = 'Hookshot (padrao, 2x a 8x)'; Fsr = $false; Off = $false },
+    @{ Key = 'fg_0'; Pt = 'RecompZel (padrao, 2x a 8x)'; Fsr = $false; Off = $false },
     @{ Key = 'fg_1'; Pt = 'AMD FSR 3.1 (so 2x)'; Fsr = $true; Off = $false },
     @{ Key = 'fg_2'; Pt = 'Desligado (sem geracao de quadros)'; Fsr = $false; Off = $true }
 )
@@ -419,14 +580,20 @@ function Apply-Language {
         $btnPlay.Content = T 'play';   $btnPlay.Tag = T 'play_tip'
         $btnFolder.Content = T 'folder'; $btnFolder.Tag = T 'folder_tip'
         $btnReport.Content = T 'report'; $btnReport.Tag = T 'report_tip'
+        if ($script:updateAvail) { $btnUpdate.Content = T 'upd_avail' } else { $btnUpdate.Content = T 'upd' }
+        $btnUpdate.Tag = T 'upd_tip'
         $btnBuild.Tag = T 'build_tip'
-        $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtFgT.Text = T 'fg_t'
+        $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtMemT.Text = T 'mem_t'; $txtFgT.Text = T 'fg_t'
+        $tbRam = New-Object System.Windows.Controls.TextBlock; $tbRam.Text = (T 'ram_save'); $tbRam.TextWrapping = 'Wrap'; $chkRam.Content = $tbRam; $chkRam.ToolTip = (T 'ram_tip')
         $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'; $chkDlss.Content = T 'dlss'; $chkDsr.Content = T 'dsr'
+        $tbLin = New-Object System.Windows.Controls.TextBlock; $tbLin.Text = (T 'linear'); $tbLin.TextWrapping = 'Wrap'; $chkLinear.Content = $tbLin
+        $txtTechT.Text = T 'tech_t'; $txtTechIntro.Text = T 'tech_intro'; $ttlDsr.Text = T 'tn_dsr'; $ttlDlss.Text = T 'tn_dlss'; $ttlFsr.Text = T 'tn_fsr'; $btnTechAll.Content = T 'tech_all'; $chkSafe.Content = T 'safe'
         $lblNow.Text = T 'lbl_now'; $lblSteps.Text = T 'lbl_steps'; $lblNext.Text = T 'lbl_next'
         $lblNotes.Text = T 'lbl_notes'; $lblSummary.Text = T 'lbl_summary'
         if ($txtResumo.Tag -ne 'real') { $txtResumo.Text = T 'summary_ph' }
         Fill-Combo $cbVram (@($vramOptions | ForEach-Object { Opt-Label $_ }))
         Fill-Combo $cbUpload (@($uploadOptions | ForEach-Object { Opt-Label $_ }))
+        Fill-Combo $cbMem (@($memProfiles | ForEach-Object { Opt-Label $_ }))
         Fill-Combo $cbFg (@($fgOptions | ForEach-Object { Opt-Label $_ }))
         Fill-Combo $cbMesh (@($meshKeys | ForEach-Object { T $_ }))
         $script:defaultHelp = T 'help'
@@ -451,20 +618,25 @@ try {
         if ($c.lang -eq 'en') { $script:lang = 'en'; $cbLang.SelectedIndex = 1 }
         if ($c.vramIndex -ge 0 -and $c.vramIndex -lt $vramOptions.Count) { $cbVram.SelectedIndex = [int]$c.vramIndex }
         if ($c.uploadIndex -ge 0 -and $c.uploadIndex -lt $uploadOptions.Count) { $cbUpload.SelectedIndex = [int]$c.uploadIndex }
+        if ($c.memIndex -ge 0 -and $c.memIndex -lt $memProfiles.Count) { $cbMem.SelectedIndex = [int]$c.memIndex }
         if ($c.diag -eq $true) { $chkDiag.IsChecked = $true }
+        if ($c.ramSave -eq $true) { $chkRam.IsChecked = $true }
         if ($c.fsr -eq $true) { $chkFsr.IsChecked = $true }
         if ($c.dlss -eq $true) { $chkDlss.IsChecked = $true }
         if ($c.dsr -eq $true) { $chkDsr.IsChecked = $true }
+        if ($c.dlssLinear -eq $true) { $chkLinear.IsChecked = $true }
+        if ($c.safe -eq $true) { $chkSafe.IsChecked = $true }
         if ($c.fgIndex -ge 0 -and $c.fgIndex -lt $fgOptions.Count) { $cbFg.SelectedIndex = [int]$c.fgIndex }
     }
 } catch {}
 $script:loading = $false
 Apply-Language
+$cbFg.SelectedIndex = 0; $txtFgT.Visibility = 'Collapsed'; $cbFg.Visibility = 'Collapsed'   # (o metodo e o multiplicador ficam no menu do jogo)
 
 function Save-Settings {
     if ($script:loading) { return }
     try {
-        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; lang = $script:lang } |
+        @{ vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; memIndex = $cbMem.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; ramSave = [bool]$chkRam.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; dlssLinear = [bool]$chkLinear.IsChecked; lang = $script:lang } |
             ConvertTo-Json | Set-Content $Cfg -Encoding ASCII
     } catch {}
 }
@@ -579,25 +751,27 @@ $cbGame.Add_SelectionChanged({
 })
 $cbVram.Add_SelectionChanged({ Save-Settings })
 $cbUpload.Add_SelectionChanged({ Save-Settings })
+$cbMem.Add_SelectionChanged({ Save-Settings })
 $cbFg.Add_SelectionChanged({ Save-Settings })
 $chkDiag.Add_Click({ Save-Settings })
-$chkFsr.Add_Click({ Save-Settings; Update-Fsr-Text })
-$chkDlss.Add_Click({ Save-Settings; Set-FgChoice ([bool]$chkDlss.IsChecked); Update-Dlss-Text })
-$chkDsr.Add_Click({ Save-Settings; Update-Dsr-Text })
+$chkRam.Add_Click({ Save-Settings })
+$chkLinear.Add_Click({ Save-Settings })
+$chkFsr.Add_Click({ Save-Settings; Update-Fsr-Text; Update-Tech })
+$chkDlss.Add_Click({ Save-Settings; Set-FgChoice ([bool]$chkDlss.IsChecked); Update-Dlss-Text; Update-Tech })
+$chkDsr.Add_Click({ Save-Settings; Update-Dsr-Text; Update-Tech })
+$chkSafe.Add_Click({ Save-Settings; Update-Tech })
 $cbLang.Add_SelectionChanged({
     if ($script:loading) { return }
     if ($cbLang.SelectedIndex -eq 1) { $script:lang = 'en' } else { $script:lang = 'pt' }
     Apply-Language
     Save-Settings
     Update-View
-    Update-Fsr-Text
-    Update-Dlss-Text
-    Update-Dsr-Text
+    Update-Tech
     Refresh-Mesh
 })
 
 # ---------- Ajuda ao passar o mouse ----------
-foreach ($b in @($btnPlay, $btnBuild, $btnFolder, $btnReport)) {
+foreach ($b in @($btnPlay, $btnBuild, $btnFolder, $btnReport, $btnUpdate)) {
     $b.Add_MouseEnter({ param($s, $e) $txtHelp.Text = [string]$s.Tag })
     $b.Add_MouseLeave({ $txtHelp.Text = $script:defaultHelp })
 }
@@ -607,6 +781,8 @@ $meshBox.Add_MouseEnter({ $txtHelp.Text = T 'mesh_tip' })
 $meshBox.Add_MouseLeave({ $txtHelp.Text = $script:defaultHelp })
 $tuneBox.Add_MouseEnter({ $txtHelp.Text = T 'help_tune' })
 $tuneBox.Add_MouseLeave({ $txtHelp.Text = $script:defaultHelp })
+$techBox.Add_MouseEnter({ $txtHelp.Text = T 'help_tech' })
+$techBox.Add_MouseLeave({ $txtHelp.Text = $script:defaultHelp })
 
 # ---------- Leitura do log ----------
 $script:lastCount = 0
@@ -618,10 +794,15 @@ function Read-LogLines {
     $p = [string]$script:g.logPath
     if (-not (Test-Path $p)) { return @() }
     try {
+        # economia: se o log nao mudou desde a ultima leitura (mesmo tamanho e hora), devolve o que ja leu
+        $fi = Get-Item -LiteralPath $p
+        $key = ('{0}|{1}|{2}' -f $p, $fi.Length, $fi.LastWriteTimeUtc.Ticks)
+        if ($script:logKey -eq $key -and $null -ne $script:logLines) { return $script:logLines }
         $fs = [System.IO.File]::Open($p, 'Open', 'Read', 'ReadWrite')
         $sr = New-Object System.IO.StreamReader($fs)
         $txt = $sr.ReadToEnd(); $sr.Close(); $fs.Close()
-        return $txt -split "`r?`n"
+        $script:logLines = $txt -split "`r?`n"; $script:logKey = $key
+        return $script:logLines
     } catch { return @() }
 }
 
@@ -636,7 +817,7 @@ function Find-GameExe {
 # ---------- Atalhos: cria os que faltam e garante o icone do RecompZel e o exe novo (roda ao abrir o launcher) ----------
 function Update-Shortcuts {
     try {
-        $ico = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\recompzel.ico'
+        $ico = Join-Path $PSScriptRoot 'recompzel.ico'
         $iconOk = Test-Path -LiteralPath $ico
         $desk = [Environment]::GetFolderPath('Desktop')
         $sh = New-Object -ComObject WScript.Shell
@@ -654,8 +835,8 @@ function Update-Shortcuts {
                 if ($isGame) { $l.Description = 'Zelda Ocarina of Time recompilado (RecompZel)' }
                 else {
                     $l.TargetPath = $ps
-                    $l.Arguments = '-ExecutionPolicy Bypass -WindowStyle Hidden -File "D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\launcher.ps1"'
-                    $l.WorkingDirectory = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV'
+                    $l.Arguments = ('-ExecutionPolicy Bypass -WindowStyle Hidden -File "' + (Join-Path $PSScriptRoot 'launcher.ps1') + '"')
+                    $l.WorkingDirectory = $PSScriptRoot
                     $l.Description = 'Launcher do RecompZel'
                 }
                 $dirty = $true
@@ -681,15 +862,16 @@ function Test-FsrBuilt { return (Test-Path (Join-Path (Get-OutDir) '.hookshot_fs
 function Test-FsrDll {
     $f = Join-Path (Get-FsrDir) $Fsr4vkName
     if (-not (Test-Path $f)) { return $false }
-    try { return ((Get-FileHash -Path $f -Algorithm SHA256).Hash -ieq $Fsr4vkSha) } catch { return $false }
+    try {
+        # economia: o hash so e refeito quando o arquivo muda (e chamado a cada atualizacao da tela)
+        $fi = Get-Item -LiteralPath $f
+        $k = ('{0}|{1}' -f $fi.Length, $fi.LastWriteTimeUtc.Ticks)
+        if ($script:fsrDllKey -ne $k) { $script:fsrDllKey = $k; $script:fsrDllOk = ((Get-FileHash -Path $f -Algorithm SHA256).Hash -ieq $Fsr4vkSha) }
+        return $script:fsrDllOk
+    } catch { return $false }
 }
 
-function Update-Fsr-Text {
-    if (-not [bool]$chkFsr.IsChecked) { $txtFsr.Text = T 'fsr_off'; return }
-    if (-not (Test-FsrBuilt)) { $txtFsr.Text = T 'fsr_rebuild'; return }
-    if (-not (Test-FsrDll)) { $txtFsr.Text = T 'fsr_dl'; return }
-    $txtFsr.Text = T 'fsr_ready'
-}
+function Update-Fsr-Text { Update-Tech }   # (o painel Tecnologias de imagem cuida dos textos)
 
 # ---------- NVIDIA DLSS, reescalonamento (opcional, RTX) ----------
 # O motor ja tem o DLSS (gpu/vk/vk_dlss.cpp), mas so quando o jogo e construido com o SDK da NVIDIA (build-game.ps1 -Dlss) e o
@@ -707,16 +889,47 @@ function Test-DsrGpu {
     return $script:dsrGpu
 }
 function Test-DsrBuilt { return (Test-Path (Join-Path (Get-OutDir) 'ngx\nvngx_dlss.dll')) }
-function Update-Dsr-Text {
-    if (-not (Test-DsrGpu)) { $chkDsr.IsEnabled = $false; $chkDsr.IsChecked = $false; $txtDsr.Text = T 'dsr_nogpu'; return }
-    $chkDsr.IsEnabled = $true
-    if (-not [bool]$chkDsr.IsChecked) { $txtDsr.Text = T 'dsr_off'; return }
-    if (-not (Test-DsrBuilt)) { $txtDsr.Text = T 'dsr_rebuild'; return }
-    $txtDsr.Text = T 'dsr_ready'
+function Update-Dsr-Text { Update-Tech }   # (o painel Tecnologias de imagem cuida dos textos)
+# O arquivo do jogo (.nup): usa o ultimo escolhido ou o que achar em Downloads/Desktop/Documentos (pergunta antes) e senao abre a janela de escolher,
+# na frente do launcher. Retorna o caminho ou $null se o usuario cancelou.
+$NupMemo = Join-Path $AppDir 'nup-path.txt'
+function Select-NupFile {
+    $cand = $null
+    try { if (Test-Path -LiteralPath $NupMemo) { $c = (Get-Content -LiteralPath $NupMemo -Raw).Trim(); if ($c -and (Test-Path -LiteralPath $c)) { $cand = $c } } } catch {}
+    if (-not $cand) {
+        $roots = @([Environment]::GetFolderPath('UserProfile') + '\Downloads', [Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('MyDocuments')) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+        $all = @(); foreach ($r in $roots) { $all += @(Get-ChildItem -LiteralPath $r -Filter '*.nup' -File -Recurse -Depth 2 -ErrorAction SilentlyContinue) }
+        $hit = $all | Where-Object { $_.Name -like '*0400486024DEC000*' } | Select-Object -First 1
+        if (-not $hit) { $hit = $all | Sort-Object Length -Descending | Select-Object -First 1 }
+        if ($hit) { $cand = $hit.FullName }
+    }
+    if ($cand) {
+        if ([System.Windows.MessageBox]::Show($win, ((T 'nup_use') -f $cand), 'RecompZel', 'YesNo', 'Question') -eq 'Yes') { return $cand }
+    }
+    $dlg = New-Object Microsoft.Win32.OpenFileDialog
+    $dlg.Title = T 'nup_title'
+    $dlg.Filter = T 'nup_filter'
+    $dlg.CheckFileExists = $true
+    if ($cand) { $dlg.InitialDirectory = Split-Path $cand -Parent }
+    if ($dlg.ShowDialog($win) -ne $true) { return $null }
+    return $dlg.FileName
 }
+# Inicia o build: escolhe o .nup aqui no launcher e passa para o build-game.ps1 (-Nup), sem janela escondida atras
+function Start-GameBuild([string]$buildPath) {
+    $nup = Select-NupFile
+    if (-not $nup) { [System.Windows.MessageBox]::Show($win, (T 'nup_none'), 'RecompZel') | Out-Null; return $false }
+    try { Set-Content -LiteralPath $NupMemo -Value $nup -Encoding UTF8 } catch {}
+    $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
+    $a = Get-BuildArgs $buildPath
+    [Environment]::SetEnvironmentVariable('RZ_PAUSE', '1', 'Process')   # (build-game.ps1: a janela espera Enter so se der erro)
+    $a += @('-Nup', ('"' + $nup + '"'))   # (aspas: o caminho pode ter espacos)
+    Start-Process powershell.exe -ArgumentList $a
+    return $true
+}
+
 # Os argumentos para abrir o build-game.ps1: com -Dlss quando a caixa do DLSS esta marcada
 function Get-BuildArgs([string]$buildPath) {
-    $a = @('-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $buildPath)
+    $a = @('-ExecutionPolicy', 'Bypass', '-File', ('"' + $buildPath + '"'))
     if ($chkDsr.IsChecked -and (Test-DsrGpu)) { $a += '-Dlss' }
     return $a
 }
@@ -778,18 +991,12 @@ function Test-DlssFilesNow {
     }
     return $true
 }
-function Update-Dlss-Text {
-    if (-not (Test-DlssGpu)) { $chkDlss.IsEnabled = $false; $chkDlss.IsChecked = $false; $txtDlss.Text = T 'dlss_nogpu'; return }
-    $chkDlss.IsEnabled = $true
-    if (-not [bool]$chkDlss.IsChecked) { $txtDlss.Text = T 'dlss_off'; return }
-    if (-not (Test-DlssFiles)) { $txtDlss.Text = T 'dlss_dl'; return }
-    $txtDlss.Text = T 'dlss_ready'
-}
+function Update-Dlss-Text { Update-Tech }   # (o painel Tecnologias de imagem cuida dos textos)
 
 # Baixa e instala se faltar. Retorna $true quando os 6 arquivos estao la e conferidos.
 function Install-Dlss {
     if (Test-DlssFiles) { return $true }
-    if ([System.Windows.MessageBox]::Show((T 'dlss_q'), 'RecompZel', 'YesNo', 'Question') -ne 'Yes') { return $false }
+    if ((-not $script:techConsent) -and ([System.Windows.MessageBox]::Show((T 'dlss_q'), 'RecompZel', 'YesNo', 'Question') -ne 'Yes')) { return $false }
     $tmp = Join-Path $env:TEMP ('recompzel-sl-' + [guid]::NewGuid().ToString('N'))
     $zipObj = $null
     try {
@@ -852,7 +1059,7 @@ function Clear-DlssEnvFile {
 # Baixa o componente se faltar. Retorna $true quando ele esta pronto.
 function Install-Fsr {
     if (Test-FsrDll) { return $true }
-    if ([System.Windows.MessageBox]::Show((T 'fsr_q'), 'RecompZel', 'YesNo', 'Question') -ne 'Yes') { return $false }
+    if ((-not $script:techConsent) -and ([System.Windows.MessageBox]::Show((T 'fsr_q'), 'RecompZel', 'YesNo', 'Question') -ne 'Yes')) { return $false }
     $tmp = Join-Path $env:TEMP ('recompzel-fsr-' + [guid]::NewGuid().ToString('N'))
     try {
         $txtHelp.Text = T 'fsr_dling'
@@ -896,14 +1103,31 @@ function Format-Min([double]$sec) {
     return ('{0}h{1:00}' -f [int][math]::Floor($m / 60), ($m % 60))
 }
 
+# Enquanto o install-tools.ps1 baixa as ferramentas, mostra o progresso dele aqui (ele escreve %LOCALAPPDATA%\RecompZel\tools-status.txt)
+function Show-ToolsProgress {
+    $f = Join-Path $env:LOCALAPPDATA 'RecompZel\tools-status.txt'
+    if (-not (Test-Path -LiteralPath $f)) { return }
+    try {
+        if (((Get-Date) - (Get-Item -LiteralPath $f).LastWriteTime).TotalMinutes -gt 15) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue; return }
+        $p = (Get-Content -LiteralPath $f -Raw).Trim().Split('|')
+        if ($p.Count -lt 3) { return }
+        $pct = [double]$p[0]
+        $txtPct.Text = ('{0}%' -f [int][math]::Floor($pct))
+        $pbTotal.Value = $pct
+        if ($script:lang -eq 'en') { $txtStatus.Text = 'Installing the tools'; $txtNow.Text = $p[2]; $txtNext.Text = 'Then the game build starts by itself.' }
+        else { $txtStatus.Text = 'Instalando as ferramentas'; $txtNow.Text = $p[1]; $txtNext.Text = 'Depois o build do jogo comeca sozinho.' }
+        $txtStatus.Foreground = '#6FD3A0'
+    } catch {}
+}
+
 function Update-View {
     $g = $script:g
     $lines = Read-LogLines
     $stage = 'inicio'; $totalFiles = [int]$g.totalFiles; $filesDone = 0
-    $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $done = $false
+    $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $done = $false; $shEnd = $false
     foreach ($l in $lines) {
-        # (uma etapa nova depois de "the build took": o motor terminou, mas o build segue, como na etapa de shaders)
-        if ($l -match '^@@stage\s+(\S+)') { $stage = $Matches[1]; if ($stage -ne 'done') { $done = $false } }
+        if ($l -match '^@@stage\s+(\S+)') { $stage = $Matches[1]; if ($stage -eq 'shaders') { $shEnd = $false; $prog = -1 } }
+        if ($l -match '^(done shaders|the shaders were not prepared now|\[script\] codigo de saida)') { $shEnd = $true }
         if ($l -match 'title 1 .*romfs\s+(\d+)\s+files') { $totalFiles = [int]$Matches[1] }
         if ($l -match '^\s*[\d\.]+\s+MiB written \((\d+) files completed\)') { $filesDone = [int]$Matches[1] }
         if ($l -match '^done:\s+(\d+)\s+files written') { $filesDone = [int]$Matches[1] }
@@ -914,6 +1138,9 @@ function Update-View {
         if ($l -match '(?i)^@@done|^@@stage\s+done|^the build took|build complete|build finished') { $done = $true }
     }
     $script:lastErrLines = $err
+    # a preparacao dos shaders vem depois de "the build took": enquanto roda, ainda nao esta pronto (o log termina com done shaders ou com o aviso de que ficou para o 1o inicio)
+    $shRunning = ($stage -eq 'shaders') -and -not $shEnd -and ($err.Count -eq 0)
+    if ($shRunning) { $done = $false }
 
     $later = $stage -notin @('inicio','read','lift','compile')
     $readPct = 0
@@ -925,22 +1152,13 @@ function Update-View {
     if ($prog -ge 0) { $compPct = [math]::Min(100, 100.0 * $prog) }
     if ($later) { $compPct = 100 }
     $script:lastCount = [int][math]::Round($compPct / 100.0 * $planTotal)
-    $finPct = 0; if ($done) { $finPct = 100 } elseif ($later) { $finPct = 50 }
+    $finPct = 0; if ($done) { $finPct = 100 } elseif ($shRunning) { $finPct = 50 + 50 * [math]::Max(0, [math]::Min(1, $prog)) } elseif ($later) { $finPct = 50 }
 
     $total = ($readPct*$W.read + $liftPct*$W.lift + $compPct*$W.compile + $finPct*$W.finish) / 100.0
     if ($done) { $total = 100 }
 
     $exe = Find-GameExe
-    $ready = ($null -ne $exe) -and ($done -or ((($err.Count -eq 0)) -and $later))
-    # (a etapa de shaders roda o proprio jogo, --prepare-shaders: o build ainda nao terminou)
-    if ($stage -eq 'shaders' -and -not $done) {
-        $ready = $false
-        $finPct = 50
-        if ($prog -ge 0) { $finPct = [math]::Min(99, 100.0 * $prog) }
-        $total = [math]::Min(99, ($readPct*$W.read + $liftPct*$W.lift + 100*$W.compile + $finPct*$W.finish) / 100.0)
-    }
-    # sem build.log (jogo construido em outra pasta de trabalho ou log apagado): o exe instalado basta
-    if (($null -ne $exe) -and $lines.Count -eq 0) { $ready = $true; $done = $true; $total = 100 }
+    $ready = ($null -ne $exe) -and (-not $shRunning) -and ($done -or ((($err.Count -eq 0)) -and $later))
 
     # textos gerais (o texto do jogo vem do games.json em portugues; em ingles usa o da tabela para o Zelda)
     $isZ = ([string]$g.id -eq 'zelda-oot')
@@ -958,6 +1176,10 @@ function Update-View {
         $txtStatus.Text = T 'st_ready'; $txtStatus.Foreground = '#6FD3A0'
         $txtNow.Text = T 'now_ready'
         $txtNext.Text = T 'next_ready'
+    } elseif ($shRunning) {
+        $txtStatus.Text = T 'st_shaders'; $txtStatus.Foreground = '#6FD3A0'
+        $txtNow.Text = T 'now_shaders'
+        $txtNext.Text = T 'next_shaders'
     } elseif ($stage -eq 'inicio') {
         $txtStatus.Text = T 'st_none'; $txtStatus.Foreground = '#8FA89C'
         if ($script:lang -eq 'en' -and $isZ) { $txtNow.Text = T 'needs' } else { $txtNow.Text = [string]$g.needs }
@@ -986,6 +1208,7 @@ function Update-View {
     if ($stage -eq 'compile' -and $eta -ge 0) {
         $parts += ((T 'eta_pre') + (Format-Min $eta) + (T 'eta_post'))
     }
+    if ($script:memText) { $parts += $script:memText }
     $txtTime.Text = ($parts -join '  |  ')
 
     $txtS1.Text = ((T 's1') -f (Get-Step $readPct 'read' $stage), $readPct)
@@ -1009,8 +1232,7 @@ $btnBuild.Add_Click({
     if ($r -eq 'Yes') {
         $s = [string]$script:g.buildScript
         if (Test-Path $s) {
-            $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
-            Start-Process powershell.exe -ArgumentList (Get-BuildArgs $s)
+            Start-GameBuild $s | Out-Null
         } else {
             [System.Windows.MessageBox]::Show(((T 'e_script') -f $s), 'RecompZel') | Out-Null
         }
@@ -1031,6 +1253,24 @@ $btnPlay.Add_Click({
     $mb = $vramOptions[$cbVram.SelectedIndex].Mb
     if ($mb -gt 0) { [Environment]::SetEnvironmentVariable('RX_VK_VRAM_MB', [string]$mb, 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_VRAM_MB', $null, 'Process') }
+    # com um limite de VRAM de 6 GB ou menos, o espelho de memoria do jogo (3 GB por padrao) tambem encolhe, a um quarto do limite
+    if ($mb -gt 0 -and $mb -le 6144) { [Environment]::SetEnvironmentVariable('RX_VK_MIRROR_MB', [string][math]::Min(3072, [int]($mb / 4)), 'Process') }
+    else { [Environment]::SetEnvironmentVariable('RX_VK_MIRROR_MB', $null, 'Process') }
+    # perfil de memoria: so mexe no que o perfil escolhido define (o limite de VRAM escolhido acima, se houver, vale mais que o do perfil)
+    $mp = $memProfiles[[math]::Max(0, $cbMem.SelectedIndex)]
+    # RX_VK_COMPACT=1: compactacao de VRAM do motor (desligada por padrao la): o driver conta os blocos inteiros, e o espaco livre dentro deles nao volta
+    if ($mp.Compact) { [Environment]::SetEnvironmentVariable('RX_VK_COMPACT', '1', 'Process') } else { [Environment]::SetEnvironmentVariable('RX_VK_COMPACT', $null, 'Process') }
+    # RX_VK_DLSS_LINEAR=1: o DLSS recebe luz linear da cena (a receita do NX2navi), em teste contra o halo e a borda escura
+    if ($chkLinear.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_DLSS_LINEAR', '1', 'Process') } else { [Environment]::SetEnvironmentVariable('RX_VK_DLSS_LINEAR', $null, 'Process') }
+    if ($mp.Vram -gt 0) {
+        if ($mb -le 0) { [Environment]::SetEnvironmentVariable('RX_VK_VRAM_MB', [string]$mp.Vram, 'Process') }
+        if ($mb -le 0 -or $mb -gt 6144) { [Environment]::SetEnvironmentVariable('RX_VK_MIRROR_MB', [string]$mp.Mirror, 'Process') }
+        [Environment]::SetEnvironmentVariable('RX_VK_TARGET_POOL_MB', [string]$mp.Pool, 'Process')
+        if ($mp.Tex -gt 0) { [Environment]::SetEnvironmentVariable('RX_VK_TEX_MAX_MB', [string]$mp.Tex, 'Process') } else { [Environment]::SetEnvironmentVariable('RX_VK_TEX_MAX_MB', $null, 'Process') }
+    } else {
+        [Environment]::SetEnvironmentVariable('RX_VK_TARGET_POOL_MB', $null, 'Process')
+        [Environment]::SetEnvironmentVariable('RX_VK_TEX_MAX_MB', $null, 'Process')
+    }
     $ms = $uploadOptions[$cbUpload.SelectedIndex].Ms
     if ($ms -ge 0) { [Environment]::SetEnvironmentVariable('RX_VK_UPLOAD_BUDGET_MS', [string]$ms, 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_UPLOAD_BUDGET_MS', $null, 'Process') }
@@ -1042,44 +1282,45 @@ $btnPlay.Add_Click({
     } else {
         [Environment]::SetEnvironmentVariable('RX_VK_FRAMEGEN', $null, 'Process')
         if ($fgSel.Fsr) { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', '1', 'Process') }
-        else { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', '0', 'Process') }   # (o motor liga o FSR 3.1 por padrao: Hookshot pede o proprio)
+        else { [Environment]::SetEnvironmentVariable('RX_VK_FSR_FG', $null, 'Process') }
     }
+    # economia de RAM: o jogo nao le o arquivo de cache de pipelines (mkw_vk_pipelines.bin, 1 a 3 GB) e nao o grava; o driver usa o cache dele
+    if ($chkRam.IsChecked -or $mp.PCache) { [Environment]::SetEnvironmentVariable('RX_VK_PCACHE_LOAD', '0', 'Process') }
+    else { [Environment]::SetEnvironmentVariable('RX_VK_PCACHE_LOAD', $null, 'Process') }
     if ($chkDiag.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', 'da7a7ab28b8e73d9', 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', $null, 'Process') }
     # FSR 4: so liga quando o jogo foi construido com ele e o componente esta instalado e conferido
     $useFsr = $false
     [Environment]::SetEnvironmentVariable('RX_VK_FSR4', $null, 'Process')
     [Environment]::SetEnvironmentVariable('RX_VK_FSR_DIR', $null, 'Process')
-    if ($chkFsr.IsChecked) {
+    $safe = [bool]$chkSafe.IsChecked   # (modo seguro: nada de FSR 4, DLSS nem Streamline)
+    if ($chkFsr.IsChecked -and -not $safe) {
         if (-not (Test-FsrBuilt)) {
             if ([System.Windows.MessageBox]::Show((T 'fsr_q_rebuild'), 'RecompZel', 'YesNo', 'Question') -eq 'Yes') {
                 $s = [string]$script:g.buildScript
                 if (Test-Path $s) {
-                    $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
-                    Start-Process powershell.exe -ArgumentList (Get-BuildArgs $s)
+                    Start-GameBuild $s | Out-Null
                     return
                 }
             }
         } elseif (Install-Fsr) {
             $useFsr = $true
             [Environment]::SetEnvironmentVariable('RX_VK_FSR_DIR', (Get-FsrDir), 'Process')
-            # (sem RX_VK_FSR4: ele vale mais que o menu do jogo e prende a linha Upscaler no FSR 4. A caixa so escolhe o FSR 4
-            # no hookshot_options.ini quando o Upscaler ainda esta no do jogo (dlss=0); o menu Insert troca para o FSR 3.1 e volta)
-            if ((Get-IniInt 'dlss' 0) -eq 0) { Set-IniInt 'dlss' 4 }
+            [Environment]::SetEnvironmentVariable('RX_VK_FSR4', '1', 'Process')
         }
         Update-Fsr-Text
     }
     # DLSS (reescalonamento): so liga quando o jogo foi construido com o SDK da NVIDIA (nvngx_dlss.dll em ngx); senao oferece reconstruir
     $useDsr = $false
     [Environment]::SetEnvironmentVariable('RX_VK_DLSS', $null, 'Process')
-    if (-not $chkDsr.IsChecked) { Set-DsrChoice $false }
-    if ($chkDsr.IsChecked -and (Test-DsrGpu)) {
+    if ($safe -or -not $chkDsr.IsChecked) { Set-DsrChoice $false }
+    if ($safe) { Set-FgChoice $false }
+    if ($chkDsr.IsChecked -and -not $safe -and (Test-DsrGpu)) {
         if (-not (Test-DsrBuilt)) {
             if ([System.Windows.MessageBox]::Show((T 'dsr_q'), 'RecompZel', 'YesNo', 'Question') -eq 'Yes') {
                 $s = [string]$script:g.buildScript
                 if (Test-Path $s) {
-                    $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
-                    Start-Process powershell.exe -ArgumentList (Get-BuildArgs $s)
+                    Start-GameBuild $s | Out-Null
                     return
                 }
             }
@@ -1093,7 +1334,7 @@ $btnPlay.Add_Click({
     $useDlss = $false
     Clear-DlssEnvFile
     [Environment]::SetEnvironmentVariable('RX_VK_DLSSG', '0', 'Process')
-    if ($chkDlss.IsChecked -and (Test-DlssGpu)) {
+    if ($chkDlss.IsChecked -and -not $safe -and (Test-DlssGpu)) {
         if (Install-Dlss) {
             $useDlss = $true
             [void](Ensure-SlSr)
@@ -1103,7 +1344,7 @@ $btnPlay.Add_Click({
     }
     # a nota da rodada fica sempre em portugues (e lida pelo medir-rodada.ps1)
     $meshNow = Read-Mesh
-    $script:roundNote = ('VRAM={0} UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7}' -f $vramOptions[$cbVram.SelectedIndex].Pt, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr)
+    $script:roundNote = ('VRAM={0} UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8}' -f $vramOptions[$cbVram.SelectedIndex].Pt, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked)
     $script:gameOut = Get-OutDir
     $script:gameProc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
     $txtHelp.Text = T 'started'
@@ -1112,12 +1353,103 @@ $btnPlay.Add_Click({
 # ---------- Atualizacao automatica ----------
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(2)
+# ---------- Atualizacao do proprio RecompZel (launcher e codigo do jogo) a partir do GitHub ----------
+# O exe leva um numero de build (build.txt, o numero da execucao do CI). A release "launcher" publica o build.txt e o exe mais novos:
+# se o numero de la e maior que o desta pasta, o botao Atualizar avisa. Atualizar baixa o exe (hash conferido), atualiza o codigo do jogo
+# (so a copia baixada pelo launcher, nunca um clone com git) e abre o exe novo, que troca os scripts e abre o launcher de novo.
+$script:updateAvail = $false; $script:updateTask = $null; $script:updateWc = $null
+$UpdBase = 'https://github.com/TechHammerBR/RecompZel/releases/download/launcher'
+function Get-LocalBuild {
+    try { $f = Join-Path $AppDir 'build.txt'; if (Test-Path -LiteralPath $f) { return [int](Get-Content -LiteralPath $f -Raw).Trim() } } catch {}
+    return 0
+}
+function Start-UpdateCheck {
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $script:updateWc = New-Object System.Net.WebClient
+        $script:updateTask = $script:updateWc.DownloadStringTaskAsync(($UpdBase + '/build.txt?t=' + [guid]::NewGuid().ToString('N')))
+    } catch { $script:updateTask = $null }
+}
+function Poll-UpdateCheck {
+    if ($null -eq $script:updateTask -or -not $script:updateTask.IsCompleted) { return }
+    $t = $script:updateTask; $script:updateTask = $null
+    try {
+        if (-not $t.IsFaulted -and -not $t.IsCanceled) {
+            $remote = [int]($t.Result.Trim())
+            $local = Get-LocalBuild
+            if ($local -gt 0 -and $remote -gt $local) { $script:updateAvail = $true; $btnUpdate.Content = T 'upd_avail' }
+        }
+    } catch {}
+    try { $script:updateWc.Dispose() } catch {}
+}
+function Update-GameSource {
+    # so a copia que o launcher baixou (sem .git); quem usa um clone atualiza com git pull ou atualizar-fork.ps1
+    $src = Join-Path $env:LOCALAPPDATA 'RecompZel\RecompZel'
+    if (-not (Test-Path -LiteralPath (Join-Path $src 'nx2\make_game.py')) -or (Test-Path -LiteralPath (Join-Path $src '.git'))) { return $false }
+    $tmp = Join-Path $env:TEMP ('recompzel-upd-' + [guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+        $zip = Join-Path $tmp 'src.zip'
+        Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/TechHammerBR/RecompZel/archive/refs/heads/main.zip' -OutFile $zip
+        Expand-Archive -LiteralPath $zip -DestinationPath $tmp -Force
+        $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
+        Copy-Item -Path (Join-Path $inner.FullName '*') -Destination $src -Recurse -Force
+        return $true
+    } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+}
+$btnUpdate.Add_Click({
+    if ([System.Windows.MessageBox]::Show($win, (T 'upd_ask'), 'RecompZel', 'YesNo', 'Question') -ne 'Yes') { return }
+    $btnUpdate.IsEnabled = $false
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        $tmp = Join-Path $env:TEMP 'RecompZel-Launcher-novo.exe'
+        Invoke-WebRequest -UseBasicParsing -Uri ($UpdBase + '/RecompZel-Launcher.exe') -OutFile $tmp
+        # (o GitHub entrega o ativo como application/octet-stream: no PowerShell 5.1 o .Content vem como byte[], sem .Trim())
+        $resp = Invoke-WebRequest -UseBasicParsing -Uri ($UpdBase + '/RecompZel-Launcher.exe.sha256')
+        $shaTxt = if ($resp.Content -is [byte[]]) { [Text.Encoding]::ASCII.GetString($resp.Content) } else { [string]$resp.Content }
+        $want = $shaTxt.Trim().Split(' ')[0]
+        if ((Get-FileHash -Path $tmp -Algorithm SHA256).Hash -ine $want) { throw 'arquivo baixado nao confere (hash)' }
+        $srcOk = Update-GameSource
+        if ($srcOk) { [System.Windows.MessageBox]::Show($win, (T 'upd_src_ok'), 'RecompZel') | Out-Null }
+        # abre o exe novo depois que este launcher fechar (ele troca os scripts e abre o launcher de novo)
+        $cmd = "Start-Sleep -Seconds 2; Start-Process -FilePath '" + $tmp + "'"
+        Start-Process powershell.exe -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-Command', ('"' + $cmd + '"'))
+        $win.Close()
+    } catch {
+        [System.Windows.MessageBox]::Show($win, ((T 'upd_fail') -f $_.Exception.Message), 'RecompZel') | Out-Null
+        $btnUpdate.IsEnabled = $true
+    }
+})
+
+# Enquanto o jogo roda, mostra a memoria dele (RAM e VRAM, com o pico): serve para ver o que o jogo usa de verdade e comparar as opcoes de economia
+$script:memTick = 0; $script:memText = ''; $script:memPeakRam = 0.0; $script:memPeakVram = 0.0
+function Sample-GameMem {
+    $p = $script:gameProc
+    if ($null -eq $p) { $script:memText = ''; return }
+    try {
+        if ($p.HasExited) { $script:memText = ''; return }
+        $script:memTick++
+        if ($script:memTick % 3 -ne 1) { return }   # (a cada 6 s: amostrar o contador da GPU custa)
+        $p.Refresh()
+        $ram = [double]$p.PrivateMemorySize64 / 1GB
+        $vram = -1.0
+        try {
+            $c = Get-Counter -Counter ('\GPU Process Memory(pid_{0}_*)\Dedicated Usage' -f $p.Id) -ErrorAction Stop
+            $vram = (($c.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum) / 1GB
+        } catch {}
+        if ($ram -gt $script:memPeakRam) { $script:memPeakRam = $ram }
+        if ($vram -gt $script:memPeakVram) { $script:memPeakVram = $vram }
+        $vtxt = if ($vram -ge 0) { ('{0:N1} GB (pico {1:N1})' -f $vram, $script:memPeakVram) } else { '?' }
+        $script:memText = ((T 'mem_now') -f ('{0:N1} GB (pico {1:N1})' -f $ram, $script:memPeakRam), $vtxt)
+    } catch { $script:memText = '' }
+}
 function Check-Game {
+    Sample-GameMem
     if ($null -eq $script:gameProc) { return }
     try { if (-not $script:gameProc.HasExited) { return } } catch { $script:gameProc = $null; return }
     $script:gameProc = $null
     try {
-        $dir = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\rodadas'
+        $dir = Join-Path $AppDir 'rodadas'
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         $n = @(Get-ChildItem $dir -Filter 'rodada-*.txt' -ErrorAction SilentlyContinue).Count + 2
         $name = ('rodada-{0:00}-{1}' -f $n, (Get-Date -Format 'yyyyMMdd-HHmmss'))
@@ -1132,7 +1464,7 @@ function Check-Game {
             $txtNotas.Text = ''
             try {
                 $res = Join-Path $dir ($name + '-resumo.txt')
-                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\medir-rodada.ps1' -Log $arq -Saida $res | Out-Null
+                & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'medir-rodada.ps1') -Log $arq -Saida $res | Out-Null
                 if (Test-Path $res) { $txtResumo.Tag = 'real'; $txtResumo.Text = ((Get-Content $res | Select-Object -First 12) -join [Environment]::NewLine) }
             } catch {}
             $ini = Join-Path $script:gameOut 'hookshot_options.ini'
@@ -1142,12 +1474,112 @@ function Check-Game {
     } catch {}
     Refresh-Mesh
 }
-$timer.Add_Tick({ Update-View; Check-Game; Update-Fsr-Text; Update-Dlss-Text; Update-Dsr-Text })
+# ---------- Painel "Tecnologias de imagem": a placa detectada, uma etiqueta por tecnologia e a instalacao de uma vez ----------
+$script:gpuNames = $null
+function Get-GpuNames {
+    if ($null -ne $script:gpuNames) { return $script:gpuNames }
+    $script:gpuNames = @()
+    try {
+        $script:gpuNames = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | ForEach-Object { [string]$_.Name } | Where-Object { $_ -and $_ -notmatch 'Basic|Remote|Virtual' })
+    } catch {}
+    return $script:gpuNames
+}
+# FSR 4 e da AMD (Radeon): em outras placas fica marcado como experimental e fora do "instalar tudo"
+$script:fsrGpu = $null
+function Test-FsrGpu {
+    if ($null -ne $script:fsrGpu) { return $script:fsrGpu }
+    $script:fsrGpu = $false
+    foreach ($n in (Get-GpuNames)) { if ($n -match 'AMD|Radeon') { $script:fsrGpu = $true } }
+    return $script:fsrGpu
+}
+$script:brushes = @{}
+function Get-Brush([string]$hex) {
+    if (-not $script:brushes.ContainsKey($hex)) { $script:brushes[$hex] = (New-Object Windows.Media.BrushConverter).ConvertFromString($hex) }
+    return $script:brushes[$hex]
+}
+function Set-Badge($tb, [string]$key, [string]$hex) {
+    $tb.Text = T $key
+    $tb.Foreground = Get-Brush $hex
+}
+$script:fsrOk = $false; $script:fsrOkAt = [datetime]::MinValue
+function Test-FsrReady {
+    if (([datetime]::Now - $script:fsrOkAt).TotalSeconds -lt 10) { return $script:fsrOk }
+    $script:fsrOk = [bool](Test-FsrDll); $script:fsrOkAt = [datetime]::Now
+    return $script:fsrOk
+}
+# Tudo que a placa suporta fica ativo (as caixas ficam escondidas e seguem a placa); o usuario escolhe dentro do jogo. Modo seguro: nada.
+function Update-Tech {
+    $green = '#6FD3A0'; $amber = '#E3B65B'; $grey = '#8FA89C'; $red = '#D9826B'
+    $names = @(Get-GpuNames)
+    if ($names.Count -gt 0) { $txtGpu.Text = ((T 'tech_gpu') -f ($names -join ' / ')) } else { $txtGpu.Text = ((T 'tech_gpu') -f (T 'tech_gpu_none')) }
+    $safe = [bool]$chkSafe.IsChecked
+    $txtSafe.Text = if ($safe) { T 'safe_on' } else { T 'safe_off' }
+    $hasDsr = Test-DsrGpu; $hasDlss = Test-DlssGpu; $hasFsr = Test-FsrGpu
+    $chkDsr.IsChecked = ((-not $safe) -and $hasDsr)
+    $chkDlss.IsChecked = ((-not $safe) -and $hasDlss)
+    $chkFsr.IsChecked = ((-not $safe) -and $hasFsr)
+    if ($safe) {
+        foreach ($b in @($badgeDsr, $badgeDlss, $badgeFsr)) { Set-Badge $b 'badge_safe' $grey }
+        foreach ($t in @($txtDsr, $txtDlss, $txtFsr)) { $t.Text = T 'st_safe' }
+        return
+    }
+    if (-not $hasDsr) { Set-Badge $badgeDsr 'badge_no' $red; $txtDsr.Text = T 'dsr_nogpu' }
+    elseif (Test-DsrBuilt) { Set-Badge $badgeDsr 'badge_ok' $green; $txtDsr.Text = T 'st_dsr_on' }
+    else { Set-Badge $badgeDsr 'badge_todo' $amber; $txtDsr.Text = T 'st_dsr_todo' }
+    if (-not $hasDlss) { Set-Badge $badgeDlss 'badge_no' $red; $txtDlss.Text = T 'dlss_nogpu' }
+    elseif (Test-DlssFiles) { Set-Badge $badgeDlss 'badge_ok' $green; $txtDlss.Text = T 'st_dlss_on' }
+    else { Set-Badge $badgeDlss 'badge_todo' $amber; $txtDlss.Text = T 'st_dlss_todo' }
+    if (-not $hasFsr) { Set-Badge $badgeFsr 'badge_off' $grey; $txtFsr.Text = T 'st_fsr_other' }
+    elseif (-not (Test-FsrBuilt)) { Set-Badge $badgeFsr 'badge_todo' $amber; $txtFsr.Text = T 'st_fsr_rebuild' }
+    elseif (Test-FsrReady) { Set-Badge $badgeFsr 'badge_ok' $green; $txtFsr.Text = T 'st_fsr_on' }
+    else { Set-Badge $badgeFsr 'badge_todo' $amber; $txtFsr.Text = T 'st_fsr_todo' }
+}
+# Um so consentimento para tudo que a placa suporta: marca as caixas, baixa os componentes (Install-Dlss e Install-Fsr nao perguntam de novo)
+function Install-AllTech {
+    $doDsr = Test-DsrGpu; $doDlss = Test-DlssGpu; $doFsr = Test-FsrGpu
+    $names = @()
+    if ($doDsr) { $names += 'NVIDIA DLSS' }
+    if ($doDlss) { $names += 'NVIDIA DLSS Frame Generation' }
+    if ($doFsr) { $names += 'AMD FSR 4' }
+    if ($names.Count -eq 0) { [System.Windows.MessageBox]::Show((T 'tech_none'), 'RecompZel') | Out-Null; return }
+    if ([System.Windows.MessageBox]::Show(((T 'tech_all_q') -f ($names -join ', ')), 'RecompZel', 'YesNo', 'Question') -ne 'Yes') { return }
+    $script:techConsent = $true
+    $bad = $false
+    try {
+        $script:loading = $true
+        if ($doDsr) { $chkDsr.IsChecked = $true }
+        if ($doDlss) { $chkDlss.IsChecked = $true }
+        if ($doFsr) { $chkFsr.IsChecked = $true }
+        $chkSafe.IsChecked = $false
+        $script:loading = $false
+        Save-Settings
+        if ($doDsr) { Set-DsrChoice $true }
+        if ($doDlss) { Set-FgChoice $true }
+        if ($doDlss -and -not (Install-Dlss)) { $bad = $true }
+        if ($doFsr -and -not (Install-Fsr)) { $bad = $true }
+        if ($doDlss) { [void](Ensure-SlSr) }
+    } finally {
+        $script:loading = $false
+        $script:techConsent = $false
+    }
+    Update-Tech
+    $rebuild = ($doDsr -and -not (Test-DsrBuilt)) -or ($doFsr -and -not (Test-FsrBuilt))
+    if ($bad) { $txtHelp.Text = T 'tech_fail' }
+    elseif ($rebuild) { $txtHelp.Text = T 'tech_done_rebuild' }
+    else { $txtHelp.Text = T 'tech_done' }
+}
+$btnTechAll.Add_Click({ Install-AllTech })
+# O painel de tecnologias muda raramente: atualiza a cada 5 ticks (10 s), e na hora quando o usuario mexe (os botoes chamam Update-Tech)
+$script:techTick = 0
+$timer.Add_Tick({
+    Update-View; Show-ToolsProgress; Check-Game; Poll-UpdateCheck
+    $script:techTick++
+    if ($script:techTick -ge 5) { $script:techTick = 0; Update-Tech }
+})
+Start-UpdateCheck
 $timer.Start()
 Update-View
-Update-Fsr-Text
-Update-Dlss-Text
-Update-Dsr-Text
+Update-Tech
 Refresh-Mesh
 Update-Shortcuts
 

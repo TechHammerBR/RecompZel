@@ -586,12 +586,42 @@ The game lowers it when the GPU is busy; the 3D is stretched from whatever size 
 The 3D at the output's full size, not stretched: the sharpest, but its edges stay jagged.	O 3D no tamanho total da saída, sem esticar: o mais nítido, mas as bordas ficam serrilhadas.
 A steady size, stretched to the output: lower is faster, and blurrier.	Um tamanho fixo, esticado até a saída: menor é mais rápido e mais borrado.
 Frame generation method	Método de geração de quadros
-RecompZel / AMD FSR 3.1	RecompZel / AMD FSR 3.1
-NVIDIA DLSS Frame Generation	NVIDIA DLSS Frame Generation
+RecompZel	RecompZel
+NVIDIA DLSS-G	NVIDIA DLSS-G
+AMD FSR 3.1	AMD FSR 3.1
+NVIDIA DLSS-G (not here)	NVIDIA DLSS-G (indisponível)
+AMD FSR 3.1 (not here)	AMD FSR 3.1 (indisponível)
+Who makes the frames between the game's own: RecompZel's interpolation, NVIDIA DLSS Frame Generation or AMD FSR 3.1. A method that cannot run on this GPU says so and is skipped.	Quem faz os quadros entre os do jogo: a interpolação do RecompZel, o NVIDIA DLSS Frame Generation ou o AMD FSR 3.1. Um método que não roda nesta placa avisa e é pulado.
+RecompZel's own interpolation: a frame for each of the display's refreshes (Auto) or 2x to 8x. Works on any GPU.	A interpolação própria do RecompZel: um quadro para cada atualização da tela (Auto) ou de 2x a 8x. Funciona em qualquer placa.
+NVIDIA's frame generation (RTX 40 and 50), from the scene's depth and motion. The Frame generation row below is its multiplier: 2x on an RTX 40, up to 4x on an RTX 50. Choosing it sets the Upscaler to NVIDIA DLSS. Needs the NVIDIA files beside the game (the launcher installs them).	A geração de quadros da NVIDIA (RTX 40 e 50), a partir da profundidade e do movimento da cena. A linha Geração de quadros logo abaixo é o multiplicador: 2x em uma RTX 40, até 4x em uma RTX 50. Escolher este método ajusta o Upscaler para NVIDIA DLSS. Precisa dos arquivos da NVIDIA na pasta do jogo (o launcher instala).
+AMD FSR 3.1's frame interpolation, at 2x (higher values use RecompZel's own). Works on most GPUs. The HUD can smear while it moves: the game draws it into the same picture.	A interpolação de quadros do AMD FSR 3.1, em 2x (valores maiores usam a do RecompZel). Funciona na maioria das placas. A interface pode borrar enquanto se move: o jogo a desenha na mesma imagem.
 %dx (NVIDIA DLSS-G)	%dx (NVIDIA DLSS-G)
 %dx (this GPU: %dx)	%dx (esta GPU: %dx)
-Who makes the frames between the game's own: the renderer's interpolation (or AMD FSR 3.1) or NVIDIA DLSS Frame Generation. Shown where DLSS Frame Generation is set up (the launcher's box).	Quem gera os quadros entre os do jogo: a interpolação do renderizador (ou o AMD FSR 3.1) ou o NVIDIA DLSS Frame Generation. Aparece onde o DLSS Frame Generation está configurado (a caixa do launcher).
-The renderer's own interpolation, or AMD FSR 3.1 at 2x where it is turned on. Works on any GPU.	A interpolação própria do renderizador, ou o AMD FSR 3.1 em 2x onde estiver ligado. Funciona em qualquer GPU.
-NVIDIA's frame generation (RTX 40 and 50), from the scene's depth and motion. It needs the Upscaler row on NVIDIA DLSS or DLAA, and takes the Frame generation row below as its multiplier: 2x on an RTX 40, up to 4x on an RTX 50.	A geração de quadros da NVIDIA (RTX 40 e 50), a partir da profundidade e do movimento da cena. Precisa da linha Upscaler em NVIDIA DLSS ou DLAA e usa a linha Geração de quadros logo abaixo como multiplicador: 2x em uma RTX 40, até 4x em uma RTX 50.
 Off: pick 2x or more. NVIDIA DLSS Frame Generation makes 1 frame at 2x, 2 at 3x and 3 at 4x, the most this GPU makes.	Desligado: escolha 2x ou mais. O NVIDIA DLSS Frame Generation gera 1 quadro em 2x, 2 em 3x e 3 em 4x, no máximo o que esta GPU faz.
-By NVIDIA DLSS Frame Generation, from the scene's depth and motion. It works with the Upscaler row on NVIDIA DLSS or DLAA.	Pelo NVIDIA DLSS Frame Generation, a partir da profundidade e do movimento da cena. Funciona com a linha Upscaler em NVIDIA DLSS ou DLAA.
+By NVIDIA DLSS Frame Generation, from the scene's depth and motion. It works with the Upscaler row on the game's own, NVIDIA DLSS or DLAA (choosing the method sets DLSS).	Pelo NVIDIA DLSS Frame Generation, a partir da profundidade e do movimento da cena. Funciona com a linha Upscaler no do jogo, NVIDIA DLSS ou DLAA (escolher o método já ajusta o DLSS).
+Frame time	Tempo de quadro
+Graph	Gráfico
+Breakdown	Detalhado
+Top right	Superior direito
+Top left	Superior esquerdo
+Bottom right	Inferior direito
+Bottom left	Inferior esquerdo
+Game	Jogo
+Renderer	Renderizador
+GPU wait	Espera da GPU
+Pacing	Ritmo
+GPU time	Tempo da GPU
+Shaders built (4 s)	Shaders criados (4 s)
+Draws left out (4 s)	Desenhos omitidos (4 s)
+Uncapped	Sem limite
+FPS counter position	Posição do contador de FPS
+The corner the FPS counter shows in. While this menu is open it shows at the top right.	O canto onde o contador de FPS aparece. Com este menu aberto ele fica no canto superior direito.
+Frames per second in the top right corner, and as much more as you choose.	Quadros por segundo no canto da tela, e mais informações conforme você escolher.
+The frame rate. With frame generation on, the game's own rate too.	A taxa de quadros. Com a geração de quadros ligada, a taxa do próprio jogo também.
+And the game's frame time, with its 1% low: the rate of its slowest 1% of frames over the last 10 seconds.	E o tempo de quadro do jogo, com o 1% mais baixo: a taxa dos 1% de quadros mais lentos nos últimos 10 segundos.
+And a graph of the last 4 seconds' frame times, with a line at the Game frame rate cap's.	E um gráfico dos tempos de quadro dos últimos 4 segundos, com uma linha no limite de FPS do jogo.
+And where each frame's time goes: the game, the renderer, waiting for the GPU, waiting for its turn (frame pacing, vsync); the GPU's own time; red marks where shaders were built or draws left out.	E para onde vai o tempo de cada quadro: o jogo, o renderizador, a espera pela GPU, a espera pela vez (ritmo dos quadros, vsync); o tempo da própria GPU; o vermelho marca onde shaders foram criados ou desenhos omitidos.
+FSR 3.1's native AA: the 3D at the picture's full size, anti-aliased by FSR. The sharpest, and the heaviest.	AA nativo do FSR 3.1: o 3D no tamanho total da imagem, com antisserrilhado do FSR. O mais nítido e o mais pesado.
+Between native AA and Quality: sharper than Quality, a little slower.	Entre o AA nativo e o Qualidade: mais nítido que o Qualidade, um pouco mais lento.
+FSR's Quality mode, 1.5x: the sharpest of AMD's upscaling modes.	Modo Qualidade do FSR, 1,5x: o mais nítido dos modos de upscaling da AMD.
+Limits frames rendered by the game. Generated frames are additional. Takes a restart. Past 60 is experimental: the game keeps real time, but some cutscenes and bosses can misbehave (Gohma, the intro's narration). 60 is the safe choice. Uncapped: as fast as the PC can, still at real time; with V-Sync on, the display's refresh rate is the limit.	Limita os quadros renderizados pelo jogo. Os quadros gerados são adicionais. Exige reiniciar. Acima de 60 é experimental: o jogo mantém o tempo real, mas algumas cenas e chefes podem se comportar mal (Gohma, a narração da introdução). 60 é a escolha segura. Sem limite: o mais rápido que o PC conseguir, ainda em tempo real; com V-Sync ligado, a taxa de atualização da tela é o limite.

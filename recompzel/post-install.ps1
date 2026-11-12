@@ -1,4 +1,4 @@
-﻿# post-install.ps1 - roda depois da instalacao: deixa o jogo facil de abrir.
+# post-install.ps1 - roda depois da instalacao: deixa o jogo facil de abrir.
 # Cria: atalho "Zelda OoT (RecompZel)" (abre o jogo) e, se houver launcher, "RecompZel Launcher" na area de trabalho, entrada no menu Iniciar e "Jogar RecompZel.bat" dentro da pasta do jogo.
 # Nao apaga nada. Pode rodar quantas vezes quiser (ex.: se mover a pasta do jogo).
 # Uso: powershell -ExecutionPolicy Bypass -File .\post-install.ps1 [-GameDir D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo]
@@ -30,13 +30,13 @@ $menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'RecompZel'
 New-Item -ItemType Directory -Force -Path $menu | Out-Null
 Novo-Atalho (Join-Path $menu 'Zelda OoT (RecompZel).lnk')
 
-# Launcher (menu com Jogar, progresso e opcoes), se esta maquina tem o launcher.ps1 em D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV
-$launcher = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\launcher.ps1'
+# Launcher (menu com Jogar, progresso e opcoes): o da pasta deste script
+$launcher = Join-Path $PSScriptRoot 'launcher.ps1'
 if (Test-Path -LiteralPath $launcher) {
     $b = $Sh.CreateShortcut((Join-Path $desktop 'RecompZel Launcher.lnk'))
     $b.TargetPath = "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe"
     $b.Arguments = "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcher`""
-    $b.WorkingDirectory = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV'
+    $b.WorkingDirectory = Split-Path $launcher -Parent
     $b.IconLocation = "$exe,0"
     $b.Description = 'Launcher do RecompZel'
     $b.Save()

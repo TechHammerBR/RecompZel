@@ -1,0 +1,76 @@
+# O RecompZel-Launcher.exe que o usuario baixa: um exe pequeno (C#, csc.exe do Windows) com os scripts de recompzel/ dentro.
+# Ao abrir, ele copia os scripts para a pasta do launcher e abre o launcher (launcher.ps1). Sem game data, sem ferramentas extras.
+# A cada push em main que muda recompzel/, o exe e refeito e substitui o da release "launcher" (a mais recente);
+# tambem pode ser rodado a mao (Actions > Launcher exe > Run workflow). Em pull request so compila e guarda como artifact.
+name: Launcher exe
+
+on:
+  push:
+    branches: [main]
+    paths: ['recompzel/**', '.github/workflows/launcher-exe.yml']
+  pull_request:
+    paths: ['recompzel/**', '.github/workflows/launcher-exe.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: launcher-exe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write   # (para atualizar a release "launcher")
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compilar RecompZel-Launcher.exe
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          if (-not (Test-Path $csc)) { throw "csc.exe nao encontrado: $csc" }
+          # numero do build: o launcher compara com o da release para oferecer a atualizacao (botao Atualizar)
+          Set-Content -Path recompzel\build.txt -Value '${{ github.run_number }}' -NoNewline -Encoding ASCII
+          $res = @('/resource:recompzel\build.txt,rz.build.txt')
+          foreach ($f in 'launcher.ps1','build-game.ps1','env-recompzel.ps1','install-tools.ps1','post-install.ps1','criar-atalhos.ps1','medir-rodada.ps1','monitor-build.ps1','atualizar-fork.ps1','recompzel.ico') {
+            $p = Join-Path 'recompzel' $f
+            if (-not (Test-Path $p)) { throw "falta $p" }
+            $res += "/resource:$p,rz.$f"
+          }
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          & $csc /nologo /target:winexe /optimize+ /out:out\RecompZel-Launcher.exe /win32icon:recompzel\recompzel.ico `
+            /reference:System.Windows.Forms.dll @res recompzel\exe\LauncherStub.cs
+          if ($LASTEXITCODE -ne 0) { throw "csc falhou ($LASTEXITCODE)" }
+          Get-Item out\RecompZel-Launcher.exe | Format-List Name, Length
+          (Get-FileHash out\RecompZel-Launcher.exe -Algorithm SHA256).Hash | Set-Content out\RecompZel-Launcher.exe.sha256
+
+      - name: Conferir que o exe contem os scripts
+        shell: pwsh
+        run: |
+          $asm = [Reflection.Assembly]::LoadFile((Resolve-Path out\RecompZel-Launcher.exe))
+          $names = $asm.GetManifestResourceNames()
+          $names
+          if ($names -notcontains 'rz.launcher.ps1') { throw 'launcher.ps1 nao esta dentro do exe' }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RecompZel-Launcher
+          path: out/*
+
+      - name: Publicar na release "launcher"
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="**Comece por aqui.** Baixe o RecompZel-Launcher.exe, de duplo clique e siga o painel (escolha o seu .nup, Reconstruir o jogo e Jogar). Na primeira vez ele baixa sozinho as ferramentas de compilacao (uns 400 MB). Voce precisa do seu proprio arquivo do jogo (.nup). Refeito automaticamente a cada mudanca em recompzel/. Commit ${GITHUB_SHA::7}."
+          if gh release view launcher >/dev/null 2>&1; then
+            gh release edit launcher --notes "$notes" --latest=false
+          else
+            gh release create launcher --title "RecompZel Launcher (exe)" --notes "$notes" --latest=false --target "$GITHUB_SHA"
+          fi
+          cp recompzel/build.txt out/build.txt
+          gh release upload launcher out/RecompZel-Launcher.exe out/RecompZel-Launcher.exe.sha256 out/build.txt --clobber

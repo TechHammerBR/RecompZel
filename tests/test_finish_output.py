@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -69,7 +70,8 @@ class FinishOutputTests(unittest.TestCase):
             (self.root / "HookshotBuilder-Setup.exe").write_bytes(b"new synthetic launcher")
         with mock.patch.object(make_game, "BESIDE", ["hookshot.exe"]):
             # Comprehensions use globals. Keep one namespace, as in production, and discover only authored setup files.
-            namespace = dict(make_game.__dict__, built=str(self.built), out=str(self.out), work=str(self.work),
+            namespace = dict(make_game.__dict__, built=str(self.built), out=str(self.out), work=str(self.work), a=types.SimpleNamespace(update=False, fsr=False),
+                             GAME_EXE="hookshot.exe",   # (recompzel: o exe do jogo tem nome proprio; este teste usa o nome do Hookshot)
                              ROOT=str(self.root / "tools"), LINUX=False if launcher else make_game.LINUX)
             exec(FINISH, namespace)
 

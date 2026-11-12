@@ -53,6 +53,8 @@ bool row_fixed(const int*) { return false; }
 int upscaler() { return 0; }
 unsigned upscalers_available() { return 1; }
 namespace ur {
+enum { GAME = 0, DLSS = 1, DLAA = 2, FSR3 = 3, FSR4 = 4, FSR4_AA = 5, OFF = 6 };
+inline unsigned bit(int u) { return 1u << u; }
 int snap(int, int value) { return value; }
 int snap_render(int, int value) { return value; }   // (the slider)
 int step(int, int value, int dir) { return value + dir; }
@@ -66,6 +68,7 @@ struct { void note(const int*) {} } restart_state;
 bool can_mic() { return false; }
 void mic_chosen() {}
 void samplers_changed() {}
+bool fgtype_available(int) { return true; }   // (the Frame generation method row: every method here)
 int step_output_choice(int id, int dir) { return id + dir; }
 const char* tx_framegen(int) { return ""; }
 const char* hn_framegen(int, int) { return ""; }

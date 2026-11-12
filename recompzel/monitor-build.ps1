@@ -1,4 +1,4 @@
-﻿# monitor-build.ps1
+# monitor-build.ps1
 # Le D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\build.log (somente leitura) e mostra o progresso real do build.
 # Uso:  powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\monitor-build.ps1        (uma vez)
 #       powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\monitor-build.ps1 -Watch (atualiza a cada 10 s)
@@ -6,9 +6,9 @@
 
 param([switch]$Watch, [int]$Interval = 10)
 
-$Log      = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\build.log'
-$Work     = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\build-work'
-$Report   = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\progress-report.txt'
+$Log      = Join-Path $PSScriptRoot 'build.log'
+$Work     = Join-Path $PSScriptRoot 'build-work'
+$Report   = Join-Path $PSScriptRoot 'progress-report.txt'
 
 # Pesos de cada etapa no total (soma 100). Ajuste se medir tempos reais.
 $W = @{ read = 15; lift = 10; compile = 60; finish = 15 }

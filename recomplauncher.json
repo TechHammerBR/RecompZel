@@ -13,6 +13,7 @@
   "start": {
     "program": [
       "Hookshot.AppImage",
+      "RecompZelBuilder.exe",
       "HookshotBuilder.exe"
     ],
     "args": [
@@ -23,6 +24,7 @@
   "prepare": {
     "program": [
       "Hookshot.AppImage",
+      "RecompZelBuilder.exe",
       "HookshotBuilder.exe"
     ],
     "args": [

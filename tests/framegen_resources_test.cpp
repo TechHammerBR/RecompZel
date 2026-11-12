@@ -22,7 +22,8 @@ namespace fixture {
 using VmaAllocation = void*;
 constexpr int kMaxMult = 8;
 struct Device { VkDevice device{}; bool push_descriptor = true, offscreen = false; std::mutex present_mu; } dev;
-struct Options { int framegen = 2; } opts;
+struct Options { int framegen = 2; int fgtype = 0; } opts;
+namespace slfg { int max_generated() { return 0; } }   // (NVIDIA DLSS Frame Generation: not ready in this fixture)
 auto vkCmdPushDescriptorSetKHR = reinterpret_cast<PFN_vkCmdPushDescriptorSetKHR>(uintptr_t(1));
 constexpr uint32_t FG_COPY_COMP_SPV[] = {0}, FG_LUMA_COMP_SPV[] = {0}, FG_FLOW_COMP_SPV[] = {0},
                    FG_MEDIAN_COMP_SPV[] = {0}, FG_SYNTH_COMP_SPV[] = {0}, FG_SCALE_COMP_SPV[] = {0};
