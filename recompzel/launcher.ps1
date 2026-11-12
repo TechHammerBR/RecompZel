@@ -1320,7 +1320,8 @@ $btnPlay.Add_Click({
         } elseif (Install-Fsr) {
             $useFsr = $true
             [Environment]::SetEnvironmentVariable('RX_VK_FSR_DIR', (Get-FsrDir), 'Process')
-            [Environment]::SetEnvironmentVariable('RX_VK_FSR4', '1', 'Process')
+            # (recompzel: so a pasta do FSR 4. RX_VK_FSR4=1 forcava o FSR 4 comum por cima do menu: a linha Upscaler ficava
+            # presa nele (sem Desligado nem FSR 3.1) e a Escala de resolucao perdia o Nativo. O menu do jogo escolhe)
         }
         Update-Fsr-Text
     }
