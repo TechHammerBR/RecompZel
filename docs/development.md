@@ -151,7 +151,6 @@ case-sensitive, and an unknown one is ignored.
 | `RX_VK_NO_PROGRAM_CACHE` (set) | Neither reads nor writes `hookshot_programs.bin` and the pipeline notes |
 | `RX_VK_UB_WORD_HASH=0` | A/B test: use the old low-address-bit index for cached uniform words (default: mix upper address bits to reduce aligned-buffer collisions) |
 | `RX_VK_MIRROR=0`, `RX_VK_MIRROR_MB=<MB>` | No VRAM mirrors of the game's memory pools (on for discrete cards); their budget |
-| `RX_VK_CAPTURE_KEEP_OLD=1`, `RX_VK_CAP_BLOCKS=1` | A/B switches for capture buffers: keep the former size classes and 64 MB reuse limit; allocate large buffers from shared blocks instead of dedicated memory. Both are off by default and follow the on/off rule above, including `0`, `false`, `off` and `no` |
 | `RX_VK_VRAM_MB=<MB>` | The texture cache's budget (default 70% of what the driver allows, at most 6 GB) |
 | `RX_VK_VRAM_FORCE=1` | Takes off the two caps on the texture budget (gpu/vk/host_commit.h): half of what the driver allows (never under 6 GB), and the commit the system can still hand out less 2 GB (never under 3 GB; Fritchii v5.7's rule). Without it a 12 GB budget on a 16 GB card is held to about 7.6 GB, and a PC short of commit gives the textures back before Windows pages the card's memory to disk |
 | `RX_VK_MASK_BLEND=<peso>` | Turns on the tree-shadow mask blend (0.85 was its old default; 0.95 at most). Off by default since upstream #2374: with it on the GPU hung near Hyrule Castle (device lost). Without it the thin shadow streaks on sunlit grass can show. |
