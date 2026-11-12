@@ -719,17 +719,19 @@ bool gpu_page(uint64_t page) {
     return gpu_pages.count((uint32_t)page) != 0;
 }
 
-// (RX_VK_PROTECT_BARE=1, an experiment for the one-frame foliage flicker and the floating trees) The ranges a shader writes
-// through a table pointer (vk_draw.cpp: a bare entry, only its first 64 bytes marked written) are GPU-written pages the
-// mirror syncs know nothing of: a CPU write anywhere on such a page copied the CPU's whole page over the GPU's records
-// (NX2navi found the same: "trees drawn from records lost that way stretched into columns reaching the sky", and culled
-// foliage drew garbage for a frame). Pages noted here keep the GPU's version when the CPU also wrote them since the
-// pool's last sync. Nothing is copied back to guest memory (that overwrote the CPU's own data beside them once).
+// (recompzel: on by default since 2026-11-12; RX_VK_PROTECT_BARE=0 goes back to the opt-in experiment) The ranges a
+// shader writes through a table pointer (vk_draw.cpp: a bare entry, only its first 64 bytes marked written) are
+// GPU-written pages the mirror syncs know nothing of: a CPU write anywhere on such a page copied the CPU's whole page
+// over the GPU's records (NX2navi found the same: "trees drawn from records lost that way stretched into columns
+// reaching the sky", and culled foliage drew garbage for a frame: the one-frame ground/shadow flicker under trees,
+// more often seen on a fast NVIDIA card where the CPU catches up to the GPU's page between two frames more often).
+// Pages noted here keep the GPU's version when the CPU also wrote them since the pool's last sync. Nothing is copied
+// back to guest memory (that overwrote the CPU's own data beside them once).
 std::mutex prot_mu;
 std::unordered_map<uint32_t, uint32_t> prot_pages;   // page -> gen_now when a shader last wrote through it
 std::atomic<int64_t> st_prot_kept{0};
 bool protect_bare_on() {
-    static const bool v = getenv("RX_VK_PROTECT_BARE") && getenv("RX_VK_PROTECT_BARE")[0] == '1';
+    static const bool v = !getenv("RX_VK_PROTECT_BARE") || getenv("RX_VK_PROTECT_BARE")[0] != '0';
     return v;
 }
 bool prot_page_since(uint64_t page, uint32_t synced) {
@@ -3069,7 +3071,7 @@ bool mirror_make(Pool& pool) {
                 const uint64_t a = std::max(r.lo, p->lo), b = std::min(r.hi, p->hi);
                 // (only the pages not stamped since its last sync: one the CPU wrote after it has the game's newer data in the
                 // copy of guest memory above, and the old mirror's over it counted as synced, stale for good (mirror_inherit.h).
-                // As mirror_sync, a page a shader wrote through a bare entry keeps the mirror's copy (RX_VK_PROTECT_BARE=1).
+                // As mirror_sync, a page a shader wrote through a bare entry keeps the mirror's copy (on by default, protect_bare_on).
                 // Synced in this submission: the whole part. Its synced_gen is raised only at the submission's end
                 // (memory_end_submission), so what the GPU wrote in this submission's earlier segments (RX_VK_PARALLEL) is
                 // stamped above it, and guest memory has that only after the write-back; the CPU's writes were collected
