@@ -3863,10 +3863,12 @@ void texture_frame(uint64_t completed) {
             continue;
         }
         if (it->pool_key) {   // (a render target's image: kept for the next of its shape, above)
+            mask_stabilize_forget(it->image);   // (the pool hands this image to a different texture next: #2374)
             pool_put(*it);
             it = dead.erase(it);
             continue;
         }
+        mask_stabilize_forget(it->image);   // (the image itself dies below: a view cached for it must not outlive it)
         for (VkImageView v : it->views) vkDestroyImageView(dev.device, v, nullptr);
         destroy_image(it->image, it->allocation);
         if (it->buffer) destroy_buffer(it->buffer, it->buffer_alloc);

@@ -6150,7 +6150,15 @@ static void skin_check(const NvnState& s, const Program& p, const DrawArgs& d, c
 /// neighbourhood; default 0: unbounded. A 3x3 bound kept nothing: the streaks move as blocks wider than that).
 /// OFF BY DEFAULT since 2026-11-11: with it on, the GPU hung on the mesh draw before this pass (b0b3b40244c71ec7) near Hyrule
 /// Castle, device lost after ~8 minutes on the owner's save, twice, and in 2 of the night's route runs. The same build with
-/// RX_VK_MASK_BLEND=0 ran 14 minutes there clean, as v2.1.0 (before this pass) did. Opt-in until the hang is found
+/// RX_VK_MASK_BLEND=0 ran 14 minutes there clean, as v2.1.0 (before this pass) did.
+/// 2026-11-12: a likely cause found and fixed, not yet confirmed against the hang itself. This draw's mask texture is a
+/// render target, so its image can come back from the dead list through the pool (texture_frame, vk_texture.cpp) for a
+/// different texture to take over, same VkImage, while mask_stabilize's view cache (keyed by that VkImage) still held the
+/// old view, made for what used to be there. 8 minutes is plausible for Hyrule Castle's heavier target churn to turn that
+/// over once. mask_stabilize_forget(image) now drops (and destroys) a cached view before its image goes back to the pool or
+/// is destroyed outright (both branches of that dead-list loop), so a later texture sharing the image is never read or
+/// written through a view made for the one before it. Still opt-in: this needs a real run at Hyrule Castle past the ~8
+/// minute mark with RX_VK_MASK_BLEND=0.85 before the default changes back
 float mask_weight() {
     static const float w = std::clamp(getenv("RX_VK_MASK_BLEND") ? (float)atof(getenv("RX_VK_MASK_BLEND")) : 0.0f, 0.0f, 0.95f);
     return w;
@@ -6158,6 +6166,26 @@ float mask_weight() {
 int mask_radius_env() {
     static const int r = std::clamp(getenv("RX_VK_MASK_RADIUS") ? atoi(getenv("RX_VK_MASK_RADIUS")) : 0, 0, 4);
     return r;
+}
+// (the mask's own storage view at a texture's image, level and layer, made once and kept; mask_stabilize_forget drops an
+// entry before its image can go to a different texture, so a view made for the image that held it before is never read
+// or written through by the texture that replaces it: #2374's device-lost, a stale view surviving the image's own
+// destruction or, for a pooled render target, surviving past the point another texture took the same image over)
+static std::map<std::tuple<VkImage, uint32_t, uint32_t>, VkImageView> mask_views;
+void mask_stabilize_forget(VkImage image) {
+    static std::atomic<int> told{0};
+    for (auto it = mask_views.begin(); it != mask_views.end();) {
+        if (std::get<0>(it->first) == image) {
+            if (told.fetch_add(1, std::memory_order_relaxed) < 8)
+                logf("vk: tree-shadow mask: image %#llx given up before #2374 could read or write a view made for it "
+                     "again (level %u layer %u)",
+                     (unsigned long long)(uintptr_t)image, std::get<1>(it->first), std::get<2>(it->first));
+            vkDestroyImageView(dev.device, it->second, nullptr);
+            it = mask_views.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t layer, float weight) {
     if (!tex || !tex->image || tex->format != VK_FORMAT_R8G8B8A8_UNORM || !(tex->usage & VK_IMAGE_USAGE_STORAGE_BIT)) return;
@@ -6192,9 +6220,7 @@ void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t 
     }
     if (!pipe) return;
     const uint32_t w = std::max(1u, tex->width >> level), h = std::max(1u, tex->height >> level);
-    // (the mask's own storage view at that level and layer, made once a texture and level)
-    static std::map<std::tuple<VkImage, uint32_t, uint32_t>, VkImageView> views;
-    VkImageView& mv = views[{tex->image, level, layer}];
+    VkImageView& mv = mask_views[{tex->image, level, layer}];
     if (!mv) {
         VkImageViewCreateInfo vc{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         vc.image = tex->image, vc.viewType = VK_IMAGE_VIEW_TYPE_2D, vc.format = VK_FORMAT_R8G8B8A8_UNORM;
