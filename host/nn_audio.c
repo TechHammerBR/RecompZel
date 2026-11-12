@@ -419,6 +419,27 @@ static void delay_frame(Delay *dl, Mix *m) {
         }
         dl->pos = (dl->pos + 1) % dl->len;
     }
+    /* (recompzel) how loud the echo is, told every ~5 s while it runs: the dry signal against the repeats it adds, so a run's
+       log says whether the echo plays and how strong it is (no one hears a log) */
+    static double dry_e[MAX_EFFECTS], wet_e[MAX_EFFECTS];
+    static int frames[MAX_EFFECTS];
+    const int idx = (int)(dl - delays);
+    for (int c = 0; c < dl->n; c++) {
+        const int b = dl->in[c];
+        for (int i = 0; i < FRAME; i += 8) {
+            const float x = b >= 0 && b < m->buffers ? m->buf[b][i] : 0.0f;
+            dry_e[idx] += (double)x * x;
+        }
+        wet_e[idx] += (double)dl->lp[c] * dl->lp[c] * (FRAME / 8);
+    }
+    if (++frames[idx] >= 1000) {   /* (1000 frames of 5 ms) */
+        const double d = dry_e[idx], w = wet_e[idx];
+        if (d > 1e-9 || w > 1e-9)
+            hos_log("audio: echo (delay %d, %d ms): repeats %.1f dB under the sound (feedback %.2f, in %.2f, dry %.2f)", idx,
+                    (int)(dl->delay_ns / 1000000), w > 1e-12 && d > 1e-12 ? 10.0 * log10(d / w) : 99.0, dl->feedback,
+                    dl->in_gain, dl->dry);
+        dry_e[idx] = wet_e[idx] = 0, frames[idx] = 0;
+    }
 }
 
 static void effects_frame(int mix) {
