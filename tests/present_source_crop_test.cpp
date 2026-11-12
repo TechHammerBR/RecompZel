@@ -36,6 +36,9 @@ float hdr_uv[4]{};
 int blits = 0, clears = 0, initializations = 0, sizes = 0, dispatches = 0, copies = 0;
 uint32_t allocated_w = 0, allocated_h = 0;
 namespace fsr3fi { bool wanted = false; bool frames_wanted() { return wanted; } }
+// (recompzel) AMD FSR 4 frame generation (vk_fsr4fg.cpp): off in this fixture, so the FSR 3.1 and RecompZel paths run as before
+namespace fsr4fg { bool wanted() { return false; } }
+int fsr4fg_frame(VkCommandBuffer, OutSet&, int, uint32_t, uint32_t) { std::abort(); }
 int fsr_calls = 0, fsr_result = 1;
 int fsr3fi_frame(VkCommandBuffer, OutSet&, int, uint32_t w, uint32_t h, uint64_t sequence) {
     CHECK(w == allocated_w && h == allocated_h && sequence > 0);
