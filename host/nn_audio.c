@@ -1,4 +1,4 @@
-﻿/* nn::audio: an HLE of the audio renderer at the API level, and its output.
+/* nn::audio: an HLE of the audio renderer at the API level, and its output.
 
    The game builds its sound graph through nn::audio calls on objects it owns (VoiceType, SubMixType, FinalMixType,
    SplitterType, DeviceSinkType, MemoryPoolType, effect types): each gets our handle in its first 8 bytes (AU_MAGIC,
