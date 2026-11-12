@@ -31,7 +31,13 @@ void main() {
         for (int x = -6; x <= 6; x += 3) near_still = max(near_still, still_at(g + ivec2(x, y), size));
     const float invented = smoothstep(0.10, 0.22, min(gap(f, a0), gap(f, b0)));
     // (the HUD's bands: hearts, magic, buttons and rupees at the top; rupees, the map, the text box at the bottom)
-    const float band = 1.0 - step(0.2, p.y / sz.y) * step(p.y / sz.y, 0.7);
+    // (soft edges, and the top band only in its corners, where the HUD is: a hard edge at 20% cut a moving light in two,
+    // the made frame below it and the game's frame above, a beam that flashed past as the camera moved)
+    const vec2 q = p / sz;
+    const float corners = 1.0 - smoothstep(0.26, 0.32, q.x) * (1.0 - smoothstep(0.70, 0.76, q.x));
+    const float top = (1.0 - smoothstep(0.12, 0.20, q.y)) * corners;
+    const float bottom = smoothstep(0.70, 0.78, q.y);
+    const float band = max(top, bottom);
     // (the change explained by the scene's motion: where this pixel was in the frame before matches it)
     const vec2 v = texture(motion, p / sz).xy * pc.scale;
     const float explained = 1.0 - smoothstep(0.06, 0.14, gap(texture(fa, (p + v) / sz).rgb, b0));
