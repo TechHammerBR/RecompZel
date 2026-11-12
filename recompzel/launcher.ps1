@@ -1410,6 +1410,12 @@ $btnPlay.Add_Click({
     $meshNow = Read-Mesh
     $script:roundNote = ('VRAM={0} UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8}' -f $vramOptions[$cbVram.SelectedIndex].Pt, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked)
     $script:gameOut = Get-OutDir
+    # (recompzel) shaders deixados de fora: pular-shaders.txt na pasta do jogo (chaves em hex). Hoje: 7dfc7a637c93e49e, o
+    # brilho vermelho da sala das teias da Arvore Deku, que sai com um triangulo branco na AMD (le o identificador errado de
+    # uma tabela de luzes). Sem ele a sala fica sem esse brilho, mas sem o triangulo. Apague a linha para ver de novo
+    $skipFile = Join-Path $exe.DirectoryName 'pular-shaders.txt'
+    if (-not (Test-Path -LiteralPath $skipFile)) { [IO.File]::WriteAllText($skipFile, "7dfc7a637c93e49e`n") }
+    [Environment]::SetEnvironmentVariable('RX_VK_SKIP_FILE', $skipFile, 'Process')
     $script:gameProc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
     $txtHelp.Text = T 'started'
 })
