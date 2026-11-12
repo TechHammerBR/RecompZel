@@ -1096,6 +1096,24 @@ function Get-Step([double]$p, [string]$cur, [string]$stage) {
     return '[  ]'
 }
 
+# (recompzel) quanto o ultimo build levou, fora os shaders: o build_times.json mais novo entre a pasta de trabalho do perfil e
+# a do %LOCALAPPDATA%. 0 quando nao ha nenhum
+function Get-LastBuildSeconds {
+    $now = [datetime]::Now
+    if ($script:lbsAt -and ($now - $script:lbsAt).TotalSeconds -lt 30) { return $script:lbsVal }
+    $best = $null
+    foreach ($w in @([string]$script:g.workDir, (Join-Path $env:LOCALAPPDATA 'RecompZel\build-work'))) {
+        if (-not $w) { continue }
+        $f = Join-Path $w 'build_times.json'
+        if ((Test-Path -LiteralPath $f) -and (-not $best -or (Get-Item -LiteralPath $f).LastWriteTime -gt (Get-Item -LiteralPath $best).LastWriteTime)) { $best = $f }
+    }
+    $val = 0
+    if ($best) {
+        try { $b = @((Get-Content -LiteralPath $best -Raw | ConvertFrom-Json).builds); if ($b.Count) { $val = [double]$b[-1].total_seconds } } catch { }
+    }
+    $script:lbsAt = $now; $script:lbsVal = $val
+    return $val
+}
 function Format-Min([double]$sec) {
     $m = [int][math]::Ceiling($sec / 60)
     if ($m -lt 1) { return (T 'lt1') }
@@ -1221,6 +1239,15 @@ function Update-View {
     }
     if ($stage -eq 'compile' -and $eta -ge 0) {
         $parts += ((T 'eta_pre') + (Format-Min $eta) + (T 'eta_post'))
+    } elseif ($stage -in @('read','lift','compile') -and -not $done -and (Test-Path $lp)) {
+        # (recompzel) antes da compilacao o build nao estima nada: a previsao vem da duracao do ultimo build (build_times.json
+        # da pasta de trabalho), menos o tempo que este ja leva desde que o log comecou
+        $prev = Get-LastBuildSeconds
+        if ($prev -gt 0) {
+            $elapsed = ([datetime]::Now - (Get-Item $lp).CreationTime).TotalSeconds
+            $left = [math]::Max(60, $prev - $elapsed)
+            $parts += ((T 'eta_pre') + (Format-Min $left) + (T 'eta_post') + $(if ($script:lang -eq 'en') { ' (by the last build)' } else { ' (pelo ultimo build)' }))
+        }
     }
     if ($script:memText) { $parts += $script:memText }
     $txtTime.Text = ($parts -join '  |  ')
