@@ -1124,7 +1124,7 @@ function Update-View {
     $g = $script:g
     $lines = Read-LogLines
     $stage = 'inicio'; $totalFiles = [int]$g.totalFiles; $filesDone = 0
-    $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $done = $false; $shEnd = $false
+    $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $done = $false; $shEnd = $false; $shDone = -1; $shAll = 0; $shLeft = -1
     foreach ($l in $lines) {
         if ($l -match '^@@stage\s+(\S+)') { $stage = $Matches[1]; if ($stage -eq 'shaders') { $shEnd = $false; $prog = -1 } }
         if ($l -match '^(done shaders|the shaders were not prepared now|\[script\] codigo de saida)') { $shEnd = $true }
@@ -1134,6 +1134,8 @@ function Update-View {
         if ($l -match '^@@plan\s+(\d+)') { $planTotal = [int]$Matches[1] }
         if ($l -match '^@@progress\s+([\d\.]+)') { $prog = [double]$Matches[1] }
         if ($l -match '^@@eta\s+(\d+)') { $eta = [int]$Matches[1] }
+        # (os shaders: quantos pipelines prontos, de quantos, e o tempo que o proprio build estima)
+        if ($l -match 'predicted pipelines:\s+(\d+) of (\d+) pipelines in \d+ s, about (\d+) s left') { $shDone = [int]$Matches[1]; $shAll = [int]$Matches[2]; $shLeft = [int]$Matches[3] }
         if (($l -match '^(error|fatal)\b') -or ($l -match 'Traceback') -or ($l -match '(?i)Terminou com codigo [1-9]') -or ($l -match '^compiled in .*,\s*[1-9]\d* failed')) { $err += $l }
         if ($l -match '(?i)^@@done|^@@stage\s+done|^the build took|build complete|build finished') { $done = $true }
     }
@@ -1166,6 +1168,13 @@ function Update-View {
     if ($script:lang -eq 'en' -and $isZ) { $txtGameSub.Text = T 'subtitle' } else { $txtGameSub.Text = [string]$g.subtitle }
     $txtPct.Text = ('{0}%' -f [int][math]::Floor($total))
     $pbTotal.Value = $total
+    # (recompzel) os shaders valem pouco na barra geral mas levam a maior parte do tempo: enquanto rodam, o numero grande e a
+    # barra mostram o progresso real desta etapa, nao um 92-100% parado
+    if ($shRunning -and $prog -ge 0) {
+        $shPct = [math]::Max(0, [math]::Min(100, 100.0 * $prog))
+        $txtPct.Text = ('{0}%' -f [int][math]::Floor($shPct))
+        $pbTotal.Value = $shPct
+    }
 
     # status, "agora" e "proximo passo" em linguagem simples
     if ($err.Count -gt 0) {
@@ -1179,6 +1188,11 @@ function Update-View {
     } elseif ($shRunning) {
         $txtStatus.Text = T 'st_shaders'; $txtStatus.Foreground = '#6FD3A0'
         $txtNow.Text = T 'now_shaders'
+        if ($shDone -ge 0 -and $shAll -gt 0) {
+            $min = [math]::Max(1, [math]::Ceiling($shLeft / 60.0))
+            if ($script:lang -eq 'en') { $txtNow.Text += ("`n{0:N0} of {1:N0} pipelines ready, about {2} min left." -f $shDone, $shAll, $min) }
+            else { $txtNow.Text += ("`n{0:N0} de {1:N0} pipelines prontos, faltam cerca de {2} min." -f $shDone, $shAll, $min) }
+        }
         $txtNext.Text = T 'next_shaders'
     } elseif ($stage -eq 'inicio') {
         $txtStatus.Text = T 'st_none'; $txtStatus.Foreground = '#8FA89C'
