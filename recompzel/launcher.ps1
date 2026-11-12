@@ -1,4 +1,4 @@
-# launcher.ps1  -  RecompZel Launcher v3 (original, feito para o nosso projeto)
+﻿# launcher.ps1  -  RecompZel Launcher v3 (original, feito para o nosso projeto)
 # Uso: powershell -ExecutionPolicy Bypass -File launcher.ps1   (ou o RecompZel-Launcher.exe)
 # Le o build.log e a pasta de trabalho. Nao apaga nada. Reconstruir pede confirmacao.
 # Idioma: Portugues (Brasil) ou English, no canto superior esquerdo. Perfis de jogos: games.json, na pasta do launcher.
@@ -1251,9 +1251,13 @@ function Update-View {
         $ago = ([datetime]::Now - $last).TotalSeconds
         $parts += ((T 'act_pre') + (Format-Min $ago) + (T 'act_post'))
     }
-    if ($stage -eq 'compile' -and $eta -ge 0) {
+    if ($shRunning) {
+        # (os shaders: o tempo que o proprio build estima; antes da primeira estimativa, so que esta preparando)
+        if ($shLeft -ge 0) { $parts += ((T 'eta_pre') + (Format-Min $shLeft) + (T 'eta_post')) }
+        else { $parts += $(if ($script:lang -eq 'en') { 'Estimating the time left...' } else { 'Calculando o tempo restante...' }) }
+    } elseif ($stage -eq 'compile' -and $eta -ge 0) {
         $parts += ((T 'eta_pre') + (Format-Min $eta) + (T 'eta_post'))
-    } elseif ($stage -in @('read','lift','compile') -and -not $done -and (Test-Path $lp)) {
+    } elseif ($stage -in @('read','lift','compile','finish') -and -not $done -and (Test-Path $lp)) {
         # (recompzel) antes da compilacao o build nao estima nada: a previsao vem da duracao do ultimo build (build_times.json
         # da pasta de trabalho), menos o tempo que este ja leva desde que o log comecou
         $prev = Get-LastBuildSeconds
