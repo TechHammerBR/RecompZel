@@ -23,6 +23,7 @@
 #include "vk_draw.h"   // (descriptors_disturbed)
 #include "vk_fsr3.h"
 #include "vk_fsr3fi.h"
+#include "vk_fsr4fg.h"
 #include "vk_texture.h"
 
 #include "shaders/fsr3_prep_comp_spv.h"
@@ -207,7 +208,7 @@ VkImageView depth_view(Texture* t) {
 
 } // namespace
 
-bool wanted() { return fsr3_wanted() || fsr3fi::frames_wanted() != 0; }
+bool wanted() { return fsr3_wanted() || fsr3fi::frames_wanted() != 0 || fsr4fg::wanted(); }
 
 void note_scene_draw(const Texture* color0, uint32_t width, uint32_t height, Texture* depth, uint64_t camera,
                      uint64_t camera_size) {

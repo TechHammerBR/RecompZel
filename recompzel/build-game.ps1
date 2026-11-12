@@ -130,7 +130,8 @@ Add-Content -Path $Log -Value "`r`n[script] codigo de saida $code, $min minutos"
 
 # 3) pos-instalacao: atalho na area de trabalho e "Jogar RecompZel.bat" na pasta do jogo
 if ($code -eq 0 -and (Test-Path -LiteralPath (Join-Path $Out 'RecompZel.exe'))) {
-    & (Join-Path $PSScriptRoot 'post-install.ps1') -GameDir $Out
+    # (recompzel) os atalhos nao sao mais criados a cada build: quem joga decide os seus. RECOMPZEL_ATALHOS=1 cria como antes
+if ($env:RECOMPZEL_ATALHOS -eq '1') { & (Join-Path $PSScriptRoot 'post-install.ps1') -GameDir $Out }
 }
 if ($code -ne 0) { Pause-Fechar }
 exit $code

@@ -22,6 +22,7 @@
 #include "vk_framegen.h"
 #include "vk_fsr3_inputs.h"   // (AMD FSR 3.1 frame interpolation's depth and motion)
 #include "vk_fsr3fi.h"
+#include "vk_fsr4fg.h"
 #include "vk_menu.h"
 #include "vk_present_rect.h"
 #include "vk_streamline.h"   // (recompzel: DLSS-G makes the frames while it runs)
@@ -727,6 +728,36 @@ int fsr3fi_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_
     return 1;
 }
 
+// (recompzel) The made frame of a 2x set by AMD FSR Frame Generation 4 ("Redstone", vk_fsr4fg.h): AMD's machine-learning
+// interpolation, from this frame's colour and FSR 4's depth and motion, written straight into the set's made frame; the HUD
+// guard then puts back what stands still, as after FSR 3.1. 0 when it made none (the renderer's own interpolation then)
+int fsr4fg_frame(VkCommandBuffer cmd, OutSet& set, int cur, uint32_t uw, uint32_t uh) {
+    static uint64_t asked = 0, made = 0, no_inputs = 0;
+    if (++asked % 600 == 0)
+        logf("vk: fsr4fg: %llu of the last 600 made frames by AMD FSR 4 frame generation, %llu without its inputs", (unsigned long long)made,
+             (unsigned long long)no_inputs),
+            made = no_inputs = 0;
+    fsr3_inputs::Frame f;
+    if (!fsr3_inputs::take(f) || !f.depth_image || !f.motion_image) return no_inputs++, 0;
+    fsr4fg::Inputs in;
+    in.color_image = fg.frames[cur].image;
+    in.output_image = set.frame[0].image;
+    in.width = uw, in.height = uh;
+    in.depth_image = f.depth_image, in.motion_image = f.motion_image;
+    in.render_w = f.width, in.render_h = f.height;
+    in.jitter[0] = f.jitter[0], in.jitter[1] = f.jitter[1];
+    in.near_z = f.camera.near_plane, in.far_z = f.camera.far_plane, in.fov_y = f.camera.fov_y;
+    in.frame_ms = f.frame_ms;
+    in.reset = f.reset;
+    if (!fsr4fg::generate(cmd, in)) return 0;
+    full_barrier(cmd);
+    const float mv_scale[2] = {f.width ? (float)uw / (float)f.width : 1.0f, f.height ? (float)uh / (float)f.height : 1.0f};
+    pass(cmd, fg.hudguard, {{fg.frames[cur ^ 1].view, fg.nearest}, {fg.frames[cur].view, fg.nearest},
+                            {set.frame[0].view, VK_NULL_HANDLE}, {f.motion, fg.nearest}}, uw, uh, mv_scale, sizeof mv_scale);
+    made++;
+    return 1;
+}
+
 bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t sh, const int crop[4]) {
     const PresentSourceRect source = present_source_rect(sw, sh, crop);
     const int x0 = (int)source.x, y0 = (int)source.y, w = (int)source.w, h = (int)source.h;
@@ -803,7 +834,8 @@ bool framegen_record(VkCommandBuffer cmd, VkImageView src, uint32_t sw, uint32_t
     }
     // (hookshot) At 2x, AMD FSR 3.1's frame interpolation where it runs; it makes the midpoint only, so 3x and more (and Auto,
     // above) stay with the interpolation below, as does any present it does not take
-    if (blend && m == 2 && fsr3fi::frames_wanted()) set->made = fsr3fi_frame(cmd, *set, cur, uw, uh, sequence);
+    if (blend && m == 2 && fsr4fg::wanted()) set->made = fsr4fg_frame(cmd, *set, cur, uw, uh);
+    else if (blend && m == 2 && fsr3fi::frames_wanted()) set->made = fsr3fi_frame(cmd, *set, cur, uw, uh, sequence);
     if (set->made == 0 && blend && m > 1) {
         pass(cmd, fg.flow, {{fg.lumas[prev].view, fg.nearest}, {fg.lumas[cur].view, fg.nearest},
                             {fg.flows[0].view, VK_NULL_HANDLE}}, cw, ch);

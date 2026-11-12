@@ -59,6 +59,7 @@
 #include "vk_fsr3.h"   // (fsr3_wanted: AMD FSR 3.1 upscales with inputs of its own)
 #include "vk_fsr3_inputs.h"   // (FSR 4's depth and motion handed to FSR 3.1's frame interpolation)
 #include "vk_fsr3fi.h"
+#include "vk_fsr4fg.h"
 #include "vk_fsr4.h"
 #include "vk_menu.h"
 #include "vk_streamline.h"   // (recompzel: DLSS Frame Generation takes the depth and motion from here)
@@ -921,7 +922,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     // and reads them as wholes of the render size: kept at the largest render size seen (after Native, or the game's
     // dynamic resolution), they were read at the wrong scale, a rectangle of the wrong picture and smears beside Link.
     // While it runs they are the render size exactly
-    if (engine.e == fsr4_engine() && fsr3fi::frames_wanted() != 0) iw = rw, ih = rh;
+    if (engine.e == fsr4_engine() && (fsr3fi::frames_wanted() != 0 || fsr4fg::wanted())) iw = rw, ih = rh;
     if (!make_image(cmd, s.color, VK_FORMAT_R16G16B16A16_SFLOAT, iw, ih) ||
         !make_image(cmd, s.depth, VK_FORMAT_R32_SFLOAT, iw, ih) ||
         !make_image(cmd, s.motion, VK_FORMAT_R16G16_SFLOAT, iw, ih, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) ||
@@ -1014,7 +1015,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
     // (FSR 4 draws: its depth (inverted for it, the reversed depth FSR 3.1 takes) and motion are AMD FSR 3.1's frame
     // interpolation inputs too. Without them it had none, and the renderer's own colour-only interpolation made the frames:
     // the ghosts of what moves)
-    if (engine.e == fsr4_engine() && fsr3fi::frames_wanted() != 0) {
+    if (engine.e == fsr4_engine() && (fsr3fi::frames_wanted() != 0 || fsr4fg::wanted())) {
         float projection[16];
         std::memcpy(projection, cam.projection, sizeof projection);
         dlss_math::unjitter(projection, cam.jitter);
@@ -1022,6 +1023,7 @@ bool temporal_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in
         if (fsr3_math::camera_from_projection(projection, fi.camera) && fi.camera.flip_depth) {
             const auto t = std::chrono::steady_clock::now();
             fi.color = f.color.view, fi.depth = f.depth.view, fi.motion = f.motion.view;
+            fi.depth_image = f.depth.image, fi.motion_image = f.motion.image;
             fi.width = rw, fi.height = rh;
             fi.jitter[0] = f.jitter[0], fi.jitter[1] = f.jitter[1];
             fi.reset = f.reset;

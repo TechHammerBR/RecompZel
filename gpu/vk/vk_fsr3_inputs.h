@@ -30,6 +30,7 @@ struct Frame {
     VkImageView color = VK_NULL_HANDLE;    ///< RGBA16F: the network's input as it samples it, 0..1
     VkImageView depth = VK_NULL_HANDLE;    ///< R32F, reversed (fsr3_math.h Camera::flip_depth)
     VkImageView motion = VK_NULL_HANDLE;   ///< RG16F, render pixels toward the frame before, x right and y down, no jitter
+    VkImage depth_image = VK_NULL_HANDLE, motion_image = VK_NULL_HANDLE;   ///< (recompzel) their images: AMD FSR 4 frame generation
     uint32_t width = 0, height = 0;
     float jitter[2]{};                      ///< this frame's, in render pixels as FSR takes it (x right, y down)
     fsr3_math::Camera camera;
