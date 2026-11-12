@@ -1,6 +1,6 @@
 # Compila o jogo a partir do seu .nup, usando as ferramentas de compilacao do RecompZel/Hookshot Builder.
 # Uso:  powershell -ExecutionPolicy Bypass -File .\build-game.ps1 [-Nup <arquivo.nup>] [-Out <pasta do jogo>]
-# Sem parametros: procura o .nup em Downloads, Desktop e Documentos e instala em D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo (ou %USERPROFILE%\Games\RecompZel).
+# Sem parametros: procura o .nup em Downloads, Desktop e Documentos e instala em C:\Games\RecompZel (ou %USERPROFILE%\Games\RecompZel).
 # Ao terminar com sucesso, cria o atalho na area de trabalho (post-install.ps1).
 param([string]$Nup, [string]$Out, [string]$Work, [string]$Log, [switch]$Dlss)
 $ErrorActionPreference = 'Continue'
@@ -57,17 +57,17 @@ if ((Split-Path $Nup -Leaf) -match '\[v(\d+)\]' -and $Matches[1] -ne '131072') {
     exit 2
 }
 
-# 2) pastas: mantem o layout do launcher (D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV) se ele existir, senao usa uma pasta propria
+# 2) pastas: mantem o layout do launcher (C:\DEV) se ele existir, senao usa uma pasta propria
 if (-not $Out) {
-    $Out = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo'
+    $Out = 'C:\Games\RecompZel'
     if (-not (Test-Path $Out) -and (Test-Path 'C:\Games\HookshotDev')) {   # pasta antiga: renomeie para RecompZel quando o jogo estiver fechado
         $Out = 'C:\Games\HookshotDev'
-        Write-Host 'Aviso: usando a pasta antiga C:\Games\HookshotDev. Renomeie para D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo quando o jogo estiver fechado.'
+        Write-Host 'Aviso: usando a pasta antiga C:\Games\HookshotDev. Renomeie para C:\Games\RecompZel quando o jogo estiver fechado.'
     }
 }
-# mesma regra do launcher: a pasta dos scripts (D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV no PC do desenvolvedor, %LOCALAPPDATA%\RecompZel com o .exe); rodando de dentro do repositorio, %LOCALAPPDATA%\RecompZel
+# mesma regra do launcher: a pasta dos scripts (C:\DEV no PC do desenvolvedor, %LOCALAPPDATA%\RecompZel com o .exe); rodando de dentro do repositorio, %LOCALAPPDATA%\RecompZel
 $base = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel' -and (Test-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'nx2\make_game.py'))) {
-            # (recompzel: tudo no D. Rodando de dentro do repositorio, a pasta DEV ao lado dele, se existir)
+            # (recompzel: rodando de dentro do repositorio, a pasta DEV ao lado dele, se existir)
             $devD = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'DEV'
             if (Test-Path -LiteralPath $devD) { $devD } else { Join-Path $env:LOCALAPPDATA 'RecompZel' }
         } else { $PSScriptRoot }
@@ -76,7 +76,7 @@ if (-not $Log)  { $Log  = Join-Path $base 'build.log' }
 
 New-Item -ItemType Directory -Force -Path $Out, $Work, (Split-Path $Log) | Out-Null
 
-# Codigo do jogo: se $Repo e um clone git (D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\RecompZel), traz do GitHub o que for novo antes de compilar. Sem isso o build usava o codigo
+# Codigo do jogo: se $Repo e um clone git (C:\DEV\RecompZel), traz do GitHub o que for novo antes de compilar. Sem isso o build usava o codigo
 # da ultima vez que o clone foi atualizado a mao: um build "na ultima versao" saia com o motor antigo. So AVANCA (git merge --ff-only):
 # se o clone tem alteracoes suas, commits que o GitHub nao tem, ou esta em outro ramo, avisa e nao mexe em nada. A copia baixada pelo launcher
 # (sem .git) nao passa por aqui: o botao Atualizar cuida dela.
@@ -131,7 +131,7 @@ Add-Content -Path $Log -Value "`r`n[script] codigo de saida $code, $min minutos"
 # 3) pos-instalacao: atalho na area de trabalho e "Jogar RecompZel.bat" na pasta do jogo
 if ($code -eq 0 -and (Test-Path -LiteralPath (Join-Path $Out 'RecompZel.exe'))) {
     # (recompzel) os atalhos nao sao mais criados a cada build: quem joga decide os seus. RECOMPZEL_ATALHOS=1 cria como antes
-if ($env:RECOMPZEL_ATALHOS -eq '1') { & (Join-Path $PSScriptRoot 'post-install.ps1') -GameDir $Out }
+& (Join-Path $PSScriptRoot 'post-install.ps1') -GameDir $Out
 }
 if ($code -ne 0) { Pause-Fechar }
 exit $code

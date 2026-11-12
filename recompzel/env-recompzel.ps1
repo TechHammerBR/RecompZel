@@ -1,12 +1,12 @@
 # Prepara o ambiente de build usando as ferramentas que o HookshotBuilder ja instalou.
 # Nao e para rodar sozinho: os outros scripts chamam este com ". $PSScriptRoot\env-recompzel.ps1"
-# Repo = a pasta do repositorio. Se este script esta em <repo>\recompzel, usa <repo>; senao (copia em D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV) usa D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\RecompZel.
-# O codigo-fonte: <repo>\recompzel\ (clone ou ZIP); senao D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\RecompZel (layout antigo) ou %LOCALAPPDATA%\RecompZel\RecompZel;
+# Repo = a pasta do repositorio. Se este script esta em <repo>\recompzel, usa <repo>; senao (copia em C:\DEV) usa C:\DEV\RecompZel.
+# O codigo-fonte: <repo>\recompzel\ (clone ou ZIP); senao C:\DEV\RecompZel (layout antigo) ou %LOCALAPPDATA%\RecompZel\RecompZel;
 # se nao existe em lugar nenhum (quem usa so o RecompZel-Launcher.exe), baixa o codigo do GitHub (so o projeto, sem dados do jogo).
 # (-eq do PowerShell ignora maiusculas: %LOCALAPPDATA%\RecompZel tambem se chama 'RecompZel'; por isso so vale como clone se o pai tem nx2\make_game.py)
 $Repo = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel' -and (Test-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'nx2\make_game.py'))) { Split-Path $PSScriptRoot -Parent }
-        elseif (Test-Path 'D:\PSN nativo\ZELDA OCT\RecompZel-main\RecompZel-main\nx2\make_game.py') { 'D:\PSN nativo\ZELDA OCT\RecompZel-main\RecompZel-main' }   # (o codigo fundido, no D)
-        elseif (Test-Path 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\RecompZel\nx2\make_game.py') { 'D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\RecompZel' }
+        elseif (Test-Path 'C:\DEV\RecompZel\nx2\make_game.py') { 'C:\DEV\RecompZel' }   # (o codigo fundido, no D)
+        elseif (Test-Path 'C:\DEV\RecompZel\nx2\make_game.py') { 'C:\DEV\RecompZel' }
         else { Join-Path $env:LOCALAPPDATA 'RecompZel\RecompZel' }
 if (-not (Test-Path (Join-Path $Repo 'nx2\make_game.py'))) {
     Write-Host "Baixando o codigo do RecompZel do GitHub (uma vez) para $Repo ..."

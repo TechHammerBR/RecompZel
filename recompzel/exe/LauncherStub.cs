@@ -1,5 +1,5 @@
 // LauncherStub.cs - o RecompZel-Launcher.exe: um executavel pequeno que leva dentro os scripts do launcher
-// (launcher.ps1, build-game.ps1, etc., ver .github/workflows/launcher-exe.yml), copia para D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV e abre o launcher.
+// (launcher.ps1, build-game.ps1, etc., ver .github/workflows/launcher-exe.yml), copia para C:\DEV e abre o launcher.
 // O launcher continua sendo o launcher.ps1; o exe so evita que o usuario precise abrir o PowerShell.
 // Compilado com o csc.exe do Windows (.NET Framework 4), sem nada para instalar.
 using System;
@@ -10,8 +10,8 @@ using System.Windows.Forms;
 
 static class LauncherStub
 {
-    // Pasta do launcher: D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV se ja e o layout do desenvolvedor (tem games.json la), senao %LOCALAPPDATA%\RecompZel (nao precisa de permissao em C:\).
-    static readonly string Dir = File.Exists(@"D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\games.json") ? @"D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV" : Path.Combine(
+    // Pasta do launcher: C:\DEV se ja e o layout do desenvolvedor (tem games.json la), senao %LOCALAPPDATA%\RecompZel (nao precisa de permissao em C:\).
+    static readonly string Dir = File.Exists(@"C:\DEV\games.json") ? @"C:\DEV" : Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RecompZel");
 
     static bool SameBytes(byte[] a, byte[] b)

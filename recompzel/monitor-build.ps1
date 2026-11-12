@@ -1,8 +1,8 @@
 # monitor-build.ps1
-# Le D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\build.log (somente leitura) e mostra o progresso real do build.
-# Uso:  powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\monitor-build.ps1        (uma vez)
-#       powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\monitor-build.ps1 -Watch (atualiza a cada 10 s)
-# Nao altera nem apaga nada. Salva o resultado em D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\progress-report.txt
+# Le C:\DEV\build.log (somente leitura) e mostra o progresso real do build.
+# Uso:  powershell -ExecutionPolicy Bypass -File C:\DEV\monitor-build.ps1        (uma vez)
+#       powershell -ExecutionPolicy Bypass -File C:\DEV\monitor-build.ps1 -Watch (atualiza a cada 10 s)
+# Nao altera nem apaga nada. Salva o resultado em C:\DEV\progress-report.txt
 
 param([switch]$Watch, [int]$Interval = 10)
 

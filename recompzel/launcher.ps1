@@ -1,12 +1,12 @@
-﻿# launcher.ps1  -  RecompZel Launcher v3 (original, feito para o nosso projeto)
+# launcher.ps1  -  RecompZel Launcher v3 (original, feito para o nosso projeto)
 # Uso: powershell -ExecutionPolicy Bypass -File launcher.ps1   (ou o RecompZel-Launcher.exe)
 # Le o build.log e a pasta de trabalho. Nao apaga nada. Reconstruir pede confirmacao.
 # Idioma: Portugues (Brasil) ou English, no canto superior esquerdo. Perfis de jogos: games.json, na pasta do launcher.
-# A pasta do jogo e D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo. Se ainda existir so a antiga (C:\Games\HookshotDev), ela continua sendo usada.
+# A pasta do jogo e C:\Games\RecompZel. Se ainda existir so a antiga (C:\Games\HookshotDev), ela continua sendo usada.
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 
-# Os scripts ficam onde este esta (D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV no PC do desenvolvedor, %LOCALAPPDATA%\RecompZel para quem usa o .exe); os dados (perfil, logs, rodadas)
+# Os scripts ficam onde este esta (C:\DEV no PC do desenvolvedor, %LOCALAPPDATA%\RecompZel para quem usa o .exe); os dados (perfil, logs, rodadas)
 # ficam na mesma pasta, exceto quando o launcher roda de dentro do repositorio (pasta recompzel): ai vao para %LOCALAPPDATA%\RecompZel.
 $AppDir       = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel' -and (Test-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'nx2\make_game.py'))) { Join-Path $env:LOCALAPPDATA 'RecompZel' } else { $PSScriptRoot }
 New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
@@ -339,7 +339,7 @@ if (-not (Test-Path $ProfilesPath)) {
             subtitle    = 'Switch 2, recompilado para PC'
             logPath     = (Join-Path $AppDir 'build.log')
             workDir     = (Join-Path $AppDir 'build-work')
-            outDir      = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo'
+            outDir      = 'C:\Games\RecompZel'
             buildScript = (Join-Path $PSScriptRoot 'build-game.ps1')
             totalFiles  = 186583
             needs       = 'Voce precisa do seu proprio arquivo do jogo (.nup). Nada e baixado da internet.'

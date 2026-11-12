@@ -1,8 +1,8 @@
 # medir-rodada.ps1 - resume o desempenho de uma rodada a partir do log (somente leitura, nao abre o jogo)
 # Ideia inspirada no medir-partida.ps1 do ocarina-recomp (GPL-3.0); codigo escrito do zero para o log do Hookshot.
-#   powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\medir-rodada.ps1                  a ultima rodada de D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\rodadas
-#   powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\medir-rodada.ps1 -Log <arquivo>   um log qualquer
-#   powershell -ExecutionPolicy Bypass -File D:\PSN nativo\ZELDA OCT\RecompZel-main\DEV\medir-rodada.ps1 -Comparar        todas as rodadas, uma linha cada
+#   powershell -ExecutionPolicy Bypass -File C:\DEV\medir-rodada.ps1                  a ultima rodada de C:\DEV\rodadas
+#   powershell -ExecutionPolicy Bypass -File C:\DEV\medir-rodada.ps1 -Log <arquivo>   um log qualquer
+#   powershell -ExecutionPolicy Bypass -File C:\DEV\medir-rodada.ps1 -Comparar        todas as rodadas, uma linha cada
 #   -Saida <arquivo> grava o texto do resumo
 param([string]$Log, [switch]$Comparar, [string]$Saida)
 
@@ -89,7 +89,7 @@ if ($Comparar) {
 } else {
     if (-not $Log) {
         $ult = Get-ChildItem $Dir -Filter 'rodada-*.txt' -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
-        if ($ult) { $Log = $ult.FullName } else { $gd = 'D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo'; if (-not (Test-Path $gd)) { $gd = 'C:\Games\HookshotDev' }; $Log = Join-Path $gd 'hookshot_log.txt' }
+        if ($ult) { $Log = $ult.FullName } else { $gd = 'C:\Games\RecompZel'; if (-not (Test-Path $gd)) { $gd = 'C:\Games\HookshotDev' }; $Log = Join-Path $gd 'hookshot_log.txt' }
     }
     if (-not (Test-Path $Log)) { Write-Host "Nao achei o log: $Log"; exit 1 }
     $out = Resumo (Ler $Log)

@@ -1,17 +1,17 @@
 # post-install.ps1 - roda depois da instalacao: deixa o jogo facil de abrir.
 # Cria: atalho "Zelda OoT (RecompZel)" (abre o jogo) e, se houver launcher, "RecompZel Launcher" na area de trabalho, entrada no menu Iniciar e "Jogar RecompZel.bat" dentro da pasta do jogo.
 # Nao apaga nada. Pode rodar quantas vezes quiser (ex.: se mover a pasta do jogo).
-# Uso: powershell -ExecutionPolicy Bypass -File .\post-install.ps1 [-GameDir D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo]
+# Uso: powershell -ExecutionPolicy Bypass -File .\post-install.ps1 [-GameDir C:\Games\RecompZel]
 param([string]$GameDir)
 $ErrorActionPreference = 'Continue'
 
 if (-not $GameDir) {
-    foreach ($d in 'D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo', (Join-Path $env:USERPROFILE 'Games\RecompZel'), 'C:\Games\HookshotDev') {
+    foreach ($d in 'C:\Games\RecompZel', (Join-Path $env:USERPROFILE 'Games\RecompZel'), 'C:\Games\HookshotDev') {
         if (Test-Path -LiteralPath (Join-Path $d 'RecompZel.exe')) { $GameDir = $d; break }
     }
 }
 $exe = if ($GameDir) { Join-Path $GameDir 'RecompZel.exe' } else { '' }
-if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { Write-Host 'Nao achei o RecompZel.exe. Informe a pasta: .\post-install.ps1 -GameDir "D:\PSN nativo\ZELDA OCT\RecompZel-main\Jogo"'; exit 1 }
+if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { Write-Host 'Nao achei o RecompZel.exe. Informe a pasta: .\post-install.ps1 -GameDir "C:\Games\RecompZel"'; exit 1 }
 
 # icone: o do proprio executavel
 $Sh = New-Object -ComObject WScript.Shell
@@ -48,3 +48,12 @@ $bat = Join-Path $GameDir 'Jogar RecompZel.bat'
 
 Write-Host "Pronto. Para jogar, use o atalho 'Zelda OoT (RecompZel)' na area de trabalho."
 Write-Host "Tambem: $bat"
+
+# (recompzel) AMD FSR 4 Frame Generation (Redstone): as DLLs da AMD (FSR SDK 2.4, MIT) que vem no pacote, na pasta fsr4fg do jogo
+$rs = Join-Path (Split-Path $PSScriptRoot -Parent) 'extras\redstone-fsr4fg'
+if (Test-Path -LiteralPath $rs) {
+    $dst = Join-Path (Split-Path $exe -Parent) 'fsr4fg'
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Copy-Item -Path (Join-Path $rs '*.dll') -Destination $dst -Force
+    Write-Host 'AMD FSR 4 Frame Generation (Redstone) instalado em' $dst
+}

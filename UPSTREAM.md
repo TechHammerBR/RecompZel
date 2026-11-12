@@ -24,6 +24,12 @@ O RecompZel é um fork de [NotRexed/Hookshot](https://github.com/NotRexed/Hooksh
 
 Observação: o diff contra o upstream também mostra arquivos removidos ou diferentes porque o upstream andou depois do nosso último `fetch`. Rode `recompzel\atualizar-fork.ps1 -Aplicar` para ficar em dia.
 
+## Contribuições de fora
+
+| Autor | O que trouxe |
+|---|---|
+| Jonathan Souza | AMD FSR 4 Frame Generation (Redstone, `gpu/vk/vk_fsr4fg.*`), guarda de HUD contra ghosting (`fg_hudguard.comp` e o anti fantasma do `fg_synth.comp`), profundidade invertida e fallback de modelo no FSR 4, entradas no tamanho de render (resolução dinâmica), eco do jogo (delay) em `host/nn_audio.c`, fullscreen do `options.ini` na abertura (commit 874396cf, de um fork enviado fora do GitHub em 2026-11-12) |
+
 ## Fica apontando para o Hookshot de propósito
 
 - `recomplauncher.json` (manifesto de um launcher externo, usa `NotRexed/Hookshot`).
