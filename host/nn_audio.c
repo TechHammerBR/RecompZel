@@ -450,12 +450,15 @@ static void delay_frame(Delay *dl, Mix *m) {
    other's. A return not there yet: an insert (out = in) passes the sound through, a send's return bus stays silent.
    HOS_AUDIO_NO_AUX=1: as before (nothing sent). */
 #define AUX_FRAMES 16
+#define AUX_PRIME 3
 typedef struct {
     int used, mix, enabled, n;
     int8_t in[MAX_CH], out[MAX_CH];
     int32_t *send, *ret;   /* rings of AUX_FRAMES frames */
     int cap, s_head, s_count, r_head, r_count;
-    long frames_sent, frames_back;
+    long frames_sent, frames_back, underflows;
+    int primed;                       /* (the jitter buffer: AUX_PRIME frames waited before the return plays) */
+    int32_t last[MAX_CH * FRAME];     /* (the last frame returned, played again fading out when the return runs dry) */
     int units;   /* frames x channels of the game's send and return buffers (AddAux's size): GetAuxSampleCount's count is
                     a frame's samples times them, as the DSP's count_max */
 } Aux;
@@ -488,8 +491,24 @@ static void aux_frame(Aux *ax, Mix *m) {
     }
     ring_push(ax->send, ax->cap, &ax->s_head, &ax->s_count, tmp, ax->n * FRAME);
     ax->frames_sent++;
-    const int have = ax->r_count >= ax->n * FRAME;
-    if (have) ring_pop(ax->ret, ax->cap, &ax->r_head, &ax->r_count, tmp, ax->n * FRAME), ax->frames_back++;
+    /* (a jitter buffer: the game's audio thread runs on its own clock, so a frame's return came now and then a little late;
+       that frame went out dry, the next wet and a frame behind, and the alternation sounded hissy and robotic on a voice's
+       tail (the Deku Tree's, the owl's flight). The return plays once AUX_PRIME frames wait, a fixed ~15 ms; when it runs
+       dry the last frame is played again fading out, and it primes again, rather than jumping to the dry sound) */
+    const int frame_n = ax->n * FRAME;
+    if (!ax->primed && ax->r_count >= AUX_PRIME * frame_n) ax->primed = 1;
+    int have = 0, faded = 0;
+    if (ax->primed) {
+        if (ax->r_count >= frame_n) {
+            ring_pop(ax->ret, ax->cap, &ax->r_head, &ax->r_count, tmp, frame_n), ax->frames_back++, have = 1;
+            memcpy(ax->last, tmp, (size_t)frame_n * sizeof(int32_t));
+        } else {
+            ax->underflows++, ax->primed = 0;
+            for (int k = 0; k < frame_n; k++) tmp[k] = ax->last[k] / 2, ax->last[k] /= 2;   /* (fading) */
+            have = faded = 1;
+        }
+    }
+    (void)faded;
     for (int c = 0; c < ax->n; c++) {
         const int bo = ax->out[c];
         if (bo < 0 || bo >= m->buffers) continue;
@@ -1723,6 +1742,10 @@ static void aux_tell(void) {
     last = now;
     hos_log("audio: aux: %ld added, %ld enabled, %ld routed; %ld reads (%ld samples asked), %ld writes (%ld samples given), %ld counts",
             aux_add, aux_en, aux_io, aux_read, aux_read_asked, aux_write, aux_write_given, aux_count);
+    long under = 0, back = 0;
+    for (int e = 0; e < MAX_EFFECTS; e++) under += auxes[e].underflows, back += auxes[e].frames_back;
+    hos_log("audio: aux return: %ld frames played back, %ld times it ran dry (each: the last frame faded, then ~15 ms primed again)",
+            back, under);
 }
 static Aux *aux_of(uint64_t obj) {
     const int i = get_handle(obj, K_AUX);
