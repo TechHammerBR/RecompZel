@@ -1407,6 +1407,9 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         for (int i = 0; i < 3 && !fgtype_available(c); i++) c = (c + (dir < 0 ? 2 : 1)) % 3;
         v = c;
     }
+    // (recompzel) AMD FSR 3.1 makes the midpoint only: with it as the method, the Frame generation row is Off or 2x, not the
+    // Auto and 3x to 8x that went to RecompZel's own interpolation behind its back
+    if (r.value == &opts.framegen && opts.fgtype == 2 && fgtype_available(2)) v = *r.value == 2 ? 0 : 2;
     if (r.value == &opts.output_res) {   // (smallest to largest: step_output_choice)
         v = step_output_choice(*r.value, dir);
         if (v == *r.value) return;
@@ -1440,6 +1443,8 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
     } else if (r.value == &opts.dlss && opts.fgtype == 1 && (upscaler() == ur::FSR3 || upscaler() == ur::OFF)) {
         opts.fgtype = 0;
     }
+    // (recompzel) AMD FSR 3.1 chosen as the method: frame generation that was on (Auto, 3x...) becomes its 2x
+    if (r.value == &opts.fgtype && opts.fgtype == 2 && opts.framegen != 0 && opts.framegen != 2) opts.framegen = 2;
     if (r.value == &opts.mic && can_mic()) mic_chosen();   // (hookshot)
     // (hookshot: the samplers made again, at once: their anisotropy, and the upscalers' LOD bias, vk_draw.cpp upscale_lod_bias)
     if (r.value == &opts.anisotropy || r.value == &opts.dlss || r.value == &opts.resolution || r.value == &opts.preset)
