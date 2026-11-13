@@ -1609,9 +1609,6 @@ int scrolled_to[TAB_MOTION + 2] = {-1, -1, -1, -1, -1, -1};   // (the selection 
 float scroll_want[TAB_MOTION + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
-#ifndef LOCALE_NAME_MAX_LENGTH   // (winnls.h's; the Linux build's Windows headers do not have it)
-#define LOCALE_NAME_MAX_LENGTH 85
-#endif
 /// (recompzel) The language the Language row says, and where its files are: every drawing, once changed. Windows' own language
 /// is what Auto follows
 void sync_language() {
@@ -1622,11 +1619,19 @@ void sync_language() {
         const DWORD n = game_module_path(exe, MAX_PATH);
         std::string dir(exe, n);
         lang::set_dir(dir.substr(0, dir.find_last_of("\\/") + 1));
+#ifdef _WIN32
         wchar_t loc[LOCALE_NAME_MAX_LENGTH] = {};
         char name[LOCALE_NAME_MAX_LENGTH] = {};
         if (GetUserDefaultLocaleName(loc, LOCALE_NAME_MAX_LENGTH))
             for (int i = 0; loc[i] && i + 1 < LOCALE_NAME_MAX_LENGTH; i++) name[i] = loc[i] < 128 ? (char)loc[i] : '?';
         lang::set_system(name);
+#else
+        // (Linux: the locale's environment, "pt_BR.UTF-8"; only its first two letters are read, lang::detail::resolve)
+        const char* e = getenv("LC_ALL");
+        if (!e || !*e) e = getenv("LC_MESSAGES");
+        if (!e || !*e) e = getenv("LANG");
+        lang::set_system(e ? e : "");
+#endif
     }
     last = opts.language;
     lang::set_mode(opts.language);
