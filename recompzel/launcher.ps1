@@ -62,6 +62,8 @@ $STR['pt'] = @{
     linear = 'DLSS com cor linear (teste: tira o halo e a borda escura?)'
     ram_save = 'Nao carregar o cache de pipelines (teste: nos logs nao reduziu a RAM e a abertura demora mais)'
     ram_tip = 'RX_VK_PCACHE_LOAD=0'
+    par = 'Traduzir os comandos em varias threads (mais FPS em cidades, como o Burgo de Hyrule)'
+    par_tip = 'RX_VK_PARALLEL: 4 threads em processador de 16 threads ou mais, 2 a 3 nos menores. No Burgo de Hyrule (i7-11700F): media de ~39 para ~44 FPS, pior momento de 14 para 31. Desligado por padrao: no Hookshot ja deu quadro preto de um instante (Kakariko). Se aparecer, desligue.'
     mem_now = 'Jogo agora: RAM {0}, VRAM {1}'
     fsr = 'Usar AMD FSR 4 (mais quadros por segundo)'
     fsr_off = 'Desligado. Se ligar, o launcher cuida do resto.'
@@ -214,6 +216,8 @@ $STR['en'] = @{
     linear = 'DLSS with linear color (test: removes the halo and the dark edge?)'
     ram_save = 'Do not load the pipeline cache (a test: logs show no RAM saving and the start takes longer)'
     ram_tip = 'RX_VK_PCACHE_LOAD=0'
+    par = 'Translate the commands on several threads (more FPS in towns, such as Hyrule Castle Town)'
+    par_tip = 'RX_VK_PARALLEL: 4 threads on a CPU with 16 threads or more, 2 to 3 on smaller ones. In Castle Town market (i7-11700F): from ~39 to ~44 FPS on average, the worst moment from 14 to 31. Off by default: Hookshot once saw a one-frame black scene with it (Kakariko). If you see one, turn it off.'
     mem_now = 'Game now: RAM {0}, VRAM {1}'
     fsr = 'Use AMD FSR 4 (higher frame rate)'
     fsr_off = 'Off. If you turn it on, the launcher handles the rest.'
@@ -434,6 +438,7 @@ $xaml = @'
           <ComboBox x:Name="cbUpload" Margin="0,6,0,8" Height="26"/>
           <TextBlock x:Name="txtFgT" Foreground="#E6F2EC" FontSize="13"/>
           <ComboBox x:Name="cbFg" Margin="0,6,0,8" Height="26"/>
+          <CheckBox x:Name="chkPar" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkRam" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkLinear" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkDiag" Foreground="#E6F2EC" FontSize="12"/>
@@ -520,7 +525,7 @@ $xaml = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
 try { if (Test-Path (Join-Path $PSScriptRoot 'recompzel.ico')) { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri](Join-Path $PSScriptRoot 'recompzel.ico')) } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','btnUpdate','cbMem','txtMemT','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary','chkLinear') {
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','btnUpdate','cbMem','txtMemT','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkPar','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary','chkLinear') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -587,6 +592,7 @@ function Apply-Language {
         $btnBuild.Tag = T 'build_tip'
         $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtMemT.Text = T 'mem_t'; $txtFgT.Text = T 'fg_t'
         $tbRam = New-Object System.Windows.Controls.TextBlock; $tbRam.Text = (T 'ram_save'); $tbRam.TextWrapping = 'Wrap'; $chkRam.Content = $tbRam; $chkRam.ToolTip = (T 'ram_tip')
+        $tbPar = New-Object System.Windows.Controls.TextBlock; $tbPar.Text = (T 'par'); $tbPar.TextWrapping = 'Wrap'; $chkPar.Content = $tbPar; $chkPar.ToolTip = (T 'par_tip')
         $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'; $chkDlss.Content = T 'dlss'; $chkDsr.Content = T 'dsr'
         $tbLin = New-Object System.Windows.Controls.TextBlock; $tbLin.Text = (T 'linear'); $tbLin.TextWrapping = 'Wrap'; $chkLinear.Content = $tbLin
         $txtTechT.Text = T 'tech_t'; $txtTechIntro.Text = T 'tech_intro'; $ttlDsr.Text = T 'tn_dsr'; $ttlDlss.Text = T 'tn_dlss'; $ttlFsr.Text = T 'tn_fsr'; $btnTechAll.Content = T 'tech_all'; $chkSafe.Content = T 'safe'
@@ -625,6 +631,7 @@ try {
         if ($c.memIndex -ge 0 -and $c.memIndex -lt $memProfiles.Count) { $cbMem.SelectedIndex = [int]$c.memIndex }
         if ($c.diag -eq $true) { $chkDiag.IsChecked = $true }
         if ($c.ramSave -eq $true) { $chkRam.IsChecked = $true }
+        if ($c.parallel -eq $true) { $chkPar.IsChecked = $true }
         if ($c.fsr -eq $true) { $chkFsr.IsChecked = $true }
         if ($c.dlss -eq $true) { $chkDlss.IsChecked = $true }
         if ($c.dsr -eq $true) { $chkDsr.IsChecked = $true }
@@ -640,7 +647,7 @@ $cbFg.SelectedIndex = 0; $txtFgT.Visibility = 'Collapsed'; $cbFg.Visibility = 'C
 function Save-Settings {
     if ($script:loading) { return }
     try {
-        @{ vramMb = $vramOptions[[math]::Max(0, $cbVram.SelectedIndex)].Mb; vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; memIndex = $cbMem.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; ramSave = [bool]$chkRam.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; dlssLinear = [bool]$chkLinear.IsChecked; lang = $script:lang } |
+        @{ vramMb = $vramOptions[[math]::Max(0, $cbVram.SelectedIndex)].Mb; vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; memIndex = $cbMem.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; ramSave = [bool]$chkRam.IsChecked; parallel = [bool]$chkPar.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; dlssLinear = [bool]$chkLinear.IsChecked; lang = $script:lang } |
             ConvertTo-Json | Set-Content $Cfg -Encoding ASCII
     } catch {}
 }
@@ -759,6 +766,7 @@ $cbMem.Add_SelectionChanged({ Save-Settings })
 $cbFg.Add_SelectionChanged({ Save-Settings })
 $chkDiag.Add_Click({ Save-Settings })
 $chkRam.Add_Click({ Save-Settings })
+$chkPar.Add_Click({ Save-Settings })
 $chkLinear.Add_Click({ Save-Settings })
 $chkFsr.Add_Click({ Save-Settings; Update-Fsr-Text; Update-Tech })
 $chkDlss.Add_Click({ Save-Settings; Set-FgChoice ([bool]$chkDlss.IsChecked); Update-Dlss-Text; Update-Tech })
@@ -1350,6 +1358,12 @@ $btnPlay.Add_Click({
     # economia de RAM: o jogo nao le o arquivo de cache de pipelines (mkw_vk_pipelines.bin, 1 a 3 GB) e nao o grava; o driver usa o cache dele
     if ($chkRam.IsChecked -or $mp.PCache) { [Environment]::SetEnvironmentVariable('RX_VK_PCACHE_LOAD', '0', 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_PCACHE_LOAD', $null, 'Process') }
+    # (recompzel) a traducao dos comandos (o replay) em varias threads: 4 com 16 threads logicas ou mais, 2 a 3 nos menores.
+    # Nao no modo seguro. Desmarcada, a variavel sai (vale mais que um RX_VK_PARALLEL herdado de um .bat de teste)
+    if ($chkPar.IsChecked -and -not $chkSafe.IsChecked) {
+        $parN = [math]::Min(4, [math]::Max(2, [int][math]::Floor([Environment]::ProcessorCount / 4)))
+        [Environment]::SetEnvironmentVariable('RX_VK_PARALLEL', [string]$parN, 'Process')
+    } else { [Environment]::SetEnvironmentVariable('RX_VK_PARALLEL', $null, 'Process') }
     if ($chkDiag.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', 'da7a7ab28b8e73d9', 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', $null, 'Process') }
     # FSR 4: so liga quando o jogo foi construido com ele e o componente esta instalado e conferido
@@ -1408,7 +1422,7 @@ $btnPlay.Add_Click({
     }
     # a nota da rodada fica sempre em portugues (e lida pelo medir-rodada.ps1)
     $meshNow = Read-Mesh
-    $script:roundNote = ('VRAM={0} UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8}' -f $vramOptions[$cbVram.SelectedIndex].Pt, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked)
+    $script:roundNote = ('VRAM={0} UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8} PARALLEL={9}' -f $vramOptions[$cbVram.SelectedIndex].Pt, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked, [Environment]::GetEnvironmentVariable('RX_VK_PARALLEL', 'Process'))
     $script:gameOut = Get-OutDir
     # (recompzel) shaders deixados de fora: pular-shaders.txt na pasta do jogo (chaves em hex). Hoje: 7dfc7a637c93e49e, o
     # brilho vermelho da sala das teias da Arvore Deku, que sai com um triangulo branco na AMD (le o identificador errado de
