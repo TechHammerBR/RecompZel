@@ -89,6 +89,7 @@ Dentro do jogo, **Insert** abre o menu. Na aba **Gráficos** ficam o Upscaler, a
 ## Problemas conhecidos
 
 - **Cor da cena inteira piscando por um quadro (pedras azuladas), visto numa RTX 4080:** em investigação. Se acontecer com você, mande o `hookshot_log.txt` e o `hookshot_options.ini` da pasta do jogo, e diga se para com a Geração de quadros desligada.
+- **Linha branca serrilhada contornando barris, caixas e feno, a uma distância fixa do Link (AMD):** vem do shader `23677364611b9855` (o mesmo defeito de NotRexed/Hookshot#2168). Nas placas AMD o launcher já o deixa de fora no `pular-shaders.txt`; escondido, os contornos somem e nada visível falta. Apague a linha do arquivo para vê-lo de novo.
 - **Brilho da sala das teias da Árvore Deku (antes do Gohma):** o shader desse brilho saía com um triângulo branco na AMD e hoje fica de fora (arquivo `pular-shaders.txt` na pasta do jogo, criado pelo launcher). Apague a linha do arquivo para vê-lo de novo.
 - **DLSS e FSR 4:** coisas que se movem sozinhas (fogo, partículas) podem deixar rastro por enquanto.
 

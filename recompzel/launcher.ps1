@@ -1429,6 +1429,16 @@ $btnPlay.Add_Click({
     # uma tabela de luzes). Sem ele a sala fica sem esse brilho, mas sem o triangulo. Apague a linha para ver de novo
     $skipFile = Join-Path $exe.DirectoryName 'pular-shaders.txt'
     if (-not (Test-Path -LiteralPath $skipFile)) { [IO.File]::WriteAllText($skipFile, "7dfc7a637c93e49e`n") }
+    # (recompzel) e 23677364611b9855: a linha branca serrilhada que contorna barris, caixas e feno a uma distancia fixa do
+    # Link (a distancia das sombras; NotRexed/Hookshot#2168 numa RX 9070 XT, #2509), na AMD. Achado por busca ao vivo
+    # (achar-shader.ps1) numa RX 9070 XT em 2026-11-13: escondido, os contornos somem e nada visivel falta (19 pixels
+    # dele num quadro inteiro). So em placa AMD e uma vez (pular-shaders.txt.v2 marca): quem apagar a linha nao a ve voltar
+    $skipMark = $skipFile + '.v2'
+    if ((Test-FsrGpu) -and -not (Test-Path -LiteralPath $skipMark)) {
+        $have = if (Test-Path -LiteralPath $skipFile) { [IO.File]::ReadAllText($skipFile) } else { '' }
+        if ($have -notmatch '23677364611b9855') { [IO.File]::WriteAllText($skipFile, ($have.TrimEnd() + "`n23677364611b9855`n").TrimStart()) }
+        [IO.File]::WriteAllText($skipMark, "23677364611b9855`n")
+    }
     [Environment]::SetEnvironmentVariable('RX_VK_SKIP_FILE', $skipFile, 'Process')
     $script:gameProc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
     $txtHelp.Text = T 'started'
