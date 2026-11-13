@@ -37,8 +37,15 @@ $STR['pt'] = @{
     upd_fail = 'Nao consegui atualizar agora: {0}'
     upd_src_ok = 'Codigo do jogo atualizado. Clique em Reconstruir para aplicar (so recompila o que mudou).'
     vram_t = 'Memoria de video para texturas'
-    vram_d = 'Padrao do jogo (70% da VRAM, ate 6 GB)'
-    vram_tip = 'Quanta memoria da placa de video o jogo pode usar para texturas. Valores maiores ajudam nas texturas embaralhadas, se a placa tiver folga. Padrao: o jogo decide.'
+    vram_d = 'Padrao do jogo (70% da VRAM, ate 6 GB de orcamento de texturas)'
+    vram_tip = 'Quanta memoria da placa de video o jogo pode usar para texturas. Nao e o uso total de VRAM: o motor soma mais uns 3.5 a 4 GB por cima (alvos de renderizacao, copia da memoria do console, buffers). Valores maiores ajudam nas texturas embaralhadas, se a placa tiver folga. Padrao: o jogo decide.'
+    vram_1 = 'Orcamento de texturas: 3 GB (uso total aprox. 6.5-7 GB; economiza VRAM, texturas podem recarregar)'
+    vram_2 = 'Orcamento de texturas: 4 GB (uso total aprox. 7.5-8 GB; economiza VRAM)'
+    vram_3 = 'Orcamento de texturas: 5 GB (uso total aprox. 8.5-9 GB; economiza VRAM)'
+    vram_4 = 'Orcamento de texturas: 6 GB (uso total aprox. 9.5-10 GB; economiza VRAM)'
+    vram_5 = 'Orcamento de texturas: 8 GB (uso total aprox. 11.5-12 GB; recomendado para placas de 16 GB ou mais)'
+    vram_6 = 'Orcamento de texturas: 10 GB (uso total aprox. 13.5-14 GB; recomendado para placas de 24 GB)'
+    vram_7 = 'Orcamento de texturas: 12 GB (uso total aprox. 15.5-16 GB; recomendado para placas de 24 GB; em 16 GB a VRAM enche, a RAM sobe e o FPS cai)'
     mesh_t = 'Modo dos mesh shaders (desenho 3D)'
     mesh_0 = 'Automatico (recomendado)'
     mesh_1 = 'Nativo (usa o recurso da placa)'
@@ -191,8 +198,15 @@ $STR['en'] = @{
     upd_fail = 'Could not update now: {0}'
     upd_src_ok = 'Game code updated. Click Rebuild to apply it (only what changed is recompiled).'
     vram_t = 'Video memory for textures'
-    vram_d = 'Game default (70% of VRAM, up to 6 GB)'
-    vram_tip = 'How much graphics card memory the game may use for textures. Larger values help with scrambled textures, if the card has room. Default: the game decides.'
+    vram_d = 'Game default (70% of VRAM, up to 6 GB texture budget)'
+    vram_tip = 'How much graphics card memory the game may use for textures. This is not the total VRAM use: the engine adds roughly 3.5 to 4 GB on top (render targets, the console memory mirror, buffers). Larger values help with scrambled textures, if the card has room. Default: the game decides.'
+    vram_1 = 'Texture budget: 3 GB (total use approx. 6.5-7 GB; saves VRAM, textures may reload)'
+    vram_2 = 'Texture budget: 4 GB (total use approx. 7.5-8 GB; saves VRAM)'
+    vram_3 = 'Texture budget: 5 GB (total use approx. 8.5-9 GB; saves VRAM)'
+    vram_4 = 'Texture budget: 6 GB (total use approx. 9.5-10 GB; saves VRAM)'
+    vram_5 = 'Texture budget: 8 GB (total use approx. 11.5-12 GB; recommended for cards with 16 GB or more)'
+    vram_6 = 'Texture budget: 10 GB (total use approx. 13.5-14 GB; recommended for 24 GB cards)'
+    vram_7 = 'Texture budget: 12 GB (total use approx. 15.5-16 GB; recommended for 24 GB cards; on 16 GB the VRAM fills up, RAM rises and FPS drops)'
     mesh_t = 'Mesh shader mode (3D drawing)'
     mesh_0 = 'Automatic (recommended)'
     mesh_1 = 'Native (uses the GPU feature)'
@@ -532,14 +546,14 @@ $script:defaultHelp = ''
 
 # ---------- Opcoes (a ordem e o indice salvo em launcher-settings.json: nao reordenar) ----------
 $vramOptions = @(
-    @{ Key = 'vram_d'; Pt = 'Padrao do jogo (70% da VRAM, ate 6 GB)'; Mb = 0 },
-    @{ Key = '';       Pt = '3 GB (economiza VRAM, texturas podem recarregar)'; Mb = 3072 },
-    @{ Key = '';       Pt = '4 GB (economiza VRAM)'; Mb = 4096 },
-    @{ Key = '';       Pt = '5 GB (economiza VRAM)'; Mb = 5120 },
-    @{ Key = '';       Pt = '6 GB (economiza VRAM)'; Mb = 6144 },
-    @{ Key = '';       Pt = '8 GB (so placa de 16 GB ou mais)';  Mb = 8192 },
-    @{ Key = '';       Pt = '10 GB (so placa de 24 GB)'; Mb = 10240 },
-    @{ Key = '';       Pt = '12 GB (so placa de 24 GB; em 16 GB a VRAM enche, a RAM sobe e o FPS cai)'; Mb = 12288 }
+    @{ Key = 'vram_d'; Mb = 0 },
+    @{ Key = 'vram_1'; Mb = 3072 },
+    @{ Key = 'vram_2'; Mb = 4096 },
+    @{ Key = 'vram_3'; Mb = 5120 },
+    @{ Key = 'vram_4'; Mb = 6144 },
+    @{ Key = 'vram_5'; Mb = 8192 },
+    @{ Key = 'vram_6'; Mb = 10240 },
+    @{ Key = 'vram_7'; Mb = 12288 }
 )
 # (recompzel) em ordem crescente; a escolha e salva pelo tamanho (vramMb). A ordem antiga, para ler o vramIndex de quem ja tinha:
 $vramOldOrderMb = @(0, 8192, 10240, 12288, 6144, 5120, 4096, 3072)
@@ -1422,7 +1436,7 @@ $btnPlay.Add_Click({
     }
     # a nota da rodada fica sempre em portugues (e lida pelo medir-rodada.ps1)
     $meshNow = Read-Mesh
-    $script:roundNote = ('VRAM={0} UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8} PARALLEL={9}' -f $vramOptions[$cbVram.SelectedIndex].Pt, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked, [Environment]::GetEnvironmentVariable('RX_VK_PARALLEL', 'Process'))
+    $script:roundNote = ('VRAM={0}MB UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8} PARALLEL={9}' -f $vramOptions[$cbVram.SelectedIndex].Mb, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked, [Environment]::GetEnvironmentVariable('RX_VK_PARALLEL', 'Process'))
     $script:gameOut = Get-OutDir
     # (recompzel) shaders deixados de fora: pular-shaders.txt na pasta do jogo (chaves em hex). Hoje: 7dfc7a637c93e49e, o
     # brilho vermelho da sala das teias da Arvore Deku, que sai com um triangulo branco na AMD (le o identificador errado de
