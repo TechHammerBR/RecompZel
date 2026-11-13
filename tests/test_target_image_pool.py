@@ -91,7 +91,13 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertIn("pool_put(*it);", loop[:loop.index("destroy_image(")])
         trim = frame.index("pool_trim();")
         self.assertLess(trim, frame.index("if (frame_no % 10) return;"))   # (every present, not every tenth)
-        self.assertIn("pool_pressed = known && pressure > allowed / 10 * 9;", frame)
+        self.assertIn("pool_pressed = known && pressure > pressure_line;", frame)
+        # (recompzel) 90% is still the baseline; DLSS-G running tightens it (nvngx_dlssg.dll crashed twice when the pool
+        # gave back what Streamline held, both times past 90% of what the driver allowed)
+        pressure_line = frame[frame.index("pressure_line ="):frame.index("squeeze_line =")]
+        self.assertIn("allowed / 10 * 9", pressure_line)
+        self.assertIn("slfg::active()", frame)
+        self.assertIn('getenv("RX_VK_DLSSG_SAFE_PCT")', frame)
 
     def test_the_trim_is_bounded_a_present_and_gives_back_idle_and_excess_images(self):
         trim = block(self.tex, "size_t pool_trim()")

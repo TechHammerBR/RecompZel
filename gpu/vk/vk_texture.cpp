@@ -39,6 +39,7 @@
 #include "vk_gprof.h"
 #include "vk_dump.h"
 #include "vk_jobs.h"
+#include "vk_streamline.h"   // (recompzel: tighter VRAM-pressure margin while DLSS-G runs, see texture_frame)
 
 #include <span>
 
@@ -3849,11 +3850,21 @@ void texture_frame(uint64_t completed) {
         uint64_t pool_blocks = 0, pool_free = 0;
         if (textures_pool_usage(&pool_blocks, &pool_free)) reclaim = vram_compact::reclaimable(block_free, pool_free);
     }
+    // (recompzel) DLSS-G tags the depth/motion buffers "valid until present" every frame (vk_temporal.cpp); if the render
+    // target pool gives one of them back right when Streamline still holds it, its own nvngx_dlssg.dll has crashed (access
+    // violation, 2026-11-13, two reports: peak VRAM at 92% of what the driver allowed both times, past the 90% line below).
+    // We cannot fix a closed NVIDIA DLL, so while DLSS-G runs this squeezes a bit sooner (85%/94% instead of 90%/97%),
+    // keeping more headroom so the pool is less likely to touch what Streamline is holding. RX_VK_DLSSG_SAFE_PCT=<n>: that
+    // percent instead (50 to 90); RX_VK_DLSSG_SAFE_PCT=0: back to the plain 90%/97% even with DLSS-G on.
+    static const int dlssg_safe_pct = getenv("RX_VK_DLSSG_SAFE_PCT") ? std::clamp(atoi(getenv("RX_VK_DLSSG_SAFE_PCT")), 0, 90) : 85;
+    const bool dlssg_tighten = dlssg_safe_pct > 0 && slfg::active();
+    const uint64_t pressure_line = dlssg_tighten ? allowed / 100 * (uint64_t)dlssg_safe_pct : allowed / 10 * 9;
+    const uint64_t squeeze_line = dlssg_tighten ? allowed / 100 * (uint64_t)std::min(dlssg_safe_pct + 9, 97) : allowed / 100 * 97;
     const uint64_t pressure = by_blocks ? used : used - std::min(used, reclaim);
-    pool_pressed = known && pressure > allowed / 10 * 9;   // (the target pool given back meanwhile)
+    pool_pressed = known && pressure > pressure_line;   // (the target pool given back meanwhile)
     compact.pressed = known && vram_compact::pressed(used, allowed);   // (hookshot, RX_VK_COMPACT: by the driver's own count)
-    if (known && pressure > allowed / 10 * 9) {
-        const uint64_t over = pressure - allowed / 10 * 9;
+    if (known && pressure > pressure_line) {
+        const uint64_t over = pressure - pressure_line;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
     }
     // (hookshot, RX_VK_COMPACT) and the count is held at RX_VK_COMPACT_PCT% of the allowance (85; 50 to 90), as it will be once a
@@ -3877,8 +3888,8 @@ void texture_frame(uint64_t completed) {
     // RX_VK_SQUEEZE_ALWAYS=1: as before
     static const bool squeeze_always = getenv("RX_VK_SQUEEZE_ALWAYS") != nullptr;
     const bool room_in_blocks = !squeeze_always && block_free >= allowed / 8;
-    if (known && !by_blocks && used > allowed / 100 * 97 && !room_in_blocks) {
-        const uint64_t over = used - allowed / 100 * 97;
+    if (known && !by_blocks && used > squeeze_line && !room_in_blocks) {
+        const uint64_t over = used - squeeze_line;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
     }
     if (budget < evict_to) evict_to = 0;   // (hookshot, RX_VK_COMPACT: the driver's limit asks for more: 7/8 of that, as before)
