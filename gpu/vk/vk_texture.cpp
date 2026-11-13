@@ -4052,8 +4052,16 @@ void texture_frame(uint64_t completed) {
     // after a while of play (issues 107 and 386). Kept, up to RX_VK_KEEP_FINALIZED_MB (512 by default; 0:
     // evicted as before), the least recently used beyond that going as before. (Not written back into the memory instead: the game
     // may have put other things there since, and a write-back over scene data once crashed it)
-    static const uint64_t keep_finalized_max =
-        (uint64_t)(getenv("RX_VK_KEEP_FINALIZED_MB") ? std::max(0, atoi(getenv("RX_VK_KEEP_FINALIZED_MB"))) : 512) << 20;
+    static const uint64_t keep_finalized_cfg_mb =
+        (uint64_t)(getenv("RX_VK_KEEP_FINALIZED_MB") ? std::max(0, atoi(getenv("RX_VK_KEEP_FINALIZED_MB"))) : 512);
+    // (recompzel) this reserve is pure insurance (keep_finalized, below), not textures the scene needs this frame: the
+    // first thing to give back when the pool is already pressed (pool_pressed, above), instead of waiting for the squeeze
+    // to reach the active texture budget. RX_VK_KEEP_FINALIZED_PRESSED_PCT=<n>: that percent of the reserve kept under
+    // pressure instead of 50 (0: none kept, 100: no change under pressure)
+    static const int keep_finalized_pressed_pct = getenv("RX_VK_KEEP_FINALIZED_PRESSED_PCT")
+        ? std::clamp(atoi(getenv("RX_VK_KEEP_FINALIZED_PRESSED_PCT")), 0, 100) : 50;
+    const uint64_t keep_finalized_max =
+        ((pool_pressed ? keep_finalized_cfg_mb * (uint64_t)keep_finalized_pressed_pct / 100 : keep_finalized_cfg_mb) << 20);
     const auto keep_finalized = [&](const Texture* tex) {
         if (!keep_finalized_max || !tex->gpu_written || !tex->released || !tex->first_written ||
             tex->first_written != tex->last_written || tex->bytes > (4ull << 20))
