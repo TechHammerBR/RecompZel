@@ -34,25 +34,25 @@ FIXTURE = r"""
 #include <cstdio>
 #include <cstdlib>
 #ifdef _WIN32
-static int setenv(const char* name, const char* value, int) { return _putenv_s(name, value); }
 static int unsetenv(const char* name) { return _putenv_s(name, ""); }
 #endif
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL %d: %s\n", __LINE__, #x); return 1; } } while (0)
 /* OPTIONS */
 Options opts;
 /* VSYNC */
-int main() {
+int main(int argc, char** argv) {
+    const int run = argc > 1 ? std::atoi(argv[1]) : -1;   // (the environment's choice for the run, -1: none: the row's)
     CHECK(opts.vsync == 0);   // (Auto: the renderer's choice before the row)
     for (int v = 0; v <= 2; v++) {
         opts.vsync = v;
-        CHECK(menu_vsync() == v);
+        CHECK(menu_vsync() == (run >= 0 ? run : v) && opts.vsync == v);   // (for the run; the row keeps the player's)
     }
     setenv("RX_VK_FIFO", "1", 1);
     CHECK(menu_vsync() == 1 && opts.vsync == 2);   // (for the run; the row keeps the player's)
     unsetenv("RX_VK_FIFO");
     setenv("RX_VK_IMMEDIATE", "1", 1);
     opts.vsync = 1;
-    CHECK(menu_vsync() == 2 && opts.vsync == 1);
+    CHECK(menu_vsync() == (run >= 0 ? run : 1));
     std::puts("PASS: V-Sync: the row's choice, the environment's over it for a run");
 }
 """
@@ -148,7 +148,13 @@ def main():
             command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", str(src), "-o", str(exe)]
         subprocess.run(command, cwd=tmp, check=True)
         env = {k: v for k, v in os.environ.items() if k not in ("RX_VK_FIFO", "RX_VK_IMMEDIATE")}
-        subprocess.run([str(exe)], check=True, env=env)
+        # (the switches are read once, so a process each: none, =0 off by env_on's rule, FIFO, immediate, both)
+        for switches, run in (({}, -1), ({"RX_VK_FIFO": "0"}, -1), ({"RX_VK_FIFO": "1"}, 1), ({"RX_VK_IMMEDIATE": "1"}, 2),
+                              ({"RX_VK_FIFO": "1", "RX_VK_IMMEDIATE": "1"}, 1), ({"RX_VK_IMMEDIATE": "off"}, -1)):
+            subprocess.run([str(exe), str(run)], check=True, env=dict(env, **switches))
+        r = subprocess.run([str(exe), "-1"], env=dict(env, RX_VK_FIFO="1"), capture_output=True, text=True)
+        if r.returncode == 0:
+            raise SystemExit("FAIL: RX_VK_FIFO=1 passes as the row's choice: the fixture proves nothing")
 
 
 if __name__ == "__main__":
