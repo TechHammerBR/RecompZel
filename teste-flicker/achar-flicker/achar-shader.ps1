@@ -4,7 +4,7 @@
 # Uso: coloque esta pasta dentro da pasta do jogo (onde esta o RecompZel.exe) e rode "Abrir com diagnostico.bat".
 # Nao apaga nada: o pular-shaders.txt original volta como estava no fim (ou se voce fechar a janela, rode de novo e
 # escolha restaurar).
-param([string]$GameDir = '')
+param([string]$GameDir = '', [string]$Sintoma = 'a cena PISCA azulada')
 
 $ErrorActionPreference = 'Stop'
 if (-not $GameDir) { $GameDir = Split-Path $PSScriptRoot -Parent }
@@ -47,7 +47,7 @@ Note "inicio; pasta do jogo $GameDir; ja escondidos: $($base -join ',')"
 $env:RX_VK_DRAW_STATS = $diag
 $env:RX_VK_SKIP_FILE = $skip
 $launcher = $null
-foreach ($p in @((Join-Path $GameDir 'RecompZel Launcher.exe'), (Join-Path $env:LOCALAPPDATA 'RecompZel\RecompZel Launcher.exe'))) {
+foreach ($p in @((Join-Path $GameDir 'RecompZel Launcher.exe'), (Join-Path (Split-Path $GameDir -Parent) 'Launcher\RecompZel Launcher.exe'), (Join-Path $env:LOCALAPPDATA 'RecompZel\RecompZel Launcher.exe'))) {
     if (Test-Path $p) { $launcher = $p; break }
 }
 if (-not $launcher) {
@@ -63,9 +63,9 @@ else { Say 'Launcher nao achado: abrindo o jogo direto.'; Start-Process -FilePat
 Note "aberto por: $(if ($launcher) { $launcher } else { 'RecompZel.exe' })"
 
 Say ''
-Say '1) Clique em Jogar (se abriu o launcher) e va ate o lugar onde a cena PISCA AZULADA.' 'Cyan'
+Say "1) Clique em Jogar (se abriu o launcher) e va ate um lugar onde $Sintoma." 'Cyan'
 Say '   Use as mesmas opcoes de sempre (com DLSS/DLAA e geracao de quadros pisca mais: mais facil de ver).' 'Cyan'
-Read-Host '2) Quando estiver la, com a cena piscando, volte aqui e aperte ENTER'
+Read-Host "2) Quando estiver la (onde $Sintoma), volte aqui e aperte ENTER"
 
 # a lista dos shaders desenhados naquele quadro
 $t0 = Get-Date
@@ -81,7 +81,7 @@ $cands = @(Get-Content $stats.FullName | ForEach-Object { if ($_ -match '^(draw|
     Where-Object { $base -notcontains $_ } | Select-Object -Unique)
 Note "lista: $($stats.Name), $($cands.Count) shaders de desenho"
 Say "$($cands.Count) shaders de desenho na cena. Comecando a busca." 'Green'
-Say 'Em cada rodada: jogue ~1 minuto, girando a camera. Partes da cena vao sumir (normal). Olhe so se a COR da cena pisca.' 'Cyan'
+Say "Em cada rodada: jogue ~1 minuto, girando a camera. Partes da cena vao sumir (normal). Olhe so se $Sintoma." 'Cyan'
 
 $round = 0
 while ($cands.Count -gt 1) {
@@ -92,30 +92,30 @@ while ($cands.Count -gt 1) {
     Write-Skip $hidden
     Say ''
     Say "Rodada $round : $($hidden.Count) shaders escondidos, $($cands.Count) suspeitos no total." 'Yellow'
-    $a = Ask 'Ainda PISCA? s = sim, n = nao, x = a tela ficou estranha demais para ver' @('s','n','x')
+    $a = Ask "Ainda acontece ($Sintoma)? s = sim, n = nao, x = a tela ficou estranha demais para ver" @('s','n','x')
     if ($a -eq 'x') {   # (esconde a outra metade e pergunta de novo)
         Write-Skip $shown
-        $b = Ask 'Escondi a OUTRA metade. Ainda PISCA? s = sim, n = nao' @('s','n')
+        $b = Ask "Escondi a OUTRA metade. Ainda acontece ($Sintoma)? s = sim, n = nao" @('s','n')
         Note "rodada $round : outra metade escondida ($($shown.Count)) -> $b"
-        $cands = if ($b -eq 'n') { $shown } else { $hidden }
+        if ($b -eq 'n') { $cands = $shown } else { $cands = $hidden }   # (atribuicao direta: um array de 1 item continua array)
     } else {
         Note "rodada $round : $($hidden.Count) escondidos -> $a"
-        $cands = if ($a -eq 'n') { $hidden } else { $shown }
+        if ($a -eq 'n') { $cands = $hidden } else { $cands = $shown }
     }
 }
 
 # a confirmacao: so ele escondido
-$key = $cands[0]
+$key = @($cands)[0]
 Write-Skip @($key)
 Say ''
 Say "Suspeito: $key (so ele escondido agora)." 'Green'
-$c = Ask 'Com SO ele escondido, ainda PISCA? s = sim, n = nao' @('s','n')
+$c = Ask "Com SO ele escondido, ainda acontece ($Sintoma)? s = sim, n = nao" @('s','n')
 Note "suspeito $key; so ele escondido -> $c"
 if ($c -eq 'n') {
-    Say "ACHADO: o shader $key causa o flicker." 'Green'
-    Add-Content (Join-Path $diag 'resultado.txt') "shader do flicker: $key (lista $($stats.Name))"
+    Say "ACHADO: o shader $key causa isso ($Sintoma)." 'Green'
+    Add-Content (Join-Path $diag 'resultado.txt') "shader de [$Sintoma]: $key (lista $($stats.Name))"
 } else {
-    Say 'Escondendo so ele ainda pisca: a causa nao e um desenho so (pode ser um compute, como a neblina).' 'Yellow'
+    Say 'Escondendo so ele ainda acontece: a causa nao e um desenho so (pode ser um compute).' 'Yellow'
     Add-Content (Join-Path $diag 'resultado.txt') "inconclusivo: ultimo suspeito $key ainda pisca sozinho (lista $($stats.Name))"
 }
 Copy-Item $bak $skip -Force; Remove-Item $bak
