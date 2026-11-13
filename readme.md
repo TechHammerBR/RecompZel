@@ -82,12 +82,13 @@ Dentro do jogo, **Insert** abre o menu. Na aba **Gráficos** ficam o Upscaler, a
 | Usar NVIDIA DLSS Frame Generation | Instala os arquivos da NVIDIA e libera o DLSS-G (RTX 40 e 50) |
 | Limite de VRAM | Quanto de memória de vídeo as texturas podem usar (3 GB a 12 GB). 12 GB só em placa de 24 GB |
 | Perfil de memória | Padrão, Equilibrado ou Econômico: menos VRAM em troca de recarregar texturas |
+| Traduzir os comandos em várias threads | Mais FPS em cidades: no Burgo de Hyrule, de ~39 para ~44 FPS e o pior momento de 14 para 31 (i7-11700F). Desligada por padrão; se aparecer um quadro preto de um instante, desligue |
 | Modo seguro | Joga sem FSR 4, DLSS e geração de quadros. Use quando algo der errado |
 | Registrar diagnóstico | Deixa o log mais detalhado, para mandar junto de um problema |
 
 ## Problemas conhecidos
 
-- **Cor da cena inteira piscando por um quadro (pedras azuladas), visto numa NVIDIA:** em investigação. A suspeita é a proteção `RX_VK_PROTECT_BARE`, que voltou a ser opcional. Se ainda acontecer com você, mande o `hookshot_log.txt`.
+- **Cor da cena inteira piscando por um quadro (pedras azuladas), visto numa RTX 4080:** em investigação. Se acontecer com você, mande o `hookshot_log.txt` e o `hookshot_options.ini` da pasta do jogo, e diga se para com a Geração de quadros desligada.
 - **Brilho da sala das teias da Árvore Deku (antes do Gohma):** o shader desse brilho saía com um triângulo branco na AMD e hoje fica de fora (arquivo `pular-shaders.txt` na pasta do jogo, criado pelo launcher). Apague a linha do arquivo para vê-lo de novo.
 - **DLSS e FSR 4:** coisas que se movem sozinhas (fogo, partículas) podem deixar rastro por enquanto.
 
