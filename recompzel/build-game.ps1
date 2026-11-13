@@ -67,7 +67,7 @@ if (-not $Out) {
 }
 # mesma regra do launcher: a pasta dos scripts (C:\DEV no PC do desenvolvedor, %LOCALAPPDATA%\RecompZel com o .exe); rodando de dentro do repositorio, %LOCALAPPDATA%\RecompZel
 $base = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel' -and (Test-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'nx2\make_game.py'))) {
-            # (recompzel: tudo no D. Rodando de dentro do repositorio, a pasta DEV ao lado dele, se existir)
+            # (recompzel: rodando de dentro do repositorio, a pasta DEV ao lado dele, se existir)
             $devD = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'DEV'
             if (Test-Path -LiteralPath $devD) { $devD } else { Join-Path $env:LOCALAPPDATA 'RecompZel' }
         } else { $PSScriptRoot }

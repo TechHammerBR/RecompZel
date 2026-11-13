@@ -1619,11 +1619,19 @@ void sync_language() {
         const DWORD n = game_module_path(exe, MAX_PATH);
         std::string dir(exe, n);
         lang::set_dir(dir.substr(0, dir.find_last_of("\\/") + 1));
+#ifdef _WIN32
         wchar_t loc[LOCALE_NAME_MAX_LENGTH] = {};
         char name[LOCALE_NAME_MAX_LENGTH] = {};
         if (GetUserDefaultLocaleName(loc, LOCALE_NAME_MAX_LENGTH))
             for (int i = 0; loc[i] && i + 1 < LOCALE_NAME_MAX_LENGTH; i++) name[i] = loc[i] < 128 ? (char)loc[i] : '?';
         lang::set_system(name);
+#else
+        // (Linux: the locale's environment, "pt_BR.UTF-8"; only its first two letters are read, lang::detail::resolve)
+        const char* e = getenv("LC_ALL");
+        if (!e || !*e) e = getenv("LC_MESSAGES");
+        if (!e || !*e) e = getenv("LANG");
+        lang::set_system(e ? e : "");
+#endif
     }
     last = opts.language;
     lang::set_mode(opts.language);
