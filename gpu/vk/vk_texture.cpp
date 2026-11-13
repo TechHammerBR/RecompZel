@@ -1893,7 +1893,7 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         // 64 MB, and down to RX_VK_TEX_MAX_MB (default 512) whatever their size (MKW's terrain material arrays are
         // 8192 x 8192 x 68 ASTC: 24 GB as RGBA8)
         static const uint32_t max_dim = getenv("RX_VK_TEX_MAX_DIM") ? (uint32_t)atoi(getenv("RX_VK_TEX_MAX_DIM")) : 2048;
-        static const uint64_t max_bytes = (uint64_t)(getenv("RX_VK_TEX_MAX_MB") ? atoi(getenv("RX_VK_TEX_MAX_MB")) : 1536) << 20;
+        static const uint64_t max_bytes_cfg = (uint64_t)(getenv("RX_VK_TEX_MAX_MB") ? atoi(getenv("RX_VK_TEX_MAX_MB")) : 1536) << 20;
         const uint32_t texel = astc ? 4 : std::max(1, bpb / std::max(1, bw * bh));
         auto bytes_at = [&](uint32_t skip) {
             uint64_t px = 0;
@@ -1904,8 +1904,10 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         // (decoded ASTC only by size: uncompressed maps may be read at exact texel coordinates, and the GPU may
         // render into them, where a level left out is wrong)
         // (a 2D array too big to keep whole, in a format with sparse residency: kept whole, as a sparse image)
+        // (recompzel: the sparse decision stays on the fixed cap, not the pressure-tightened one below; a texture
+        // flipping in and out of sparse residency as pressure comes and goes would be a bigger behavior change)
         if (!astc && !depth && dev.sparse_images && x.type == VK_IMAGE_TYPE_2D && x.layers > 1 && d.samples <= 1 &&
-            bytes_at(0) > max_bytes) {
+            bytes_at(0) > max_bytes_cfg) {
             VkImageUsageFlags u = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
             if (!is_bc(x.format)) u |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
             uint32_t np = 0;
@@ -1915,7 +1917,14 @@ Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw
         }
         // (RX_VK_TEX_SKIP_MB: from how many MB as RGBA8 a decoded ASTC texture wider than max_dim loses its top levels;
         // 64 by default. The Steam Deck's 16 GB are shared with the GPU: lower there, with RX_VK_TEX_MAX_DIM=1024)
-        static const uint64_t skip_from = (uint64_t)(getenv("RX_VK_TEX_SKIP_MB") ? atoi(getenv("RX_VK_TEX_SKIP_MB")) : 64) << 20;
+        static const uint64_t skip_from_cfg = (uint64_t)(getenv("RX_VK_TEX_SKIP_MB") ? atoi(getenv("RX_VK_TEX_SKIP_MB")) : 64) << 20;
+        // (recompzel) under VRAM pressure (pool_pressed, texture_frame's budget check) newly made textures give up
+        // more top levels right away, instead of only the texture cache shrinking after the fact: half by default,
+        // tunable since a slower card may already be at its sharpest acceptable mip before any pressure shows
+        static const int skip_pressed_pct = getenv("RX_VK_TEX_SKIP_PRESSED_PCT")
+            ? std::clamp(atoi(getenv("RX_VK_TEX_SKIP_PRESSED_PCT")), 10, 100) : 50;
+        const uint64_t skip_from = pool_pressed ? skip_from_cfg * (uint64_t)skip_pressed_pct / 100 : skip_from_cfg;
+        const uint64_t max_bytes = pool_pressed ? max_bytes_cfg * (uint64_t)skip_pressed_pct / 100 : max_bytes_cfg;
         while (!x.sparse && astc && x.skip + 1 < x.levels && bytes_at(x.skip) > skip_from &&
                (std::max(x.width, x.height) >> x.skip) > max_dim)
             x.skip++;
