@@ -1609,6 +1609,9 @@ int scrolled_to[TAB_MOTION + 2] = {-1, -1, -1, -1, -1, -1};   // (the selection 
 float scroll_want[TAB_MOTION + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
+#ifndef LOCALE_NAME_MAX_LENGTH   // (winnls.h's; the Linux build's Windows headers do not have it)
+#define LOCALE_NAME_MAX_LENGTH 85
+#endif
 /// (recompzel) The language the Language row says, and where its files are: every drawing, once changed. Windows' own language
 /// is what Auto follows
 void sync_language() {
