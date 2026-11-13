@@ -20,6 +20,7 @@
 #include <malloc.h>
 #endif
 #include <atomic>
+#include <new>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -326,6 +327,47 @@ static bool commit_headroom(uint64_t* free_bytes) {
 #else
     (void)free_bytes;
     return false;
+#endif
+}
+// (hookshot) and a reserve of commit for the renderer's own heap: at Windows' commit limit an allocation failed on the presenting
+// thread (#2941: std::bad_alloc in the page table's flush as Hyrule Field loaded, 32 GB of RAM with a 2 GB page file) and the
+// exception left the renderer for the game's code, which nothing catches: the game closed. The commit rule above shrinks the
+// textures only on its next pass, and a wait would not help where the presenting thread itself is short. So 128 MB is held
+// committed while there is room; the first allocation that fails gives it back (operator new's handler) and is tried again; the
+// commit rule then sees the headroom gone and the textures make room, and the reserve is held again once the headroom is back
+// above the rule's reserve. Windows only (Linux overcommits); RX_VK_COMMIT_RESERVE_MB=0 turns it off with the rule
+namespace {
+constexpr size_t kOomReserve = 128u << 20;
+std::atomic<void*> oom_block{nullptr};
+std::atomic<int> oom_given{0};   // (times given back, for the log)
+void oom_handler() {
+#if defined(_WIN32)
+    if (void* p = oom_block.exchange(nullptr)) {
+        VirtualFree(p, 0, MEM_RELEASE);
+        oom_given.fetch_add(1);
+        return;   // (operator new tries again)
+    }
+#endif
+    throw std::bad_alloc();
+}
+}   // namespace
+static void oom_reserve_tend(bool known, uint64_t commit_free, uint64_t reserve) {
+#if defined(_WIN32)
+    static bool installed;
+    static int said;
+    if (!reserve) return;
+    if (!installed) installed = true, std::set_new_handler(oom_handler);
+    if (const int n = oom_given.load(); n != said) {
+        said = n;
+        logf("vk: commit limit reached: an allocation took the renderer's 128 MB reserve (%d so far); the textures make room", n);
+    }
+    if (!oom_block.load() && known && commit_free > reserve + kOomReserve)
+        if (void* p = VirtualAlloc(nullptr, kOomReserve, MEM_COMMIT | MEM_RESERVE, PAGE_NOACCESS)) {
+            void* none = nullptr;
+            if (!oom_block.compare_exchange_strong(none, p)) VirtualFree(p, 0, MEM_RELEASE);
+        }
+#else
+    (void)known, (void)commit_free, (void)reserve;
 #endif
 }
 uint64_t pool_cap() {
@@ -4724,7 +4766,9 @@ void texture_frame(uint64_t completed) {
     {
         uint64_t commit_free = 0;
         const uint64_t reserve = commit_reserve();
-        if (reserve && commit_headroom(&commit_free) && commit_free < reserve) {
+        const bool headroom_known = reserve && commit_headroom(&commit_free);
+        oom_reserve_tend(headroom_known, commit_free, reserve);
+        if (headroom_known && commit_free < reserve) {
             const uint64_t over = reserve - commit_free;
             budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
             rule_budget = std::min(rule_budget, total_bytes > over ? total_bytes - over : 0);
