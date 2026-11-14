@@ -1522,6 +1522,9 @@ $btnPlay.Add_Click({
     $me = [System.Diagnostics.Process]::GetCurrentProcess()
     $oldMask = $me.ProcessorAffinity
     $sim = [bool]$chkSim.IsChecked -and [Environment]::ProcessorCount -ge 12
+    # (e o proprio jogo se prende logo na primeira instrucao, HOS_AFFINITY em host/hos_main.c: um processo aberto pelo Start-Process
+    # nem sempre herda a afinidade do launcher; no log do jogo: "affinity: the game is held to logical processors 0xfff")
+    if ($sim) { [Environment]::SetEnvironmentVariable('HOS_AFFINITY', '0xFFF', 'Process') } else { [Environment]::SetEnvironmentVariable('HOS_AFFINITY', $null, 'Process') }
     try {
         if ($sim) { $me.ProcessorAffinity = $simMask }
         $script:gameProc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
