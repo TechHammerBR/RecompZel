@@ -382,6 +382,11 @@ struct Recorder {
         if (w == w_pub) return;
         W.store(w, std::memory_order_release);
         w_pub = w;
+        // (recompzel) a fence between publishing W and reading `sleeping`: idle() stores sleeping, then reads W; without it x86 may
+        // read sleeping before the W store is visible, both sides miss each other, and the recorder sleeps with packets waiting
+        // until the producer's next wait kicks it (the work then runs serially, not beside the replay). totk-pc-recomp #1174 found
+        // the same race in its recorder (waits of 1.6-3.4 ms against 0.04). Cost: one fence per flush, a batch of packets
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         if (sleeping.load(std::memory_order_relaxed)) [[unlikely]]
             wake();
     }
