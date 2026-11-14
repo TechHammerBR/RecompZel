@@ -3278,8 +3278,49 @@ bool sparse_take(Texture* tex, VkDeviceSize n, VkDeviceMemory& mem, VkDeviceSize
     return true;
 }
 
+// (recompzel, validated against mkw-recomp's 30af22d/f4a607e) Merges a run of sparse_binds whose blocks are
+// contiguous both in image space (same level/layer/row, consecutive x) and in device memory (the same chunk, offsets
+// exactly align apart) into one wider VkSparseImageMemoryBind, so vkQueueBindSparse gets far fewer descriptors for the
+// same blocks. sparse_take is a plain bump allocator (nothing is ever freed and reused), so the blocks a texture's own
+// row-major queue order asks for land one after another in the same chunk at exactly align bytes apart, unless a chunk
+// filled up between them: that is exactly the case this looks for (mkw-recomp needed a slot allocator rewrite for this;
+// here the existing allocator already hands out contiguous memory in the common case, so only this merge pass is new).
+// mkw-recomp's 8192x8192x68 terrain arrays bound 11,471 blocks one by one, 576-995 ms in vkQueueBindSparse on the
+// replay thread, the 1.5 s frame of their loading logo; merging cut that to 300-ish ms. RX_VK_SPARSE_MERGE=0: as before
+size_t sparse_merge(std::vector<VkSparseImageMemoryBind>& v, VkDeviceSize align) {
+    static const bool off = getenv("RX_VK_SPARSE_MERGE") && !strcmp(getenv("RX_VK_SPARSE_MERGE"), "0");
+    if (off || v.size() < 2) return v.size();
+    std::sort(v.begin(), v.end(), [](const VkSparseImageMemoryBind& a, const VkSparseImageMemoryBind& b) {
+        if (a.subresource.arrayLayer != b.subresource.arrayLayer) return a.subresource.arrayLayer < b.subresource.arrayLayer;
+        if (a.subresource.mipLevel != b.subresource.mipLevel) return a.subresource.mipLevel < b.subresource.mipLevel;
+        if (a.offset.y != b.offset.y) return a.offset.y < b.offset.y;
+        return a.offset.x < b.offset.x;
+    });
+    size_t out = 0;
+    for (size_t i = 0; i < v.size();) {
+        VkSparseImageMemoryBind merged = v[i];
+        VkDeviceSize last_off = merged.memoryOffset;   // (the run's own memoryOffset stays its first; this tracks where
+                                                        // the next block must land, one align past whichever came last)
+        size_t j = i + 1;
+        while (j < v.size() && v[j].subresource.arrayLayer == merged.subresource.arrayLayer &&
+               v[j].subresource.mipLevel == merged.subresource.mipLevel && v[j].offset.y == merged.offset.y &&
+               v[j].extent.height == merged.extent.height && v[j].memory == merged.memory &&
+               v[j].offset.x == merged.offset.x + (int32_t)merged.extent.width &&
+               v[j].memoryOffset == last_off + align) {
+            merged.extent.width += v[j].extent.width;
+            last_off = v[j].memoryOffset;
+            j++;
+        }
+        v[out++] = merged;
+        i = j;
+    }
+    v.resize(out);
+    return out;
+}
 bool sparse_flush(Texture* tex) {
     if (sparse_binds.empty() && sparse_opaque.empty()) return true;
+    const size_t blocks_before = sparse_binds.size();
+    const size_t binds_after = sparse_merge(sparse_binds, tex->sparse_align);
     VkSparseImageMemoryBindInfo ib{tex->image, (uint32_t)sparse_binds.size(), sparse_binds.data()};
     VkSparseImageOpaqueMemoryBindInfo ob{tex->image, (uint32_t)sparse_opaque.size(), sparse_opaque.data()};
     VkBindSparseInfo bi{VK_STRUCTURE_TYPE_BIND_SPARSE_INFO};
@@ -3317,8 +3358,9 @@ bool sparse_flush(Texture* tex) {
     if (logged < 20 || (tex->bytes >> 20) >= next_mb) {
         logged++;
         next_mb = (tex->bytes >> 20) + 256;
-        logf("vk: sparse texture %#llx: %zu blocks bound (%llu MB of device memory)", (unsigned long long)tex->gpu,
-             sparse_binds.size() + sparse_opaque.size(), (unsigned long long)(tex->bytes >> 20));
+        logf("vk: sparse texture %#llx: %zu blocks bound as %zu binds (%zu opaque; %llu MB of device memory)",
+             (unsigned long long)tex->gpu, blocks_before, binds_after, sparse_opaque.size(),
+             (unsigned long long)(tex->bytes >> 20));
     }
     total_bytes += sparse_added;
     sparse_added = 0;
