@@ -77,6 +77,9 @@ $STR['pt'] = @{
     par = 'Traduzir os comandos em varias threads (mais FPS em cidades, como o Burgo de Hyrule)'
     par_tip = 'RX_VK_PARALLEL: 4 threads em processador de 16 threads ou mais, 2 a 3 nos menores. No Burgo de Hyrule (i7-11700F): media de ~39 para ~44 FPS, pior momento de 14 para 31. Desligado por padrao: no Hookshot ja deu quadro preto de um instante (Kakariko). Se aparecer, desligue.'
     rec = 'Mandar os comandos ao driver de video numa thread separada (teste: para processadores de 6 nucleos)'
+    sim = 'Simular processador de 6 nucleos e 12 threads (teste, como um Ryzen 5 5600G)'
+    sim_tip = 'O jogo abre preso a 6 nucleos com 12 threads deste PC (os primeiros), como num processador 6/12. Os nucleos continuam os deste PC, entao o resultado e melhor que num 5600G de verdade, mas a divisao do trabalho entre as threads e a mesma. Para medir otimizacoes de CPU. Volta a ficar desmarcada ao abrir o launcher.'
+    sim_na = 'Este PC tem menos de 12 threads: nao ha o que simular.'
     rec_tip = 'RX_VK_RECORDER=thread: as chamadas ao driver Vulkan saem da thread que traduz os comandos e vao para uma thread propria, que roda ao mesmo tempo. O totk-pc-recomp deixa isso ligado por padrao. Nao funciona junto com a traducao em varias threads: marcar uma desmarca a outra. Desligado por padrao.'
     mem_now = 'Jogo agora: RAM {0}, VRAM {1}'
     fsr = 'Usar AMD FSR 4 (mais quadros por segundo)'
@@ -244,6 +247,9 @@ $STR['en'] = @{
     par = 'Translate the commands on several threads (more FPS in towns, such as Hyrule Castle Town)'
     par_tip = 'RX_VK_PARALLEL: 4 threads on a CPU with 16 threads or more, 2 to 3 on smaller ones. In Castle Town market (i7-11700F): from ~39 to ~44 FPS on average, the worst moment from 14 to 31. Off by default: Hookshot once saw a one-frame black scene with it (Kakariko). If you see one, turn it off.'
     rec = 'Send the commands to the video driver on a separate thread (test: for 6-core CPUs)'
+    sim = 'Simulate a 6-core, 12-thread CPU (test, like a Ryzen 5 5600G)'
+    sim_tip = 'The game starts held to 6 cores with 12 threads of this PC (the first ones), as on a 6/12 CPU. The cores are still this PC''s, so the result is better than on a real 5600G, but the work is split between threads the same way. For measuring CPU optimizations. Unchecked again each time the launcher opens.'
+    sim_na = 'This PC has fewer than 12 threads: nothing to simulate.'
     rec_tip = 'RX_VK_RECORDER=thread: the Vulkan driver calls leave the thread that translates the commands and run on a thread of their own, at the same time. totk-pc-recomp has this on by default. It does not work together with translating on several threads: checking one unchecks the other. Off by default.'
     mem_now = 'Game now: RAM {0}, VRAM {1}'
     fsr = 'Use AMD FSR 4 (higher frame rate)'
@@ -473,6 +479,7 @@ $xaml = @'
           <ComboBox x:Name="cbFg" Margin="0,6,0,8" Height="26"/>
           <CheckBox x:Name="chkPar" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkRec" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
+          <CheckBox x:Name="chkSim" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkRam" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkLinear" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkDiag" Foreground="#E6F2EC" FontSize="12"/>
@@ -559,7 +566,7 @@ $xaml = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
 try { if (Test-Path (Join-Path $PSScriptRoot 'recompzel.ico')) { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri](Join-Path $PSScriptRoot 'recompzel.ico')) } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnChooseDir','txtOutDir','btnReport','btnUpdate','cbMem','txtMemT','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkPar','chkRec','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary','chkLinear') {
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnChooseDir','txtOutDir','btnReport','btnUpdate','cbMem','txtMemT','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkPar','chkRec','chkSim','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary','chkLinear') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -630,6 +637,8 @@ function Apply-Language {
         $tbRam = New-Object System.Windows.Controls.TextBlock; $tbRam.Text = (T 'ram_save'); $tbRam.TextWrapping = 'Wrap'; $chkRam.Content = $tbRam; $chkRam.ToolTip = (T 'ram_tip')
         $tbPar = New-Object System.Windows.Controls.TextBlock; $tbPar.Text = (T 'par'); $tbPar.TextWrapping = 'Wrap'; $chkPar.Content = $tbPar; $chkPar.ToolTip = (T 'par_tip')
         $tbRec = New-Object System.Windows.Controls.TextBlock; $tbRec.Text = (T 'rec'); $tbRec.TextWrapping = 'Wrap'; $chkRec.Content = $tbRec; $chkRec.ToolTip = (T 'rec_tip')
+        $tbSim = New-Object System.Windows.Controls.TextBlock; $tbSim.Text = (T 'sim'); $tbSim.TextWrapping = 'Wrap'; $chkSim.Content = $tbSim
+        if ([Environment]::ProcessorCount -ge 12) { $chkSim.ToolTip = (T 'sim_tip'); $chkSim.IsEnabled = $true } else { $chkSim.ToolTip = (T 'sim_na'); $chkSim.IsChecked = $false; $chkSim.IsEnabled = $false }
         $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'; $chkDlss.Content = T 'dlss'; $chkDsr.Content = T 'dsr'
         $tbLin = New-Object System.Windows.Controls.TextBlock; $tbLin.Text = (T 'linear'); $tbLin.TextWrapping = 'Wrap'; $chkLinear.Content = $tbLin
         $txtTechT.Text = T 'tech_t'; $txtTechIntro.Text = T 'tech_intro'; $ttlDsr.Text = T 'tn_dsr'; $ttlDlss.Text = T 'tn_dlss'; $ttlFsr.Text = T 'tn_fsr'; $btnTechAll.Content = T 'tech_all'; $chkSafe.Content = T 'safe'
@@ -1431,7 +1440,8 @@ $btnPlay.Add_Click({
     # (recompzel) a traducao dos comandos (o replay) em varias threads: 4 com 16 threads logicas ou mais, 2 a 3 nos menores.
     # Nao no modo seguro. Desmarcada, a variavel sai (vale mais que um RX_VK_PARALLEL herdado de um .bat de teste)
     if ($chkPar.IsChecked -and -not $chkSafe.IsChecked) {
-        $parN = [math]::Min(4, [math]::Max(2, [int][math]::Floor([Environment]::ProcessorCount / 4)))
+        $cpuN = if ($chkSim.IsChecked) { 12 } else { [Environment]::ProcessorCount }   # (o teste 6/12: as threads de um processador 6/12)
+        $parN = [math]::Min(4, [math]::Max(2, [int][math]::Floor($cpuN / 4)))
         [Environment]::SetEnvironmentVariable('RX_VK_PARALLEL', [string]$parN, 'Process')
     } else { [Environment]::SetEnvironmentVariable('RX_VK_PARALLEL', $null, 'Process') }
     # (recompzel) as chamadas ao driver numa thread propria (RX_VK_RECORDER=thread, opt-in do Hookshot; ligado por padrao no
@@ -1496,7 +1506,7 @@ $btnPlay.Add_Click({
     }
     # a nota da rodada fica sempre em portugues (e lida pelo medir-rodada.ps1)
     $meshNow = Read-Mesh
-    $script:roundNote = ('VRAM={0}MB UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8} PARALLEL={9} RECORDER={10}' -f $vramOptions[$cbVram.SelectedIndex].Mb, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked, [Environment]::GetEnvironmentVariable('RX_VK_PARALLEL', 'Process'), [Environment]::GetEnvironmentVariable('RX_VK_RECORDER', 'Process'))
+    $script:roundNote = ('VRAM={0}MB UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8} PARALLEL={9} RECORDER={10} SIM6_12={11}' -f $vramOptions[$cbVram.SelectedIndex].Mb, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked, [Environment]::GetEnvironmentVariable('RX_VK_PARALLEL', 'Process'), [Environment]::GetEnvironmentVariable('RX_VK_RECORDER', 'Process'), [bool]$chkSim.IsChecked)
     $script:gameOut = Get-OutDir
     # (recompzel) shaders deixados de fora: pular-shaders.txt na pasta do jogo (chaves em hex). Hoje: 7dfc7a637c93e49e, o
     # brilho vermelho da sala das teias da Arvore Deku, que sai com um triangulo branco na AMD (le o identificador errado de
@@ -1504,7 +1514,21 @@ $btnPlay.Add_Click({
     $skipFile = Join-Path $exe.DirectoryName 'pular-shaders.txt'
     if (-not (Test-Path -LiteralPath $skipFile)) { [IO.File]::WriteAllText($skipFile, "7dfc7a637c93e49e`n") }
     [Environment]::SetEnvironmentVariable('RX_VK_SKIP_FILE', $skipFile, 'Process')
-    $script:gameProc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
+    # (recompzel) teste 6/12: o jogo nasce com a afinidade do launcher (o Windows a passa ao processo filho), entao o launcher se
+    # prende aos 12 primeiros processadores logicos so enquanto abre o jogo, e volta. Assim o jogo ja comeca preso (o motor le a
+    # mascara ao iniciar: o nucleo reservado da traducao, as threads que esperam girando). Os 12 primeiros sao 6 nucleos com as
+    # duas threads de cada: os nucleos de desempenho nos Intel hibridos, os primeiros de um Ryzen
+    $simMask = [IntPtr]0xFFF
+    $me = [System.Diagnostics.Process]::GetCurrentProcess()
+    $oldMask = $me.ProcessorAffinity
+    $sim = [bool]$chkSim.IsChecked -and [Environment]::ProcessorCount -ge 12
+    try {
+        if ($sim) { $me.ProcessorAffinity = $simMask }
+        $script:gameProc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
+        if ($sim) { try { $script:gameProc.ProcessorAffinity = $simMask } catch {} }   # (e confirmado no processo do jogo)
+    } finally {
+        if ($sim) { try { $me.ProcessorAffinity = $oldMask } catch {} }
+    }
     $txtHelp.Text = T 'started'
 })
 

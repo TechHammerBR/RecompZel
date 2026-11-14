@@ -764,6 +764,14 @@ static uint64_t last_fastest_core(int *cores) {
     *cores = 0;
     GROUP_AFFINITY ga;
     const WORD group = GetThreadGroupAffinity(GetCurrentThread(), &ga) ? ga.Group : 0;
+    /* (recompzel) only the logical processors this process may run on: a game started held to part of the CPU (the launcher's
+       6/12 test, an affinity a player set) keeps its replay core among them, as on a CPU of that size. A core outside the mask
+       counts as absent; with one processor group the mask is the process's (more than one: every core, as before) */
+    uint64_t allowed = ~0ull;
+    {
+        DWORD_PTR proc = 0, sys = 0;
+        if (GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) && proc) allowed = (uint64_t)proc;
+    }
     if (GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
         return 0;
     char *buf = (char *)malloc(len);
@@ -772,7 +780,7 @@ static uint64_t last_fastest_core(int *cores) {
             const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(buf + at);
             if (!e->Size) break;
             if (e->Relationship == RelationProcessorCore && e->Processor.GroupCount && e->Processor.GroupMask[0].Group == group) {
-                masks[n] = (uint64_t)e->Processor.GroupMask[0].Mask;
+                masks[n] = (uint64_t)e->Processor.GroupMask[0].Mask & allowed;
                 classes[n] = e->Processor.EfficiencyClass;
                 n++;
             }
