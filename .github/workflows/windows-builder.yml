@@ -110,6 +110,14 @@ jobs:
           if python -I scripts/release_parts.py previous "$RUNNER_TEMP/previous-setup.txt" \
               --repo "$GITHUB_REPOSITORY" --repo NotRexed/Hookshot --skip-tag "$TAG"; then
             echo "PREVIOUS=$RUNNER_TEMP/previous-setup.txt" >> "$GITHUB_ENV"
+          # (recompzel) o fork nao tem release estavel com a lista, e as partes do NotRexed/Hookshot sumiram (404): a lista que o
+          # mantenedor montou na builder-parts (Python, emsdk, CPM, wgpu-native e third_party conferidos) vale como a anterior.
+          # Sem isso, em 14/11 um push no main publicou no nightly uma lista sem o Python e o launcher de quem instalava do zero
+          # parava em "O Python nao apareceu depois de extrair"
+          elif gh release download builder-parts --repo "$GITHUB_REPOSITORY" --pattern hookshot-setup.txt \
+              --output "$RUNNER_TEMP/previous-setup.txt" --clobber && grep -q 'HookshotBuilder-python-' "$RUNNER_TEMP/previous-setup.txt"; then
+            echo "builder-parts/hookshot-setup.txt"
+            echo "PREVIOUS=$RUNNER_TEMP/previous-setup.txt" >> "$GITHUB_ENV"
           elif [[ -n $RELEASE_TAG ]]; then
             exit 1
           else
@@ -345,6 +353,12 @@ jobs:
         # (the nightly only carries the list the RecompZel Launcher reads to install the tools: the Builder's .exe and the zip are
         # not offered to players, the Launcher does it all. A tagged release keeps its files)
         run: |
+          # (recompzel) uma lista sem a parte do Python quebra a instalacao das ferramentas pelo launcher: nao publica, fica a anterior
+          if ! grep -q 'HookshotBuilder-python-' dist/hookshot-setup.txt; then
+            echo "::error::dist/hookshot-setup.txt sem a parte do Python: nao publicado (a lista anterior continua valendo)"
+            cat dist/hookshot-setup.txt
+            exit 1
+          fi
           if [ -n "${RELEASE_TAG:-}" ]; then
             scripts/release_upload.sh "$RELEASE_TAG" dist/RecompZelBuilder.exe dist/hookshot-setup.txt dist/RecompZel-*-Windows-x64.zip
           else
