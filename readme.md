@@ -97,7 +97,7 @@ Dentro do jogo, **Insert** abre o menu. Na aba **Gráficos** ficam o Upscaler, a
 | Caminho | O que é |
 |---|---|
 | `INSTALAR-RECOMPZEL.bat` | Instala o jogo. É o que o usuário final usa |
-| `recompzel/` | Nossas ferramentas: `instalar.ps1`, `build-game.ps1`, `post-install.ps1`, `launcher.ps1`, `atualizar-fork.ps1`, `medir-rodada.ps1` |
+| `recompzel/` | Nossas ferramentas: `instalar.ps1`, `build-game.ps1`, `post-install.ps1`, `launcher.ps1`, `medir-rodada.ps1` |
 | `gpu/vk/` | Backend Vulkan: upscalers, geração de quadros (`vk_framegen.cpp`, `vk_fsr4fg.cpp`), menu (`vk_menu.cpp`) e tradução (`vk_lang.h`) |
 | `host/nn_audio.c` | O áudio: mixer, reverberação, Delay e Aux |
 | `assets/lang/pt-BR.tsv` | Dicionário do menu em português (editável) |
