@@ -4137,6 +4137,7 @@ void memory_pool_created(uint64_t gpu, uint64_t size) {
     bg_cv.notify_one();
 }
 
+extern std::deque<std::map<uint64_t, Pool>::node_type> evicted_pools;   // (imports_give_back's, below)
 int memory_guest_imported(uint64_t lo, uint64_t hi) {
     std::lock_guard lk(pools_mu);
     auto it = imported.upper_bound(hi);   // (pools by lo: those starting below hi, the last ones checked first)
@@ -4146,6 +4147,11 @@ int memory_guest_imported(uint64_t lo, uint64_t hi) {
         if (it->second.hi + (1ull << 30) < lo) break;   // (imports are at most 1 GB: none further down reaches lo)
     }
     for (const auto& nh : retired_pools)
+        if (nh.mapped().memory && nh.mapped().lo < hi && lo < nh.mapped().hi) return 1;
+    // (hookshot, 11-13) and the idle pools given back (imports_give_back) whose memory is not freed yet: waiting for the GPU, or
+    // for their wait on AMD and Intel. Not counted, the game's freed pages under them were decommitted while the driver still
+    // had them imported, which faulted the device (hos_mem.c FreeMemoryPages)
+    for (const auto& nh : evicted_pools)
         if (nh.mapped().memory && nh.mapped().lo < hi && lo < nh.mapped().hi) return 1;
     return 0;
 }
