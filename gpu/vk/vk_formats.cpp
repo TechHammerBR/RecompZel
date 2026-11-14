@@ -149,7 +149,6 @@ bool has_stencil(VkFormat f) {
 int nvn_block_size(int format, int* bw, int* bh) {
     int w = 1, h = 1;
     int bpb = host->fmt_bpb(format, &w, &h);
-    const VkFormatInfo fi = vk_format(format);
     if (format >= 0x79 && format <= 0x94) {   // (the source blocks, whether or not the image holds them)
         const int i = (format - 0x79) % 14;
         bpb = 16, w = kAstcBw[i], h = kAstcBh[i];

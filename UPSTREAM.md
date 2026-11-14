@@ -1,13 +1,13 @@
 # O que é do Hookshot e o que é nosso
 
-O RecompZel é um fork de [NotRexed/Hookshot](https://github.com/NotRexed/Hookshot) (GPL-3.0). O remoto `upstream` aponta para ele. Para trazer as novidades: `recompzel\atualizar-fork.ps1` (mostra o que mudou) e `-Aplicar` (junta; se houver conflito, desfaz tudo).
+O RecompZel é um fork de [NotRexed/Hookshot](https://github.com/NotRexed/Hookshot) (GPL-3.0). O Hookshot saiu do GitHub e agora vive em git.notrexed.dev. As novidades de lá entram por cherry-pick, uma a uma, depois de conferidas.
 
 ## Arquivos novos (só existem aqui)
 
 | Caminho | Para que serve |
 |---|---|
 | `INSTALAR-RECOMPZEL.bat` | Entrada simples para o usuário |
-| `recompzel/*` | Instalador, build, atalhos pós-instalação, launcher, medição, atualização do fork |
+| `recompzel/*` | Instalador, build, atalhos pós-instalação, launcher, medição |
 | `gpu/vk/vk_lang.h`, `gpu/vk/vk_lang_pt_br.inc` | Motor de tradução do menu e dicionário embutido |
 | `assets/lang/pt-BR.tsv`, `nx2/gen_lang.py` | Dicionário editável e gerador do `.inc` |
 | `assets/recompzel.res`, `assets/recompzel_icon.png`, `builder/HookshotBuilder/RecompZel.ico` | Ícone e nome RecompZel |
@@ -22,7 +22,7 @@ O RecompZel é um fork de [NotRexed/Hookshot](https://github.com/NotRexed/Hooksh
 | `nx2/make_game.py` | Gera `RecompZel.exe` com o nosso ícone |
 | `builder/setup/*`, `builder/HookshotBuilder/*`, `builder/py/hookshot_builder/assets/*` | Nome, textos e ícone RecompZel no instalador |
 
-Observação: o diff contra o upstream também mostra arquivos removidos ou diferentes porque o upstream andou depois do nosso último `fetch`. Rode `recompzel\atualizar-fork.ps1 -Aplicar` para ficar em dia.
+O diff contra o upstream também mostra arquivos diferentes porque o upstream andou depois do nosso último `fetch`.
 
 ## Contribuições de fora
 

@@ -60,7 +60,7 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertIn("target && target_images_pool() ? target_images_pool() : images_pool()", image)
         pool = block(vma, "VmaPool target_images_pool()")
         self.assertIn('getenv("RX_VK_TARGET_BLOCKS")', pool)
-        self.assertIn("pi.blockSize = kImageBlock;", pool)
+        self.assertIn("pi.blockSize = image_block_bytes();", pool)
         self.assertIn("void vma_log_image_blocks()", vma)
 
     def test_the_dead_targets_are_swept_every_ten_presents(self):

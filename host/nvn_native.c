@@ -58,7 +58,6 @@ static float fl(const Ctx *c, int i) { float f; memcpy(&f, &c->vreg[i][0], 4); r
 #define F(i) fl(c, i)                                  /* the i-th float argument (v0-v7) */
 static void retf(Ctx *c, float f) { memset(c->vreg[0], 0, 16); memcpy(&c->vreg[0][0], &f, 4); }
 static uint64_t h2g(const void *p) { return p ? (uint64_t)((const uint8_t *)p - A64_MEM) : 0; }
-static void *g2h(uint64_t a) { return a ? gw(a, NVN_OBJ_MIN) : NULL; }
 #define RETP(p) RET(h2g(p))
 
 static int nvn_log_on(void) { static int v = -1; if (v < 0) v = getenv("HOS_NVN_LOG_OBJECTS") != NULL; return v; }

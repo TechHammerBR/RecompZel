@@ -206,18 +206,18 @@ void hos_update_check(void) {
                             GetFileAttributesW(wbuilder) != INVALID_FILE_ATTRIBUTES;
     if (has_builder)
         _snwprintf(text, 2048,
-                   L"A new version of Hookshot is out: %ls (this game is %ls).\n\n"
-                   L"Update now? The game closes, and Hookshot Builder downloads the new version and builds this game folder again from the "
+                   L"A new version of RecompZel is out: %ls (this game is %ls).\n\n"
+                   L"Update now? The game closes, and the builder downloads the new version and builds this game folder again from the "
                    L"game files it keeps. That takes about as long as your first build. Your saves and settings stay.\n\n"
                    L"Yes: update now\nNo: not now (asked again next time)\nCancel: skip this version",
                    wtag, whave);
     else
         _snwprintf(text, 2048,
-                   L"A new version of Hookshot is out: %ls (this game is %ls).\n\n"
-                   L"The Hookshot Builder that made this folder was not found, so it can't update by itself. Open the download page?\n\n"
+                   L"A new version of RecompZel is out: %ls (this game is %ls).\n\n"
+                   L"The builder that made this folder was not found, so it can't update by itself. Open the download page?\n\n"
                    L"Yes: open the page\nNo: not now (asked again next time)\nCancel: skip this version",
                    wtag, whave);
-    const int answer = MessageBoxW(NULL, text, L"Hookshot update", MB_YESNOCANCEL | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
+    const int answer = MessageBoxW(NULL, text, L"RecompZel update", MB_YESNOCANCEL | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
     if (answer == IDCANCEL) {
         wchar_t user[MAX_PATH + 16];
         _snwprintf(user, MAX_PATH + 16, L"%ls\\user", dir);
@@ -250,7 +250,7 @@ void hos_update_check(void) {
         fflush(stderr);
         ExitProcess(0);
     }
-    MessageBoxW(NULL, L"Hookshot Builder could not be started. The game starts as it is.", L"Hookshot update", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+    MessageBoxW(NULL, L"The builder could not be started. The game starts as it is.", L"RecompZel update", MB_OK | MB_ICONWARNING | MB_TOPMOST);
 }
 #elif defined(__linux__)
 #include "hos_paths.h"

@@ -46,11 +46,11 @@ bool image_pool_tried = false;
 // and that VRAM paging out was 2-9 fps in Kakariko and Hyrule Field. 128 MB on larger cards, as before. Decided once, at the
 // first pool (the device and VMA made, the driver's budget known); RX_VK_IMAGE_BLOCK_MB still sets it
 uint64_t image_block_bytes() {
-    static const uint64_t bytes = [] {
+    static const uint64_t bytes = []() -> uint64_t {
         if (const char* e = getenv("RX_VK_IMAGE_BLOCK_MB")) return (uint64_t)std::max(16, atoi(e)) << 20;
         uint64_t used = 0, allowed = 0;
         const bool small = vram_usage(&used, &allowed, nullptr) && allowed > 0 && allowed < (9ull << 30);
-        return (small ? 32ull : 128ull) << 20;
+        return (small ? uint64_t(32) : uint64_t(128)) << 20;
     }();
     return bytes;
 }

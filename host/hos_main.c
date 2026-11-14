@@ -367,7 +367,7 @@ static const char *saves_dir(const char *beside) {
         snprintf(note, sizeof note, "%.*s" SEP_S "saves-moved.txt", sep ? (int)(sep - beside) : 0, beside);
         FILE *f = fopen(note, "w");
         if (f) {
-            fprintf(f, "Hookshot's saves are now in\n%s\n\nThey moved there from the user folder that was here.\n", dir);
+            fprintf(f, "RecompZel's saves are now in\n%s\n\nThey moved there from the user folder that was here.\n", dir);
             fclose(f);
         }
         hos_log("saves: moved from %s to %s", beside, dir);
@@ -556,10 +556,8 @@ static void oot_edit_pouch(Ctx *c, int action) {
 
 /* The Inventory page (gpu/vk/oot_cheat_items.h): counts go to the menu twice a second, edits come back as actions. */
 #define OOT_ITEM_NAME(label, name, kind) name,
-#define OOT_ITEM_KIND(label, name, kind) kind,
 #define OOT_NO_SECTION(name)
 static const char *const oot_item_names[] = {OOT_CHEAT_ITEMS(OOT_NO_SECTION, OOT_ITEM_NAME)};
-static const unsigned char oot_item_kinds[] = {OOT_CHEAT_ITEMS(OOT_NO_SECTION, OOT_ITEM_KIND)};
 #define OOT_ITEM_COUNT (sizeof oot_item_names / sizeof oot_item_names[0])
 
 static int oot_item_count(Ctx *c, const char *name);
@@ -1356,7 +1354,7 @@ static void memory_notice(void) {
     int hos_sdl_load(void);
     hos_sdl_load();   /* (host/posix MessageBoxA shows it through the SDL already loaded) */
 #endif
-    MessageBoxA(NULL, text, "Hookshot", MB_OK | MB_ICONWARNING);
+    MessageBoxA(NULL, text, "RecompZel", MB_OK | MB_ICONWARNING);
 }
 #endif
 #ifdef _WIN32
@@ -1383,13 +1381,13 @@ static int narrow_paths_ok(int argc, char **argv) {
     if (!quiet) {
         wchar_t text[MAX_PATH * 2 + 640];
         _snwprintf(text, sizeof text / sizeof text[0],
-                   L"Hookshot can't open its files in this folder:\n\n%ls\n\n"
-                   L"%ls\n\nMove the game folder somewhere with a shorter name of plain letters and digits (for example C:\\Games\\Hookshot), "
+                   L"RecompZel can't open its files in this folder:\n\n%ls\n\n"
+                   L"%ls\n\nMove the game folder somewhere with a shorter name of plain letters and digits (for example C:\\Games\\RecompZel), "
                    L"or update Windows.",
                    w, GetACP() == CP_UTF8 ? L"The path is too long."
                                           : L"Its name has characters this Windows can only give the game from Windows 10 version 1903 on.");
         text[sizeof text / sizeof text[0] - 1] = 0;
-        MessageBoxW(NULL, text, L"Hookshot", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+        MessageBoxW(NULL, text, L"RecompZel", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
     }
     return 0;
 }

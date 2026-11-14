@@ -149,7 +149,8 @@ def main():
         cpp, exe = Path(directory) / "test.cpp", Path(directory) / "test.exe"
         cpp.write_text(fixture, encoding="utf-8")
         flags = ["-fsanitize=address,undefined", "-fno-sanitize-recover=all"] if args.sanitize else []
-        subprocess.run([args.cxx, "-std=c++20", "-O1", "-Wall", "-Werror",
+        # (_CRT_SECURE_NO_WARNINGS: the MSVC CRT's getenv deprecation, as the game's own Windows build passes)
+        subprocess.run([args.cxx, "-std=c++20", "-O1", "-Wall", "-Werror", "-D_CRT_SECURE_NO_WARNINGS",
                         "-Wno-missing-field-initializers", *flags,
                         "-I" + str(args.headers), str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True, timeout=10)
