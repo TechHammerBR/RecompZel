@@ -15,7 +15,8 @@ int main() {
     CHECK("saved values keep their shares", ur::percent(0) == 0 && ur::percent(1) == 100 && ur::percent(2) == 75 &&
                                                 ur::percent(3) == 67 && ur::percent(4) == 50);
     CHECK("Balanced and Ultra Performance", ur::percent(5) == 58 && ur::percent(6) == 33);
-    CHECK("a value past the row is Auto", ur::percent(10) == 0 && ur::percent(-1) == 0);   // (7 to 9: the slider)
+    CHECK("a value past the row is Auto", ur::percent(11) == 0 && ur::percent(-1) == 0);   // (7 to 9: the slider; 10: 25 %)
+    CHECK("25 % for weak GPUs", ur::percent(10) == 25);
     for (int v = 1; v < ur::kValues; v++) {
         const int k = (int)(ur::percent(v) * 12 / 100.0 + 0.5);
         CHECK("each share is a twelfth", k * 100 / 12 == ur::percent(v) || (k * 100 + 11) / 12 == ur::percent(v));
@@ -44,7 +45,8 @@ int main() {
                               ur::snap(DLSS, 4) == 4);
     CHECK("snap to the game's", ur::snap(GAME, 5) == 4 && ur::snap(GAME, 6) == 4 && ur::snap(GAME, 3) == 3 && ur::snap(GAME, 1) == 1);
     CHECK("DLAA keeps the value", ur::snap(DLAA, 5) == 5 && ur::snap(DLAA, 1) == 1);
-    CHECK("a value past the row snaps to Auto", ur::snap(GAME, 10) == 0 && ur::snap(DLSS, -3) == 0);
+    CHECK("a value past the row snaps to Auto", ur::snap(GAME, 11) == 0 && ur::snap(DLSS, -3) == 0);
+    CHECK("25 % to the game's own and DLSS: their smallest", ur::snap(GAME, 10) == 4 && ur::snap(DLSS, 10) == 6);
 
     // the Upscaler row: all three where DLSS runs, the game's own alone elsewhere
     CHECK("upscaler with DLSS", ur::step_upscaler(0, 1, true) == 1 && ur::step_upscaler(1, 1, true) == 2 &&
@@ -81,8 +83,10 @@ int main() {
         CHECK("FSR 3.1 steps: above Quality too", ur::step(ur::FSR3, 0, 1) == 1 && ur::step(ur::FSR3, 1, 1) == 9 &&
                                                     ur::step(ur::FSR3, 9, 1) == 8 && ur::step(ur::FSR3, 8, 1) == 2 &&
                                                     ur::step(ur::FSR3, 2, 1) == 3 && ur::step(ur::FSR3, 3, 1) == 5 &&
+                                                    ur::step(ur::FSR3, 4, 1) == 7 && ur::step(ur::FSR3, 7, 1) == 6 &&
                                                     ur::step(ur::FSR3, 6, 1) == 0 && ur::step(ur::FSR3, 0, -1) == 6 &&
-                                                    ur::snap(ur::FSR3, 2) == 2 && ur::snap(ur::FSR3, 7) == 4);
+                                                    ur::snap(ur::FSR3, 2) == 2 && ur::snap(ur::FSR3, 7) == 7 &&
+                                                    ur::snap(ur::FSR3, 10) == 6);
         CHECK("the model row waits with FSR 3.1", ur::model_fixed(ur::FSR3, false) && !ur::model_fixed(DLSS, false) &&
                                                     !ur::model_fixed(DLAA, false));
         CHECK("FSR 3.1 has a Render resolution", !ur::resolution_fixed(ur::FSR3));
@@ -135,15 +139,17 @@ int main() {
         CHECK("Off is not an engine", !ur::is_dlss(OFF) && !ur::is_fsr4(OFF) && !ur::full_scale(OFF) && !ur::scales_by_mode(OFF));
         CHECK("Off has a Render resolution", !ur::resolution_fixed(OFF));
         CHECK("the model row waits with Off", ur::model_fixed(OFF, false));
-        // its steps: Auto, 100, 75, 67, 50, 33
+        // its steps: Auto, 100, 75, 67, 50, 42, 33, 25 (42 and 25: recompzel, for weak GPUs)
         CHECK("off: Right", ur::step(OFF, 0, 1) == 1 && ur::step(OFF, 1, 1) == 2 && ur::step(OFF, 2, 1) == 3 &&
-                                ur::step(OFF, 3, 1) == 4 && ur::step(OFF, 4, 1) == 6 && ur::step(OFF, 6, 1) == 0);
-        CHECK("off: Left", ur::step(OFF, 0, -1) == 6 && ur::step(OFF, 6, -1) == 4 && ur::step(OFF, 1, -1) == 0);
+                                ur::step(OFF, 3, 1) == 4 && ur::step(OFF, 4, 1) == 7 && ur::step(OFF, 7, 1) == 6 &&
+                                ur::step(OFF, 6, 1) == 10 && ur::step(OFF, 10, 1) == 0);
+        CHECK("off: Left", ur::step(OFF, 0, -1) == 10 && ur::step(OFF, 10, -1) == 6 && ur::step(OFF, 6, -1) == 7 &&
+                               ur::step(OFF, 7, -1) == 4 && ur::step(OFF, 1, -1) == 0);
         CHECK("off from 58%", ur::step(OFF, 5, 1) == 4 && ur::step(OFF, 5, -1) == 3);
         CHECK("snap to Off", ur::snap(OFF, 0) == 0 && ur::snap(OFF, 1) == 1 && ur::snap(OFF, 2) == 2 && ur::snap(OFF, 6) == 6 &&
                                  ur::snap(OFF, 5) == 4 && ur::snap(OFF, 9) == 1 && ur::snap(OFF, 12) == 0);
         CHECK("DLSS's Ultra Performance kept by Off, the game's own takes 50%", ur::snap(OFF, 6) == 6 && ur::snap(GAME, 6) == 4);
-        CHECK("Off's 33% to DLSS stays Ultra Performance", ur::snap(DLSS, ur::step(OFF, 4, 1)) == 6);
+        CHECK("Off's 33% to DLSS stays Ultra Performance", ur::snap(DLSS, ur::step(OFF, 7, 1)) == 6);
         // the row by engine (step_engine): Off after FSR 4, and back to the game's own; from DLAA (DLSS's Native) too
         CHECK("Off by engine", ur::step_engine(ur::FSR4, 1, every) == OFF && ur::step_engine(ur::FSR4_AA, 1, every) == OFF &&
                                    ur::step_engine(OFF, 1, every) == GAME && ur::step_engine(GAME, -1, every) == OFF &&

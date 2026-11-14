@@ -459,6 +459,7 @@ const char* hn_resolution(int v, int variant) {
         case 67: return "FSR's Quality mode, 1.5x: the sharpest of AMD's upscaling modes.";
         case 58: return "FSR's Balanced mode, 1.7x.";
         case 50: return "FSR's Performance mode, 2x: faster, and softer.";
+        case 42: return "Between Performance and Ultra Performance: for weaker GPUs.";
         case 33: return "FSR's Ultra Performance mode, 3x: its fastest, and its softest.";
         default: return nullptr;   // (not one of FSR's steps: the row moves to one)
         }
@@ -466,6 +467,7 @@ const char* hn_resolution(int v, int variant) {
     if (up == ur::OFF) {   // (no upscaler: the 3D stretched to the output as it is drawn)
         if (!p) return "The game lowers it when the GPU is busy; the 3D is stretched from whatever size it draws.";
         if (p == 100) return "The 3D at the output's full size, not stretched: the sharpest, but its edges stay jagged.";
+        if (p == 25) return "A quarter of the output per side: the lightest for weak or integrated GPUs, and the blurriest.";
         return "A steady size, stretched to the output: lower is faster, and blurrier.";
     }
     if (!p) return "The game lowers it when the GPU is busy.";
