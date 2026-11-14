@@ -152,6 +152,9 @@ $STR['pt'] = @{
     lbl_summary = 'Resumo da ultima rodada'
     summary_ph = 'Aparece aqui quando voce fechar o jogo.'
     st_err = 'Algo deu errado'
+    st_blocked = 'O Windows bloqueou um arquivo do jogo'
+    now_blocked = 'O build terminou, mas o Windows nao deixou carregar o hookshot_vk.dll (codigo {0}). Sem ele o jogo nao usa a placa de video.'
+    next_blocked = 'Abra Seguranca do Windows > Controle de aplicativos e navegador > Controle Inteligente de Aplicativos. Se estiver Ativado, ele bloqueia arquivos compilados neste PC. Veja tambem o Historico de protecao.'
     now_err = 'O build encontrou um erro e pode ter parado.'
     next_err = 'Clique em "Copiar relatorio para suporte" e cole na conversa para receber ajuda.'
     st_ready = 'Pronto para jogar'
@@ -322,6 +325,9 @@ $STR['en'] = @{
     lbl_summary = 'Summary of the last round'
     summary_ph = 'Shows up here when you close the game.'
     st_err = 'Something went wrong'
+    st_blocked = 'Windows blocked a game file'
+    now_blocked = 'The build finished, but Windows did not let hookshot_vk.dll load (code {0}). Without it the game does not use the graphics card.'
+    next_blocked = 'Open Windows Security > App & browser control > Smart App Control. If it is On, it blocks files compiled on this PC. Check Protection history too.'
     now_err = 'The build hit an error and may have stopped.'
     next_err = 'Click "Copy report for support" and paste it into the chat to get help.'
     st_ready = 'Ready to play'
@@ -1219,7 +1225,7 @@ function Update-View {
     $g = $script:g
     $lines = Read-LogLines
     $stage = 'inicio'; $totalFiles = [int]$g.totalFiles; $filesDone = 0
-    $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $done = $false; $shEnd = $false; $shDone = -1; $shAll = 0; $shLeft = -1
+    $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $blocked = ''; $done = $false; $shEnd = $false; $shDone = -1; $shAll = 0; $shLeft = -1
     foreach ($l in $lines) {
         if ($l -match '^@@stage\s+(\S+)') { $stage = $Matches[1]; if ($stage -eq 'shaders') { $shEnd = $false; $prog = -1 } }
         if ($l -match '^(done shaders|the shaders were not prepared now|\[script\] codigo de saida)') { $shEnd = $true }
@@ -1231,6 +1237,10 @@ function Update-View {
         if ($l -match '^@@eta\s+(\d+)') { $eta = [int]$Matches[1] }
         # (os shaders: quantos pipelines prontos, de quantos, e o tempo que o proprio build estima)
         if ($l -match 'predicted pipelines:\s+(\d+) of (\d+) pipelines in \d+ s, about (\d+) s left') { $shDone = [int]$Matches[1]; $shAll = [int]$Matches[2]; $shLeft = [int]$Matches[3] }
+        # (recompzel) o Windows (Controle Inteligente de Aplicativos / App Control: 4551, politica: 1260, antivirus: 225) barrou o
+        # hookshot_vk.dll: o build terminou, mas o jogo nao abre o Vulkan assim. Mostra a causa em vez de um erro generico
+        if ($l -match 'hookshot_vk\.dll did not load \((4551|1260|225)\)') { $blocked = $Matches[1] }
+        if ($l -match '^error no usable Vulkan here') { continue }   # (a linha seguinte ao bloqueio acima, ou um PC sem Vulkan: o build seguiu)
         if (($l -match '^(error|fatal)\b') -or ($l -match 'Traceback') -or ($l -match '(?i)Terminou com codigo [1-9]') -or ($l -match '^compiled in .*,\s*[1-9]\d* failed')) { $err += $l }
         if ($l -match '(?i)^@@done|^@@stage\s+done|^the build took|build complete|build finished') { $done = $true }
     }
@@ -1272,7 +1282,11 @@ function Update-View {
     }
 
     # status, "agora" e "proximo passo" em linguagem simples
-    if ($err.Count -gt 0) {
+    if ($blocked) {
+        $txtStatus.Text = T 'st_blocked'; $txtStatus.Foreground = '#FF7A7A'
+        $txtNow.Text = (T 'now_blocked') -f $blocked
+        $txtNext.Text = T 'next_blocked'
+    } elseif ($err.Count -gt 0) {
         $txtStatus.Text = T 'st_err'; $txtStatus.Foreground = '#FF7A7A'
         $txtNow.Text = T 'now_err'
         $txtNext.Text = T 'next_err'
