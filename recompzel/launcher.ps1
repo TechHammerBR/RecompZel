@@ -76,6 +76,11 @@ $STR['pt'] = @{
     ram_tip = 'RX_VK_PCACHE_LOAD=0'
     par = 'Traduzir os comandos em varias threads (mais FPS em cidades, como o Burgo de Hyrule)'
     par_tip = 'RX_VK_PARALLEL: 4 threads em processador de 16 threads ou mais, 2 a 3 nos menores. No Burgo de Hyrule (i7-11700F): media de ~39 para ~44 FPS, pior momento de 14 para 31. Desligado por padrao: no Hookshot ja deu quadro preto de um instante (Kakariko). Se aparecer, desligue.'
+    rec = 'Mandar os comandos ao driver de video numa thread separada (teste: para processadores de 6 nucleos)'
+    sim = 'Simular processador de 6 nucleos e 12 threads (teste, como um Ryzen 5 5600G)'
+    sim_tip = 'O jogo abre preso a 6 nucleos com 12 threads deste PC (os primeiros), como num processador 6/12. Os nucleos continuam os deste PC, entao o resultado e melhor que num 5600G de verdade, mas a divisao do trabalho entre as threads e a mesma. Para medir otimizacoes de CPU. Volta a ficar desmarcada ao abrir o launcher.'
+    sim_na = 'Este PC tem menos de 12 threads: nao ha o que simular.'
+    rec_tip = 'RX_VK_RECORDER=thread: as chamadas ao driver Vulkan saem da thread que traduz os comandos e vao para uma thread propria, que roda ao mesmo tempo. O totk-pc-recomp deixa isso ligado por padrao. Nao funciona junto com a traducao em varias threads: marcar uma desmarca a outra. Desligado por padrao.'
     mem_now = 'Jogo agora: RAM {0}, VRAM {1}'
     fsr = 'Usar AMD FSR 4 (mais quadros por segundo)'
     fsr_off = 'Desligado. Se ligar, o launcher cuida do resto.'
@@ -147,6 +152,9 @@ $STR['pt'] = @{
     lbl_summary = 'Resumo da ultima rodada'
     summary_ph = 'Aparece aqui quando voce fechar o jogo.'
     st_err = 'Algo deu errado'
+    st_blocked = 'O Windows bloqueou um arquivo do jogo'
+    now_blocked = 'O build terminou, mas o Windows nao deixou carregar o hookshot_vk.dll (codigo {0}). Sem ele o jogo nao usa a placa de video.'
+    next_blocked = 'Abra Seguranca do Windows > Controle de aplicativos e navegador > Controle Inteligente de Aplicativos. Se estiver Ativado, ele bloqueia arquivos compilados neste PC. Veja tambem o Historico de protecao.'
     now_err = 'O build encontrou um erro e pode ter parado.'
     next_err = 'Clique em "Copiar relatorio para suporte" e cole na conversa para receber ajuda.'
     st_ready = 'Pronto para jogar'
@@ -241,6 +249,11 @@ $STR['en'] = @{
     ram_tip = 'RX_VK_PCACHE_LOAD=0'
     par = 'Translate the commands on several threads (more FPS in towns, such as Hyrule Castle Town)'
     par_tip = 'RX_VK_PARALLEL: 4 threads on a CPU with 16 threads or more, 2 to 3 on smaller ones. In Castle Town market (i7-11700F): from ~39 to ~44 FPS on average, the worst moment from 14 to 31. Off by default: Hookshot once saw a one-frame black scene with it (Kakariko). If you see one, turn it off.'
+    rec = 'Send the commands to the video driver on a separate thread (test: for 6-core CPUs)'
+    sim = 'Simulate a 6-core, 12-thread CPU (test, like a Ryzen 5 5600G)'
+    sim_tip = 'The game starts held to 6 cores with 12 threads of this PC (the first ones), as on a 6/12 CPU. The cores are still this PC''s, so the result is better than on a real 5600G, but the work is split between threads the same way. For measuring CPU optimizations. Unchecked again each time the launcher opens.'
+    sim_na = 'This PC has fewer than 12 threads: nothing to simulate.'
+    rec_tip = 'RX_VK_RECORDER=thread: the Vulkan driver calls leave the thread that translates the commands and run on a thread of their own, at the same time. totk-pc-recomp has this on by default. It does not work together with translating on several threads: checking one unchecks the other. Off by default.'
     mem_now = 'Game now: RAM {0}, VRAM {1}'
     fsr = 'Use AMD FSR 4 (higher frame rate)'
     fsr_off = 'Off. If you turn it on, the launcher handles the rest.'
@@ -312,6 +325,9 @@ $STR['en'] = @{
     lbl_summary = 'Summary of the last round'
     summary_ph = 'Shows up here when you close the game.'
     st_err = 'Something went wrong'
+    st_blocked = 'Windows blocked a game file'
+    now_blocked = 'The build finished, but Windows did not let hookshot_vk.dll load (code {0}). Without it the game does not use the graphics card.'
+    next_blocked = 'Open Windows Security > App & browser control > Smart App Control. If it is On, it blocks files compiled on this PC. Check Protection history too.'
     now_err = 'The build hit an error and may have stopped.'
     next_err = 'Click "Copy report for support" and paste it into the chat to get help.'
     st_ready = 'Ready to play'
@@ -468,6 +484,8 @@ $xaml = @'
           <TextBlock x:Name="txtFgT" Foreground="#E6F2EC" FontSize="13"/>
           <ComboBox x:Name="cbFg" Margin="0,6,0,8" Height="26"/>
           <CheckBox x:Name="chkPar" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
+          <CheckBox x:Name="chkRec" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
+          <CheckBox x:Name="chkSim" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkRam" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkLinear" Foreground="#E6F2EC" FontSize="12" Margin="0,0,0,6"/>
           <CheckBox x:Name="chkDiag" Foreground="#E6F2EC" FontSize="12"/>
@@ -554,7 +572,7 @@ $xaml = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
 try { if (Test-Path (Join-Path $PSScriptRoot 'recompzel.ico')) { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri](Join-Path $PSScriptRoot 'recompzel.ico')) } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnChooseDir','txtOutDir','btnReport','btnUpdate','cbMem','txtMemT','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkPar','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary','chkLinear') {
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnChooseDir','txtOutDir','btnReport','btnUpdate','cbMem','txtMemT','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkPar','chkRec','chkSim','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary','chkLinear') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -624,6 +642,9 @@ function Apply-Language {
         $txtVramT.Text = T 'vram_t'; $txtMeshT.Text = T 'mesh_t'; $txtUpT.Text = T 'up_t'; $txtMemT.Text = T 'mem_t'; $txtFgT.Text = T 'fg_t'
         $tbRam = New-Object System.Windows.Controls.TextBlock; $tbRam.Text = (T 'ram_save'); $tbRam.TextWrapping = 'Wrap'; $chkRam.Content = $tbRam; $chkRam.ToolTip = (T 'ram_tip')
         $tbPar = New-Object System.Windows.Controls.TextBlock; $tbPar.Text = (T 'par'); $tbPar.TextWrapping = 'Wrap'; $chkPar.Content = $tbPar; $chkPar.ToolTip = (T 'par_tip')
+        $tbRec = New-Object System.Windows.Controls.TextBlock; $tbRec.Text = (T 'rec'); $tbRec.TextWrapping = 'Wrap'; $chkRec.Content = $tbRec; $chkRec.ToolTip = (T 'rec_tip')
+        $tbSim = New-Object System.Windows.Controls.TextBlock; $tbSim.Text = (T 'sim'); $tbSim.TextWrapping = 'Wrap'; $chkSim.Content = $tbSim
+        if ([Environment]::ProcessorCount -ge 12) { $chkSim.ToolTip = (T 'sim_tip'); $chkSim.IsEnabled = $true } else { $chkSim.ToolTip = (T 'sim_na'); $chkSim.IsChecked = $false; $chkSim.IsEnabled = $false }
         $chkDiag.Content = T 'diag'; $chkFsr.Content = T 'fsr'; $chkDlss.Content = T 'dlss'; $chkDsr.Content = T 'dsr'
         $tbLin = New-Object System.Windows.Controls.TextBlock; $tbLin.Text = (T 'linear'); $tbLin.TextWrapping = 'Wrap'; $chkLinear.Content = $tbLin
         $txtTechT.Text = T 'tech_t'; $txtTechIntro.Text = T 'tech_intro'; $ttlDsr.Text = T 'tn_dsr'; $ttlDlss.Text = T 'tn_dlss'; $ttlFsr.Text = T 'tn_fsr'; $btnTechAll.Content = T 'tech_all'; $chkSafe.Content = T 'safe'
@@ -663,6 +684,7 @@ try {
         if ($c.diag -eq $true) { $chkDiag.IsChecked = $true }
         if ($c.ramSave -eq $true) { $chkRam.IsChecked = $true }
         if ($c.parallel -eq $true) { $chkPar.IsChecked = $true }
+        if ($c.recorder -eq $true -and -not $chkPar.IsChecked) { $chkRec.IsChecked = $true }
         if ($c.fsr -eq $true) { $chkFsr.IsChecked = $true }
         if ($c.dlss -eq $true) { $chkDlss.IsChecked = $true }
         if ($c.dsr -eq $true) { $chkDsr.IsChecked = $true }
@@ -678,7 +700,7 @@ $cbFg.SelectedIndex = 0; $txtFgT.Visibility = 'Collapsed'; $cbFg.Visibility = 'C
 function Save-Settings {
     if ($script:loading) { return }
     try {
-        @{ vramMb = $vramOptions[[math]::Max(0, $cbVram.SelectedIndex)].Mb; vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; memIndex = $cbMem.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; ramSave = [bool]$chkRam.IsChecked; parallel = [bool]$chkPar.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; dlssLinear = [bool]$chkLinear.IsChecked; lang = $script:lang } |
+        @{ vramMb = $vramOptions[[math]::Max(0, $cbVram.SelectedIndex)].Mb; vramIndex = $cbVram.SelectedIndex; uploadIndex = $cbUpload.SelectedIndex; memIndex = $cbMem.SelectedIndex; fgIndex = $cbFg.SelectedIndex; diag = [bool]$chkDiag.IsChecked; ramSave = [bool]$chkRam.IsChecked; parallel = [bool]$chkPar.IsChecked; recorder = [bool]$chkRec.IsChecked; fsr = [bool]$chkFsr.IsChecked; dlss = [bool]$chkDlss.IsChecked; dsr = [bool]$chkDsr.IsChecked; safe = [bool]$chkSafe.IsChecked; dlssLinear = [bool]$chkLinear.IsChecked; lang = $script:lang } |
             ConvertTo-Json | Set-Content $Cfg -Encoding ASCII
     } catch {}
 }
@@ -797,7 +819,9 @@ $cbMem.Add_SelectionChanged({ Save-Settings })
 $cbFg.Add_SelectionChanged({ Save-Settings })
 $chkDiag.Add_Click({ Save-Settings })
 $chkRam.Add_Click({ Save-Settings })
-$chkPar.Add_Click({ Save-Settings })
+# (recompzel) o motor recusa RX_VK_RECORDER=thread com RX_VK_PARALLEL>=2: as duas caixas nao ficam marcadas juntas
+$chkPar.Add_Click({ if ($chkPar.IsChecked) { $chkRec.IsChecked = $false }; Save-Settings })
+$chkRec.Add_Click({ if ($chkRec.IsChecked) { $chkPar.IsChecked = $false }; Save-Settings })
 $chkLinear.Add_Click({ Save-Settings })
 $chkFsr.Add_Click({ Save-Settings; Update-Fsr-Text; Update-Tech })
 $chkDlss.Add_Click({ Save-Settings; Set-FgChoice ([bool]$chkDlss.IsChecked); Update-Dlss-Text; Update-Tech })
@@ -1201,7 +1225,7 @@ function Update-View {
     $g = $script:g
     $lines = Read-LogLines
     $stage = 'inicio'; $totalFiles = [int]$g.totalFiles; $filesDone = 0
-    $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $done = $false; $shEnd = $false; $shDone = -1; $shAll = 0; $shLeft = -1
+    $planTotal = 0; $prog = -1; $eta = -1; $err = @(); $blocked = ''; $done = $false; $shEnd = $false; $shDone = -1; $shAll = 0; $shLeft = -1
     foreach ($l in $lines) {
         if ($l -match '^@@stage\s+(\S+)') { $stage = $Matches[1]; if ($stage -eq 'shaders') { $shEnd = $false; $prog = -1 } }
         if ($l -match '^(done shaders|the shaders were not prepared now|\[script\] codigo de saida)') { $shEnd = $true }
@@ -1213,6 +1237,10 @@ function Update-View {
         if ($l -match '^@@eta\s+(\d+)') { $eta = [int]$Matches[1] }
         # (os shaders: quantos pipelines prontos, de quantos, e o tempo que o proprio build estima)
         if ($l -match 'predicted pipelines:\s+(\d+) of (\d+) pipelines in \d+ s, about (\d+) s left') { $shDone = [int]$Matches[1]; $shAll = [int]$Matches[2]; $shLeft = [int]$Matches[3] }
+        # (recompzel) o Windows (Controle Inteligente de Aplicativos / App Control: 4551, politica: 1260, antivirus: 225) barrou o
+        # hookshot_vk.dll: o build terminou, mas o jogo nao abre o Vulkan assim. Mostra a causa em vez de um erro generico
+        if ($l -match 'hookshot_vk\.dll did not load \((4551|1260|225)\)') { $blocked = $Matches[1] }
+        if ($l -match '^error no usable Vulkan here') { continue }   # (a linha seguinte ao bloqueio acima, ou um PC sem Vulkan: o build seguiu)
         if (($l -match '^(error|fatal)\b') -or ($l -match 'Traceback') -or ($l -match '(?i)Terminou com codigo [1-9]') -or ($l -match '^compiled in .*,\s*[1-9]\d* failed')) { $err += $l }
         if ($l -match '(?i)^@@done|^@@stage\s+done|^the build took|build complete|build finished') { $done = $true }
     }
@@ -1254,7 +1282,11 @@ function Update-View {
     }
 
     # status, "agora" e "proximo passo" em linguagem simples
-    if ($err.Count -gt 0) {
+    if ($blocked) {
+        $txtStatus.Text = T 'st_blocked'; $txtStatus.Foreground = '#FF7A7A'
+        $txtNow.Text = (T 'now_blocked') -f $blocked
+        $txtNext.Text = T 'next_blocked'
+    } elseif ($err.Count -gt 0) {
         $txtStatus.Text = T 'st_err'; $txtStatus.Foreground = '#FF7A7A'
         $txtNow.Text = T 'now_err'
         $txtNext.Text = T 'next_err'
@@ -1422,9 +1454,14 @@ $btnPlay.Add_Click({
     # (recompzel) a traducao dos comandos (o replay) em varias threads: 4 com 16 threads logicas ou mais, 2 a 3 nos menores.
     # Nao no modo seguro. Desmarcada, a variavel sai (vale mais que um RX_VK_PARALLEL herdado de um .bat de teste)
     if ($chkPar.IsChecked -and -not $chkSafe.IsChecked) {
-        $parN = [math]::Min(4, [math]::Max(2, [int][math]::Floor([Environment]::ProcessorCount / 4)))
+        $cpuN = if ($chkSim.IsChecked) { 12 } else { [Environment]::ProcessorCount }   # (o teste 6/12: as threads de um processador 6/12)
+        $parN = [math]::Min(4, [math]::Max(2, [int][math]::Floor($cpuN / 4)))
         [Environment]::SetEnvironmentVariable('RX_VK_PARALLEL', [string]$parN, 'Process')
     } else { [Environment]::SetEnvironmentVariable('RX_VK_PARALLEL', $null, 'Process') }
+    # (recompzel) as chamadas ao driver numa thread propria (RX_VK_RECORDER=thread, opt-in do Hookshot; ligado por padrao no
+    # totk-pc-recomp). So sem a traducao em varias threads, que o motor recusaria junto, e fora do modo seguro
+    if ($chkRec.IsChecked -and -not $chkPar.IsChecked -and -not $chkSafe.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_RECORDER', 'thread', 'Process') }
+    else { [Environment]::SetEnvironmentVariable('RX_VK_RECORDER', $null, 'Process') }
     if ($chkDiag.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', 'da7a7ab28b8e73d9', 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_WATCH_PROG', $null, 'Process') }
     # FSR 4: so liga quando o jogo foi construido com ele e o componente esta instalado e conferido
@@ -1483,7 +1520,7 @@ $btnPlay.Add_Click({
     }
     # a nota da rodada fica sempre em portugues (e lida pelo medir-rodada.ps1)
     $meshNow = Read-Mesh
-    $script:roundNote = ('VRAM={0}MB UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8} PARALLEL={9}' -f $vramOptions[$cbVram.SelectedIndex].Mb, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked, [Environment]::GetEnvironmentVariable('RX_VK_PARALLEL', 'Process'))
+    $script:roundNote = ('VRAM={0}MB UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8} PARALLEL={9} RECORDER={10} SIM6_12={11}' -f $vramOptions[$cbVram.SelectedIndex].Mb, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked, [Environment]::GetEnvironmentVariable('RX_VK_PARALLEL', 'Process'), [Environment]::GetEnvironmentVariable('RX_VK_RECORDER', 'Process'), [bool]$chkSim.IsChecked)
     $script:gameOut = Get-OutDir
     # (recompzel) shaders deixados de fora: pular-shaders.txt na pasta do jogo (chaves em hex). Hoje: 7dfc7a637c93e49e, o
     # brilho vermelho da sala das teias da Arvore Deku, que sai com um triangulo branco na AMD (le o identificador errado de
@@ -1491,7 +1528,24 @@ $btnPlay.Add_Click({
     $skipFile = Join-Path $exe.DirectoryName 'pular-shaders.txt'
     if (-not (Test-Path -LiteralPath $skipFile)) { [IO.File]::WriteAllText($skipFile, "7dfc7a637c93e49e`n") }
     [Environment]::SetEnvironmentVariable('RX_VK_SKIP_FILE', $skipFile, 'Process')
-    $script:gameProc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
+    # (recompzel) teste 6/12: o jogo nasce com a afinidade do launcher (o Windows a passa ao processo filho), entao o launcher se
+    # prende aos 12 primeiros processadores logicos so enquanto abre o jogo, e volta. Assim o jogo ja comeca preso (o motor le a
+    # mascara ao iniciar: o nucleo reservado da traducao, as threads que esperam girando). Os 12 primeiros sao 6 nucleos com as
+    # duas threads de cada: os nucleos de desempenho nos Intel hibridos, os primeiros de um Ryzen
+    $simMask = [IntPtr]0xFFF
+    $me = [System.Diagnostics.Process]::GetCurrentProcess()
+    $oldMask = $me.ProcessorAffinity
+    $sim = [bool]$chkSim.IsChecked -and [Environment]::ProcessorCount -ge 12
+    # (e o proprio jogo se prende logo na primeira instrucao, HOS_AFFINITY em host/hos_main.c: um processo aberto pelo Start-Process
+    # nem sempre herda a afinidade do launcher; no log do jogo: "affinity: the game is held to logical processors 0xfff")
+    if ($sim) { [Environment]::SetEnvironmentVariable('HOS_AFFINITY', '0xFFF', 'Process') } else { [Environment]::SetEnvironmentVariable('HOS_AFFINITY', $null, 'Process') }
+    try {
+        if ($sim) { $me.ProcessorAffinity = $simMask }
+        $script:gameProc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru
+        if ($sim) { try { $script:gameProc.ProcessorAffinity = $simMask } catch {} }   # (e confirmado no processo do jogo)
+    } finally {
+        if ($sim) { try { $me.ProcessorAffinity = $oldMask } catch {} }
+    }
     $txtHelp.Text = T 'started'
 })
 

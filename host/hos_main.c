@@ -69,6 +69,23 @@ static void no_power_throttling(void) {
         set(GetCurrentProcess(), 4, &s, sizeof s);
     }
 }
+/* (recompzel) HOS_AFFINITY=<mask> (the launcher's 6/12 test sets 0xFFF): the whole process held to those logical processors from
+   its first instruction, before anything reads the mask (the reserved replay core, sleep_ns's pollers, hos_spin_ns). The launcher
+   also starts the game with that affinity, but a process started through ShellExecute is not sure to inherit it. Set after
+   load_hookshot_env, said in the log once the log is open */
+static unsigned long long affinity_asked;
+static int affinity_ok;
+static void apply_affinity(void) {
+    const char *e = getenv("HOS_AFFINITY");
+    if (!e || !*e) return;
+    unsigned long long m = strtoull(e, NULL, 0);
+    DWORD_PTR proc = 0, sys = 0;
+    if (!m || !GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys)) return;
+    m &= (unsigned long long)sys;
+    if (!m) return;
+    affinity_asked = m;
+    affinity_ok = SetProcessAffinityMask(GetCurrentProcess(), (DWORD_PTR)m) != 0;
+}
 #endif
 
 int hos_game_is_mkw(void) { return !strcmp(hos_main_build_id, "d00e4f399e411d0613aa8d26b1c02fef"); }
@@ -1384,6 +1401,7 @@ static int game_main(int argc, char **argv) {
 #ifdef _WIN32
     if (!narrow_paths_ok(argc, argv)) return 1;
     load_hookshot_env();
+    apply_affinity();   /* (recompzel: HOS_AFFINITY, before anything reads the process's mask) */
 #endif
     occlusion_switch();
     {
@@ -1603,6 +1621,9 @@ static int game_main(int argc, char **argv) {
 #ifdef _WIN32
     timeBeginPeriod(1);   /* 1 ms timer resolution: the 60 Hz vsync and the game's frame pacing sleep in short steps */
     no_power_throttling();
+    if (affinity_asked)
+        hos_log("affinity: the game %s logical processors %#llx (HOS_AFFINITY)", affinity_ok ? "is held to" : "could not be held to",
+                affinity_asked);
 #endif
     void hos_display_start(void);
     hos_display_start();  /* the game's window; HOS_HEADLESS=1 for none */

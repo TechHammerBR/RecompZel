@@ -29,8 +29,9 @@ inline bool scales_by_mode(int upscaler) { return upscaler == DLSS || upscaler =
 /// opts.resolution: 0 Auto (the game's dynamic resolution), else a share of the output in percent. 1 to 4 are the values from
 /// before (100, 75, 67, 50: saved options keep their meaning); 5 and 6 came with DLSS's Balanced and Ultra Performance. Each
 /// is a twelfth of the output (vk_menu.cpp twelfths): 8/12, 7/12, 6/12 and 4/12 are DLSS's own ratios. 7 to 9
-/// came with the render-resolution slider (step_render): 5/12, 10/12 and 11/12
-constexpr int kPercent[] = {0, 100, 75, 67, 50, 58, 33, 42, 83, 92};
+/// came with the render-resolution slider (step_render): 5/12, 10/12 and 11/12. 10 (recompzel): 3/12, for weak GPUs with Off
+/// (ACNHRecomp #82 gave its weak GPUs 360p to 480p: 25 % of a 1440p picture is 360p, of a 1080p one 270p)
+constexpr int kPercent[] = {0, 100, 75, 67, 50, 58, 33, 42, 83, 92, 25};
 constexpr int kValues = sizeof kPercent / sizeof kPercent[0];
 inline int percent(int v) { return v > 0 && v < kValues ? kPercent[v] : 0; }
 
@@ -44,8 +45,10 @@ inline int percent(int v) { return v > 0 && v < kValues ? kPercent[v] : 0; }
 /// output), then the slider's stops, 92 % down to 33 % (players asked for sharper than Quality without going to full size)
 constexpr int kGameSteps[] = {0, 1, 2, 3, 4};
 constexpr int kDlssSteps[] = {0, 3, 5, 4, 6};
-constexpr int kFsr3Steps[] = {0, 1, 9, 8, 2, 3, 5, 4, 6};
-constexpr int kOffSteps[] = {0, 1, 2, 3, 4, 6};
+/// (recompzel) weak GPUs: FSR 3.1 also 42 % (between Performance and Ultra Performance, inside AMD's 3x); Off also 42 % and 25 %
+/// (a plain stretch takes any size: 25 % is 1/16 of the pixels)
+constexpr int kFsr3Steps[] = {0, 1, 9, 8, 2, 3, 5, 4, 7, 6};
+constexpr int kOffSteps[] = {0, 1, 2, 3, 4, 7, 6, 10};
 inline const int* steps(int upscaler, int& n) {
     if (upscaler == FSR3) return n = sizeof kFsr3Steps / sizeof kFsr3Steps[0], kFsr3Steps;
     if (scales_by_mode(upscaler)) return n = sizeof kDlssSteps / sizeof kDlssSteps[0], kDlssSteps;

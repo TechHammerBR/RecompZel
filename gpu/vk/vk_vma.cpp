@@ -41,7 +41,19 @@ VmaPool image_pool = VK_NULL_HANDLE;
 bool image_pool_tried = false;
 // (RX_VK_IMAGE_BLOCK_MB=<n>, 16 and up: the block's size. VMA keeps one block empty for the next image, 128 MB of VRAM that a 64 MB block
 // would halve, at twice the memory objects: the driver allows ~4096, the imported pools take ~2400)
-const uint64_t kImageBlock = (getenv("RX_VK_IMAGE_BLOCK_MB") ? (uint64_t)std::max(16, atoi(getenv("RX_VK_IMAGE_BLOCK_MB"))) : 128u) << 20;
+// (recompzel) 32 MB where the driver allows under 9 GB (8 GB cards): Longshot (milal, c0ddfc1) measured 1.1-2.2 GB "free in the
+// blocks" with 128 MB ones on an 8 GB card, 0.8 GB with 32 MB (~110 blocks for 3.5 GB of images, far from the ~4096 objects),
+// and that VRAM paging out was 2-9 fps in Kakariko and Hyrule Field. 128 MB on larger cards, as before. Decided once, at the
+// first pool (the device and VMA made, the driver's budget known); RX_VK_IMAGE_BLOCK_MB still sets it
+uint64_t image_block_bytes() {
+    static const uint64_t bytes = [] {
+        if (const char* e = getenv("RX_VK_IMAGE_BLOCK_MB")) return (uint64_t)std::max(16, atoi(e)) << 20;
+        uint64_t used = 0, allowed = 0;
+        const bool small = vram_usage(&used, &allowed, nullptr) && allowed > 0 && allowed < (9ull << 30);
+        return (small ? 32ull : 128ull) << 20;
+    }();
+    return bytes;
+}
 
 // (hookshot) and the render targets' images in blocks of their own (texture_get's for a target: OoT's transient ones, made and let go
 // all the time). In the same blocks as the textures that stay, each one gone left a hole beside a texture that kept its block: the
@@ -69,9 +81,9 @@ VmaPool target_images_pool() {
     if (vmaFindMemoryTypeIndexForImageInfo(vma, &rep, &ai, &type) != VK_SUCCESS) return VK_NULL_HANDLE;
     VmaPoolCreateInfo pi{};
     pi.memoryTypeIndex = type;
-    pi.blockSize = kImageBlock;
+    pi.blockSize = image_block_bytes();
     if (vmaCreatePool(vma, &pi, &target_image_pool) != VK_SUCCESS) target_image_pool = VK_NULL_HANDLE;
-    logf("vk: render targets' images from blocks of their own (%llu MB, memory type %u)%s", (unsigned long long)(kImageBlock >> 20),
+    logf("vk: render targets' images from blocks of their own (%llu MB, memory type %u)%s", (unsigned long long)(image_block_bytes() >> 20),
          type, target_image_pool ? "" : ": not made");
     return target_image_pool;
 }
@@ -93,9 +105,9 @@ VmaPool images_pool() {
     if (vmaFindMemoryTypeIndexForImageInfo(vma, &rep, &ai, &type) != VK_SUCCESS) return VK_NULL_HANDLE;
     VmaPoolCreateInfo pi{};
     pi.memoryTypeIndex = type;
-    pi.blockSize = kImageBlock;
+    pi.blockSize = image_block_bytes();
     if (vmaCreatePool(vma, &pi, &image_pool) != VK_SUCCESS) image_pool = VK_NULL_HANDLE;
-    logf("vk: images from a pool of %llu MB blocks (memory type %u)%s", (unsigned long long)(kImageBlock >> 20), type,
+    logf("vk: images from a pool of %llu MB blocks (memory type %u)%s", (unsigned long long)(image_block_bytes() >> 20), type,
          image_pool ? "" : ": not made");
     return image_pool;
 }
@@ -123,9 +135,9 @@ VmaPool textures_pool() {
     if (vmaFindMemoryTypeIndexForImageInfo(vma, &rep, &ai, &type) != VK_SUCCESS) return VK_NULL_HANDLE;
     VmaPoolCreateInfo pi{};
     pi.memoryTypeIndex = type;
-    pi.blockSize = kImageBlock;
+    pi.blockSize = image_block_bytes();
     if (vmaCreatePool(vma, &pi, &texture_pool) != VK_SUCCESS) texture_pool = VK_NULL_HANDLE;
-    logf("vk: textures from a pool of their own, %llu MB blocks (RX_VK_COMPACT)%s", (unsigned long long)(kImageBlock >> 20),
+    logf("vk: textures from a pool of their own, %llu MB blocks (RX_VK_COMPACT)%s", (unsigned long long)(image_block_bytes() >> 20),
          texture_pool ? "" : ": not made");
     return texture_pool;
 }
