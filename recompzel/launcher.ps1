@@ -5,6 +5,7 @@
 # A pasta do jogo e C:\Games\RecompZel. Se ainda existir so a antiga (C:\Games\HookshotDev), ela continua sendo usada.
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
+Add-Type -AssemblyName System.Windows.Forms   # FolderBrowserDialog (escolher a pasta de instalacao)
 
 # Os scripts ficam onde este esta (C:\DEV no PC do desenvolvedor, %LOCALAPPDATA%\RecompZel para quem usa o .exe); os dados (perfil, logs, rodadas)
 # ficam na mesma pasta, exceto quando o launcher roda de dentro do repositorio (pasta recompzel): ai vao para %LOCALAPPDATA%\RecompZel.
@@ -27,6 +28,10 @@ $STR['pt'] = @{
     build_tip = 'Cria o jogo no seu PC a partir do seu arquivo. Demora de dezenas de minutos a mais de uma hora. Voce pode usar o PC normalmente.'
     folder = 'Abrir a pasta do jogo'
     folder_tip = 'Abre a pasta onde o jogo foi montado.'
+    choose_dir = 'Escolher pasta de instalacao'
+    choose_dir_tip = 'Escolhe em qual pasta (e em qual disco) o jogo compilado vai ficar. So vale a partir da proxima vez que construir ou reconstruir. Padrao: C:\Games\RecompZel.'
+    choose_dir_set = 'Pasta de instalacao: {0}'
+    choose_dir_lowspace = 'Esse disco tem so {0} GB livres. O jogo compilado, com o cache de shaders, pode passar de 15 GB. Usar essa pasta mesmo assim?'
     report = 'Copiar relatorio para suporte'
     report_tip = 'Copia o final do registro do build. Cole numa conversa para pedir ajuda.'
     upd = 'Atualizar o RecompZel'
@@ -188,6 +193,10 @@ $STR['en'] = @{
     build_tip = 'Builds the game on your PC from your own file. Takes from tens of minutes to over an hour. You can keep using the PC.'
     folder = 'Open the game folder'
     folder_tip = 'Opens the folder where the game was built.'
+    choose_dir = 'Choose install folder'
+    choose_dir_tip = 'Chooses which folder (and which drive) the built game goes into. Only applies from the next build or rebuild on. Default: C:\Games\RecompZel.'
+    choose_dir_set = 'Install folder: {0}'
+    choose_dir_lowspace = 'That drive only has {0} GB free. The built game, with the shader cache, can be over 15 GB. Use this folder anyway?'
     report = 'Copy report for support'
     report_tip = 'Copies the end of the build log. Paste it into a chat to ask for help.'
     upd = 'Update RecompZel'
@@ -378,6 +387,10 @@ function Get-OutDir {
     if (Test-Path -LiteralPath $old) { return $old }
     return $new
 }
+# Grava games.json depois de mudar algo no perfil (por ora so a pasta de instalacao, outDir)
+function Save-Profiles {
+    try { @{ games = $games } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $ProfilesPath -Encoding UTF8 } catch {}
+}
 
 $xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -429,6 +442,8 @@ $xaml = @'
       <Button x:Name="btnPlay" Style="{StaticResource Row}" Height="64" FontSize="19"/>
       <Button x:Name="btnBuild" Style="{StaticResource Row}"/>
       <Button x:Name="btnFolder" Style="{StaticResource Row}"/>
+      <Button x:Name="btnChooseDir" Style="{StaticResource Row}"/>
+      <TextBlock x:Name="txtOutDir" Foreground="#8FA89C" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,8"/>
       <Button x:Name="btnReport" Style="{StaticResource Row}"/>
       <Button x:Name="btnUpdate" Style="{StaticResource Row}"/>
       <Border x:Name="vramBox" Background="#1B2A25" BorderBrush="#2E4A40" BorderThickness="1" CornerRadius="3" Padding="16,10">
@@ -539,7 +554,7 @@ $xaml = @'
 $reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
 $win = [Windows.Markup.XamlReader]::Load($reader)
 try { if (Test-Path (Join-Path $PSScriptRoot 'recompzel.ico')) { $win.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri](Join-Path $PSScriptRoot 'recompzel.ico')) } } catch {}
-foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnReport','btnUpdate','cbMem','txtMemT','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkPar','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary','chkLinear') {
+foreach ($n in 'cbLang','btnPlay','btnBuild','btnFolder','btnChooseDir','txtOutDir','btnReport','btnUpdate','cbMem','txtMemT','cbVram','cbMesh','cbGame','txtGameSub','txtGame','txtPct','pbTotal','txtStatus','txtTime','txtNow','txtNext','txtS1','txtS2','txtS3','txtS4','txtHelp','vramBox','meshBox','tuneBox','cbUpload','chkPar','chkRam','chkDiag','cbFg','txtNotas','txtResumo','chkFsr','txtFsr','techBox','txtTechT','txtGpu','badgeDsr','badgeDlss','badgeFsr','btnTechAll','chkSafe','txtSafe','ttlDsr','ttlDlss','ttlFsr','txtTechIntro','chkDlss','txtDlss','chkDsr','txtDsr','txtVramT','txtMeshT','txtMesh','txtUpT','txtFgT','lblNow','lblSteps','lblNext','lblNotes','lblSummary','chkLinear') {
     Set-Variable -Name $n -Value $win.FindName($n)
 }
 $script:defaultHelp = ''
@@ -600,6 +615,8 @@ function Apply-Language {
     try {
         $btnPlay.Content = T 'play';   $btnPlay.Tag = T 'play_tip'
         $btnFolder.Content = T 'folder'; $btnFolder.Tag = T 'folder_tip'
+        $btnChooseDir.Content = T 'choose_dir'; $btnChooseDir.Tag = T 'choose_dir_tip'
+        $txtOutDir.Text = (T 'choose_dir_set') -f (Get-OutDir)
         $btnReport.Content = T 'report'; $btnReport.Tag = T 'report_tip'
         if ($script:updateAvail) { $btnUpdate.Content = T 'upd_avail' } else { $btnUpdate.Content = T 'upd' }
         $btnUpdate.Tag = T 'upd_tip'
@@ -956,6 +973,8 @@ function Start-GameBuild([string]$buildPath) {
 # Os argumentos para abrir o build-game.ps1: com -Dlss quando a caixa do DLSS esta marcada
 function Get-BuildArgs([string]$buildPath) {
     $a = @('-ExecutionPolicy', 'Bypass', '-File', ('"' + $buildPath + '"'))
+    $o = Get-OutDir
+    if ($o) { $a += @('-Out', ('"' + $o + '"')) }   # pasta escolhida em "Escolher pasta de instalacao"; senao o padrao do build-game.ps1
     if ($chkDsr.IsChecked -and (Test-DsrGpu)) { $a += '-Dlss' }
     return $a
 }
@@ -1310,6 +1329,34 @@ $btnFolder.Add_Click({
     $o = Get-OutDir
     if (-not (Test-Path $o)) { New-Item -ItemType Directory -Path $o -Force | Out-Null }
     Start-Process explorer.exe $o
+})
+
+# Escolhe em qual pasta/disco o jogo compilado vai ficar (so muda o games.json; so vale do proximo build em diante)
+$btnChooseDir.Add_Click({
+    $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dlg.Description = T 'choose_dir_tip'
+    $dlg.ShowNewFolderButton = $true
+    $atual = Get-OutDir
+    if ($atual -and (Test-Path -LiteralPath (Split-Path $atual -Parent))) { $dlg.SelectedPath = (Split-Path $atual -Parent) }
+    if ($dlg.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
+    $escolhida = $dlg.SelectedPath
+    # se a pessoa ja apontou direto para uma pasta RecompZel/HookshotDev (de uma instalacao antiga), usa ela; senao cria "RecompZel" dentro da escolhida
+    $folha = Split-Path $escolhida -Leaf
+    $final = if ($folha -eq 'RecompZel' -or $folha -eq 'HookshotDev') { $escolhida } else { Join-Path $escolhida 'RecompZel' }
+    try {
+        $raiz = [System.IO.Path]::GetPathRoot($escolhida)
+        $unidade = Get-PSDrive -Name ($raiz.TrimEnd('\').TrimEnd(':')) -ErrorAction SilentlyContinue
+        if ($unidade) {
+            $livreGb = [math]::Round($unidade.Free / 1GB, 1)
+            if ($livreGb -lt 20) {
+                $r = [System.Windows.MessageBox]::Show($win, ((T 'choose_dir_lowspace') -f $livreGb), 'RecompZel', 'YesNo', 'Warning')
+                if ($r -ne 'Yes') { return }
+            }
+        }
+    } catch {}
+    $script:g.outDir = $final
+    Save-Profiles
+    $txtOutDir.Text = (T 'choose_dir_set') -f (Get-OutDir)
 })
 
 $btnBuild.Add_Click({
