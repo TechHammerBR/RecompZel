@@ -78,6 +78,23 @@ static int choose_face(const char *dir) {
         hos_sdl_pad_first_name(name, sizeof name);
         if (!name[0]) Sleep(50);
     }
+    /* (recompzel, 2026-11-16) SDL can open an Xbox pad well after these 1.5 s (an XInput Controller connected ~1000 log
+       lines into the game, the prompts already Switch's for the session). XInput answers at once: a pad on one of its four
+       slots is an Xbox pad, or one that copies its layout */
+    if (!name[0]) {
+        typedef DWORD(WINAPI * XGetState)(DWORD, void *);
+#ifdef _WIN32
+        HMODULE x = LoadLibraryExA("xinput1_4.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!x) x = LoadLibraryExA("xinput9_1_0.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+#else
+        HMODULE x = LoadLibraryA("xinput1_4.dll");
+        if (!x) x = LoadLibraryA("xinput9_1_0.dll");
+#endif
+        XGetState get = x ? (XGetState)(void *)GetProcAddress(x, "XInputGetState") : NULL;
+        uint8_t state[16];   /* (XINPUT_STATE: a DWORD and a 12-byte XINPUT_GAMEPAD) */
+        for (DWORD i = 0; get && i < 4 && !name[0]; i++)
+            if (get(i, state) == 0) snprintf(name, sizeof name, "XInput Controller #%lu", (unsigned long)i + 1);
+    }
     int face;
     if (!name[0]) face = HOS_PROMPT_SWITCH;   /* (no controller: the keyboard, the game's own icons; or XInput without SDL) */
     else if (contains(name, "dualsense") || contains(name, "ps5")) face = HOS_PROMPT_PS5;
