@@ -17,6 +17,7 @@
 #include <mutex>
 #include <vector>
 #include <condition_variable>
+#include "compat/hookshot_env.h"   // (env_on, env_value_off: the switches' one rule)
 #include "vk_menu.h"
 #include <deque>
 #include <unordered_map>

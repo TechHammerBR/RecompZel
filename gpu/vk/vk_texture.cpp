@@ -33,6 +33,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "compat/hookshot_env.h"   // (env_on, env_value_off: the switches' one rule)
 #include "vk_texture.h"
 #include "vk_menu.h"
 #include "vk_draw.h"

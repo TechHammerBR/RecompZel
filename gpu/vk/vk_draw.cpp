@@ -30,6 +30,7 @@
 #include <setjmp.h>
 #include <signal.h>
 
+#include "compat/hookshot_env.h"   // (env_on, env_value_off: the switches' one rule)
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 
 #include "vk_paths.h"

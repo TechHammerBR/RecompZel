@@ -29,6 +29,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "compat/hookshot_env.h"   // (env_on, env_value_off: the switches' one rule)
 #include "vk_temporal.h"
 #include "vk_fsr3_inputs.h"   // (the camera jitter while AMD FSR 3.1 upscales)
 #include "status_line.h"
