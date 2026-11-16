@@ -1172,6 +1172,10 @@ uint64_t disk_stamp() {
                               profile().has_broken_spirv_fragment_shuffle ? 1u : 0u, (uint32_t)dev.sg32_stages,
                               getenv("RX_VK_WARP64") ? 1u : 0u};
     add(lanes, sizeof lanes);
+    // (recompzel, with Hookshot #2306: and whether float adds to storage buffers are the GPU's own atomic, so programs made
+    // with OpAtomicFAddEXT are not read back on a GPU or a setting without it)
+    const uint32_t fadd = profile().support_float32_atomic_add ? 1u : 0u;
+    add(&fadd, sizeof fadd);
     // (the records keep Shader::Info as it lies in memory: a cache written by another C++ library (the MSVC build's, then the
     // llvm-mingw one's libc++) has other layouts, and reading it crashed at start. The library and the sizes, so it starts again)
     const uint32_t abi[] = {(uint32_t)sizeof(Shader::Info), (uint32_t)sizeof(Program), (uint32_t)sizeof(std::vector<uint32_t>),

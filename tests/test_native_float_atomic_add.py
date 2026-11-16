@@ -209,10 +209,10 @@ def check_source():
         raise SystemExit("FAIL: the translator is not told the device's float add (make_profile)")
     # (the program cache's stamp: program_cache_stamp, vk_progcache.cpp, hashes translator_stamp's, which says what the
     # translator is told; it was disk_stamp's before #2323)
-    progcache = (VK / "vk_progcache.cpp").read_text(encoding="utf-8")
-    if "translator_stamp()" not in cut(progcache, "uint64_t program_cache_stamp() {", "vk_progcache.cpp"):
-        raise SystemExit("FAIL: the program cache's stamp no longer holds translator_stamp's: update this check")
-    stamp = shader[shader.index("uint64_t translator_stamp() {"):]
+    # (recompzel: no vk_progcache.cpp or translator_stamp here; program_cache_stamp is disk_stamp's, which hashes it)
+    if "uint64_t program_cache_stamp() { return disk_stamp(); }" not in shader:
+        raise SystemExit("FAIL: the program cache's stamp is no longer disk_stamp's: update this check")
+    stamp = shader[shader.index("uint64_t disk_stamp() {"):]
     if "profile().support_float32_atomic_add" not in stamp[:stamp.index("return h;")]:
         raise SystemExit("FAIL: programs made with OpAtomicFAddEXT stay in the program cache for a GPU without it")
 
