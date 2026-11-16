@@ -92,5 +92,6 @@ void pipeline_cache_play();   // (the start-up done: what play makes goes into p
 uint64_t ub_overlay(uint64_t addr, uint64_t n, uint8_t* base, const std::function<uint64_t(uint64_t)>& alloc);
 /// Guest memory as the stream's place sees it: as submitted, the stream's uniform updates before it over it
 bool ub_read(uint64_t addr, void* dst, uint64_t n);
+int64_t draw_dummy_textures();   // (Triforce: texture bindings that sampled the dummy so far: RX_VK_FRAME_TRACE; 0 here)
 
 } // namespace mkwvk

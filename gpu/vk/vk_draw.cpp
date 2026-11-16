@@ -8674,4 +8674,6 @@ UniformUpload uniform_upload(uint64_t size) {
     return {{cur->stream, at, size, 0}, cur->mapped + at, cur->stream_alloc};
 }
 
+int64_t draw_dummy_textures() { return 0; }   // (Triforce's frame trace column; the dummy bindings are not counted here)
+
 } // namespace mkwvk

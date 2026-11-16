@@ -296,10 +296,11 @@ def main():
                 "a read of guest memory in place is not noted for the readback's part wait: " + site
             at += 1
             noted += 1
-    assert noted == 6, "the reads of guest memory in place have changed (%d found): look at each again" % noted
+    # (recompzel, with Triforce's mirrors in pieces: a piece bound or left in guest memory, its fill and a deferred late page: 4 more)
+    assert noted == 10, "the reads of guest memory in place have changed (%d found): look at each again" % noted
     import re
     sources = re.findall(r"vkCmdCopyBuffer\([^,]+, (?:p|pp)(?:->|\.)buffer, [^,]+", memory_src)
-    assert len(sources) == 4, "a new copy out of a guest pool (%d found): is it noted for the readback's part wait?" % len(sources)
+    assert len(sources) == 6, "a new copy out of a guest pool (%d found): is it noted for the readback's part wait?" % len(sources)
     assert memory_src.count("note_in_place_read(!mirror_upload);") == 2, \
         "a binding outside a recording's uploads must count for the next part (no part begun yet is the one that reads it)"
     refresh = block(memory_src, "bool memory_rb_refresh(VkCommandBuffer up) {")

@@ -10,6 +10,7 @@
 
 #include "vk_loader.h"
 #include "vk_api.h"
+#include "vk_vendor.h"
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 #include <intrin.h>
@@ -70,6 +71,7 @@ struct Device {
     VkShaderStageFlags sg32_stages = 0;   // (stages that run at 32 lanes when asked: the size the translated programs assume)
     uint32_t subgroup_size = 32, subgroup_max = 32;   // (the lanes a stage not pinned runs at, and the most it can have)
     VkDriverId driver_id{};
+    VendorFixes fixes{};   // (hookshot) the vendor and driver workarounds this device needs (vk_vendor.h; vk_main.cpp create_device)
     uint32_t max_push_descriptors = 0;
     // no window (HOS_HEADLESS): presents go to an image of their own, which RX_VK_SHOTS can write out
     bool offscreen = false;
@@ -122,6 +124,8 @@ BufferRef gpu_buffer(uint64_t gpu, uint64_t size);   // (empty when no pool hold
 /// A range as a binding of the replay sees it: the pool's VRAM mirror when it has one (vk_memory.cpp), else the
 /// imported pool. written: the GPU may write it (copied back to guest memory at the submission's end).
 BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written);
+/// (Evil Hookshot) the binds that follow come from a compute program's storage buffers (1) or not (0): vk_memory.cpp's mirror trials
+void memory_bind_from_compute(bool on);
 BufferRef stream_copy(const void* src, uint64_t n);   // vk_draw.cpp: bytes in the recording's stream, as a binding
 /// Authored constants in the recording's stream: never recycled until its recording completes.
 /// Fill mapped, then flush memory through binding.offset + binding.size before GPU use.
@@ -231,6 +235,9 @@ void memory_note_readback(uint64_t guest, uint64_t size);   // (PR 430) a CPU re
 void memory_note_cpu_read(uint64_t guest, uint64_t size);   // (invalidate) a CPU read: a large binding over it keeps its write-back
 void memory_note_cpu_access(uint64_t guest, uint64_t size, bool write);   // (and a CPU write a mirror sync copies: wb_learn.h)
 bool memory_wb_followed(uint64_t lo, uint64_t hi);   // (whether a large binding wb_learn.h follows overlaps [lo, hi))
+/// (Triforce) around the write of an NVN event's word by a command buffer's signal: its write-back is not one the captures of
+/// its page wait for (vk_memory.cpp). This thread's bindings while on
+void memory_bind_event_write(bool on);
 bool memory_rb_refresh(VkCommandBuffer up);
 void memory_rb_recording_begun();   // (hookshot) at a recording's start, on its thread: the submission it joins (memory_rb_refresh)
 void memory_rb_segments_begin(uint64_t base, uint64_t n);   // (and a parallel replay's segments: their order, base on)
@@ -242,11 +249,12 @@ uint64_t vk_timeline_completed();
 uint64_t vk_retirement_value();
 void vk_timeline_wait(uint64_t v);
 uint32_t memory_generation();
+uintptr_t memory_stamp_who(uint64_t guest, uint32_t* gen, uintptr_t* anchor);   // (RX_VK_STAMP_SRC: who wrote that page last)
 /// 1: a page of [guest, guest + size) was written after generation gen; 0: none was
 bool memory_written_since(uint64_t guest, uint64_t size, uint32_t gen);
 void memory_stamp(uint64_t guest, uint64_t size);   // a write the watch does not see (GPU writes, host writes)
 /// The page runs of [guest, guest + size) written after gen, as byte ranges from guest (appended to out)
-void memory_written_runs(uint64_t guest, uint64_t size, uint32_t gen, std::vector<std::pair<uint64_t, uint64_t>>& out);
+void memory_written_runs(uint64_t guest, uint64_t size, uint32_t gen, std::vector<std::pair<uint64_t, uint64_t>>& out, bool tex = false);
 uint64_t memory_pages_collected();                  // (statistics)
 
 /// An NVN format as Vulkan stores it (vk_formats.cpp): ASTC is decoded to RGBA8, block_w x block_h
@@ -264,6 +272,8 @@ bool has_stencil(VkFormat f);
 
 // device memory (vk_vma.cpp, Vulkan Memory Allocator)
 bool vma_init(PFN_vkGetInstanceProcAddr gipa);
+extern uint64_t test_card_ballast;   // (vk_vma.cpp, RX_VK_TEST_CARD_MB: 0 outside that lab test)
+void vma_blocks_ahead_check();   // (vk_vma.cpp: the blocks made ahead given back while VRAM is short; every 600 presents)
 /// (textures: from the textures' own pool, the one image_compact_* moves allocations in: vk_texture.cpp's compaction)
 bool create_image(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated = false, bool target = false,
                   bool textures = false);
@@ -274,6 +284,7 @@ struct ImageMove {
 /// The free space inside the textures' pool's blocks, what the blocks hold in all, and the size of those made at the start
 /// (kept whatever is in them); false without the pool
 bool textures_pool_usage(uint64_t* block_bytes, uint64_t* free_bytes, uint64_t* kept_bytes = nullptr);
+bool target_floor_kept();   // (the render targets' pool keeps a floor of blocks for the session: RX_VK_TARGET_FLOOR_MB)
 bool image_compact_begin(uint64_t max_bytes_a_pass, uint32_t max_moves_a_pass);
 bool image_compact_active();
 /// A pass begun: the moves VMA asks for. False: nothing left to move, the compaction is over (then *freed_bytes and
@@ -295,6 +306,23 @@ bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool host_visible, V
 void destroy_buffer(VkBuffer buffer, VmaAllocation allocation);
 /// A buffer in VRAM only (within the driver's budget), or false
 bool create_device_buffer(uint64_t size, VkBufferUsageFlags usage, VkBuffer& buffer, VmaAllocation& allocation, bool dedicated = false);
+/// (Triforce) device memory for a piece of a sparse buffer, and its release (vk_vma.cpp)
+bool vma_piece_alloc(uint64_t size, uint64_t alignment, uint32_t type_bits, VmaAllocation& allocation, VkDeviceMemory& memory,
+                     uint64_t& offset);
+void vma_piece_free(VmaAllocation allocation);
+/// (Triforce) the mirrors' pieces made resident in this recording, bound before it is submitted (vk_memory.cpp)
+void memory_mirror_binds_flush();
+bool memory_mirror_bind_wait(VkSemaphoreSubmitInfo* wait);   // (and the wait a queue submission makes for those binds)
+/// (Triforce, vk_memory.cpp) The memory handling played on NVIDIA cards only (mirrors in pieces, compacted textures): on there,
+/// and on trial on a card of another make until triforce_memtrial.txt says it passed or failed. tick: at the 600th presents;
+/// device_lost: from device_lost()
+bool memory_trial_on();
+void memory_trial_tick();
+void memory_trial_device_lost();
+void memory_trial_orderly_end();   // (the menu's Restart and Exit: no verdict for a session ended on purpose)
+/// (Triforce) Set while the start's own shader work runs (vk_main.cpp started_up): a fault in the driver then starts the game
+/// again (vk_draw.cpp driver_fault_restart, Windows)
+extern std::atomic<bool> startup_work_on;
 /// Device-local memory this process uses and what the driver allows it now (VK_EXT_memory_budget), summed over the
 /// device-local heaps; false when unknown
 bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* block_free = nullptr);
@@ -313,12 +341,18 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
 bool prepare_is_update();
 void prepare_background();
 void state_list_run();                        // (an update: the state list's pipelines noted before precompile_run)
+void predict_background();   // (Triforce: the predicted pipelines predict_run did not get to, built behind the game)
+void predict_plan_ensure();  // (Triforce: its plan, made before the precompile when an older build prepared this install)
 void predict_run(void (*progress)(size_t done, size_t total));   // (after a prepare_run that prepared: the notes' predictions)
 void prepare_guess(size_t out[3]);   // (the three parts' counts from the files, before they run: PrepareBar)
 /// (hookshot) The window was closed while the shaders were prepared: prepare_run and precompile_run take nothing more and return,
 /// what is done kept (the program cache, the driver's) and not counted as a start that ended inside them
 void prepare_stop();
 bool prepare_stopped();
+/// What prepare_run is doing, for the start-up screen: 0 the shaders translated, 1 the graphics driver's part of them
+int prepare_pass();
+/// Whether prepare_run has that second pass at all here (off unless the stage libraries are switched on): the screen's steps
+bool prepare_compiles();
 void fill_replay_table(MkwVkRenderer& t);     // vk_replay.cpp
 
 } // namespace mkwvk
