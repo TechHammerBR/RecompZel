@@ -1,6 +1,7 @@
 // The Vulkan back end's start: vulkan-1.dll, the instance, the device (Vulkan 1.3 and the extensions the NVN replay
 // wants where the GPU has them: mesh shaders, host memory import, graphics pipeline libraries), the window's
 // swapchain, and the rx_* table (vk_api.h). The NVN replay itself is vk_replay.cpp.
+#include "compat/hookshot_env.h"   // (env_on, env_value_off: the switches' one rule)
 #include "vk_paths.h"
 #include "vk_loader.h"
 

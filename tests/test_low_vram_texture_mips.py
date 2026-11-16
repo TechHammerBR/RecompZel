@@ -51,6 +51,7 @@ struct Texture {
 };
 struct { bool sparse_images = false; VkPhysicalDevice physical{}; } dev;
 struct { int preset = 1; } opts;
+bool pool_pressed = false;   // (recompzel: VRAM pressure, vk_texture.cpp texture_frame; off here)
 uint64_t allowed;
 bool query_ok;
 bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* = nullptr) {
