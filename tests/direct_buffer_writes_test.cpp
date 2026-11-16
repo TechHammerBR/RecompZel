@@ -64,6 +64,7 @@ static Host interface{gpu_ptr, gpu_guest};
 static Host* host = &interface;
 
 uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint64_t* part = nullptr, uint64_t* whole = nullptr);
+#include "../gpu/vk/compat/hookshot_env.h"   // (env_on: the switches' one rule, as vk_memory.cpp reads RX_VK_NO_READBACK_WAIT)
 #include "direct_write_actual.inc"
 
 static void readback_disabled(bool off) {

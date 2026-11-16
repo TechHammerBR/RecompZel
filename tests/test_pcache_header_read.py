@@ -31,6 +31,7 @@ def main():
     source = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     reader = function(source, "PipelineCacheFile pcache_file_read(const std::string& path)")
     fixture = r'''
+#define _CRT_SECURE_NO_WARNINGS   /* (Windows: fopen is not deprecated here) */
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
