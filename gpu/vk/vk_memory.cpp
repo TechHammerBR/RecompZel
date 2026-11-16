@@ -1139,19 +1139,53 @@ uint64_t cap_spare_max() {
     }();
     return v;
 }
+std::atomic<int64_t> cap_buf_made{0}, cap_buf_destroyed{0};   // (capture buffers allocated and freed on the submitting/replay threads)
 void cap_buf_free(VkBuffer buffer, VmaAllocation alloc, void* map, uint64_t size, bool from_worker = false) {
-    std::lock_guard lk(cap_free_mu);
-    if (from_worker && cap_shutting_down.load()) return;
     // (hookshot, RX 7800 XT: buffers up to 256 MB are kept for the next capture, not only up to 64 MB: a new one costs ~100 ms of
     // vkAllocateMemory on AMD's driver. RX_VK_CAPTURE_KEEP_OLD=1: as before)
+    // (recompzel, Goron City shop stutter, 2026-11-16) The list kept the first twelve buffers it was given and freed every one
+    // after: once a scene's captures moved to another size class (the shop: ~3.1 MB a submit, the 4 MB class, the list full of
+    // 2 MB ones and the prewarmed spares), each submit made a new buffer and freed it again, ~6 a frame, the free on the game's
+    // thread at capture_make's start ("capture: a submit ... lock 0.70") and under this mutex the replay waits on. With DLSS-G
+    // Streamline's interposer sits on those allocations: 40-57 ms frames, 7 a second, normal the moment the shop is left.
+    // Now the newest are kept and the oldest let go (the sizes the scene uses now stay), and the freeing is done outside the mutex.
+    // RX_VK_CAPTURE_FREE_OLD=1: the list as before
     static const bool keep_old = getenv("RX_VK_CAPTURE_KEEP_OLD") != nullptr;
-    if (cap_free.size() < 12 && size <= (keep_old ? 64ull << 20 : 256ull << 20) &&
-        cap_free_bytes + size <= std::min<uint64_t>(cap_spare_max(), keep_old ? ~0ull : 768ull << 20)) {
-        cap_free.push_back({buffer, alloc, map, size});
-        cap_free_bytes += size;
-    } else {
-        destroy_buffer(buffer, alloc);
+    static const bool free_old = env_on("RX_VK_CAPTURE_FREE_OLD");
+    const uint64_t max_one = keep_old ? 64ull << 20 : 256ull << 20;
+    const uint64_t max_bytes = std::min<uint64_t>(cap_spare_max(), keep_old ? ~0ull : 768ull << 20);
+    FreeBuf gone[13];
+    int ngone = 0;
+    {
+        std::lock_guard lk(cap_free_mu);
+        if (from_worker && cap_shutting_down.load()) return;
+        if (free_old) {
+            if (cap_free.size() < 12 && size <= max_one && cap_free_bytes + size <= max_bytes) {
+                cap_free.push_back({buffer, alloc, map, size});
+                cap_free_bytes += size;
+            } else {
+                gone[ngone++] = {buffer, alloc, map, size};
+            }
+        } else if (size > max_one || size > max_bytes) {
+            gone[ngone++] = {buffer, alloc, map, size};
+        } else {
+            cap_free.push_back({buffer, alloc, map, size});
+            cap_free_bytes += size;
+            // (the oldest first, the small ones before the big: the 32 MB and up are the load's spares, made ahead once
+            // (RX_VK_CAP_PREWARM), and a scene's small captures going round must not push them out)
+            while ((cap_free.size() > 12 || cap_free_bytes > max_bytes) && ngone < 13 && cap_free.size() > 1) {
+                size_t v = 0;
+                if (cap_free.size() > 12)
+                    for (size_t i = 0; i + 1 < cap_free.size(); i++)
+                        if (cap_free[i].size < (32ull << 20)) { v = i; break; }
+                gone[ngone++] = cap_free[v];
+                cap_free_bytes -= cap_free[v].size;
+                cap_free.erase(cap_free.begin() + (ptrdiff_t)v);
+            }
+        }
     }
+    for (int i = 0; i < ngone; i++) destroy_buffer(gone[i].buffer, gone[i].alloc);
+    if (ngone) cap_buf_destroyed += ngone;
 }
 void cap_buf_retire(std::map<uint32_t, CapBuf>::iterator it) {
     cap_bytes -= it->second.size;
@@ -1237,25 +1271,34 @@ void cap_prewarm_class(uint64_t size) {
     }
 }
 bool cap_buf_get(uint64_t need, VkBuffer& buffer, VmaAllocation& alloc, void*& map, uint64_t& size) {
-    std::lock_guard lk(cap_free_mu);
-    if (cap_prewarm_on()) {
-        static bool first = true;
-        if (first) {   // (the first capture: the classes a load asks for)
-            first = false;
-            for (uint64_t c : {32ull << 20, 64ull << 20, 128ull << 20, 192ull << 20}) cap_prewarm_class(c);
+    {
+        std::lock_guard lk(cap_free_mu);
+        if (cap_prewarm_on()) {
+            static bool first = true;
+            if (first) {   // (the first capture: the classes a load asks for)
+                first = false;
+                for (uint64_t c : {32ull << 20, 64ull << 20, 128ull << 20, 192ull << 20}) cap_prewarm_class(c);
+            }
+        }
+        // (recompzel) a small capture does not take a load's spare (32 MB and up, made ahead): up to four times its class
+        const uint64_t cls = cap_buf_size(need);
+        const uint64_t most = cls >= (16ull << 20) ? ~0ull : cls * 4;
+        size_t best = cap_free.size();
+        for (size_t i = 0; i < cap_free.size(); i++)
+            if (cap_free[i].size >= need && cap_free[i].size <= most &&
+                (best == cap_free.size() || cap_free[i].size < cap_free[best].size))
+                best = i;
+        if (best < cap_free.size()) {
+            buffer = cap_free[best].buffer, alloc = cap_free[best].alloc, map = cap_free[best].map, size = cap_free[best].size;
+            cap_free_bytes -= size;
+            cap_free.erase(cap_free.begin() + (ptrdiff_t)best);
+            return map != nullptr;
         }
     }
-    size_t best = cap_free.size();
-    for (size_t i = 0; i < cap_free.size(); i++)
-        if (cap_free[i].size >= need && (best == cap_free.size() || cap_free[i].size < cap_free[best].size)) best = i;
-    if (best < cap_free.size()) {
-        buffer = cap_free[best].buffer, alloc = cap_free[best].alloc, map = cap_free[best].map, size = cap_free[best].size;
-        cap_free_bytes -= size;
-        cap_free.erase(cap_free.begin() + (ptrdiff_t)best);
-        return map != nullptr;
-    }
+    // (made outside cap_free_mu: the replay gives buffers back under it, and an allocation is the slow part)
     size = cap_buf_size(need);
     map = nullptr;
+    cap_buf_made++;
     return create_buffer_cached(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, buffer, alloc, &map,
                                 size >= (16ull << 20) && !getenv("RX_VK_CAP_BLOCKS")) && map;
 }
@@ -2182,20 +2225,25 @@ std::unique_ptr<Capture> capture_make() {
     if (pages) host->free_pages(pages);
     {   // (what it cost, every 600 submits)
         static int64_t subs, written, copied;
-        static double ms, ms_lock, ms_scan;
+        static double ms, ms_lock, ms_scan, ms_lock_max;
         static uint64_t span;
+        static int64_t made0, gone0;
         subs++, written += n > 0 ? n : 0, copied += (int64_t)c->copied.size();
         const auto now = std::chrono::steady_clock::now();
         ms += std::chrono::duration<double, std::milli>(now - t0).count();
-        ms_lock += std::chrono::duration<double, std::milli>(t_lock - t0).count();
+        const double this_lock = std::chrono::duration<double, std::milli>(t_lock - t0).count();
+        ms_lock += this_lock, ms_lock_max = std::max(ms_lock_max, this_lock);
         ms_scan += std::chrono::duration<double, std::milli>(t_scan - t_lock).count();
         if (subs % 600 == 0) {
             span = 0;
             for (const auto& r : mirrored) span += r.second - r.first;
-            logf("vk: capture: a submit %.2f ms (lock %.2f, scan %.2f over %zu ranges, %llu MB), %.0f pages written, %.0f "
-                 "copied (%.1f MB)", ms / 600, ms_lock / 600, ms_scan / 600, mirrored.size(),
-                 (unsigned long long)(span >> 20), written / 600.0, copied / 600.0, copied * 4096.0 / 600 / 1048576);
-            ms = ms_lock = ms_scan = 0, written = copied = 0;
+            const int64_t made = cap_buf_made.load(), gone = cap_buf_destroyed.load();
+            logf("vk: capture: a submit %.2f ms (lock %.2f, the longest %.2f, scan %.2f over %zu ranges, %llu MB), %.0f pages written, %.0f "
+                 "copied (%.1f MB); capture buffers made %lld, freed %lld", ms / 600, ms_lock / 600, ms_lock_max, ms_scan / 600, mirrored.size(),
+                 (unsigned long long)(span >> 20), written / 600.0, copied / 600.0, copied * 4096.0 / 600 / 1048576,
+                 (long long)(made - made0), (long long)(gone - gone0));
+            made0 = made, gone0 = gone;
+            ms = ms_lock = ms_scan = ms_lock_max = 0, written = copied = 0;
         }
     }
     return c;
