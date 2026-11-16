@@ -3759,7 +3759,7 @@ void mirror_sync(Pool& p) {
 // default); RX_VK_WB_PROBATION=<submissions>: how many submissions write it whole before it is (8)
 std::mutex wb_learn_mu;
 wb_learn::Table wb_table;
-int64_t st_wb_left, st_wb_left_bytes, st_wb_stale;
+int64_t st_wb_left, st_wb_left_bytes, st_wb_stale, st_wb_tex_kept;
 uint64_t wb_cap() {
     static const uint64_t v = [] {
         const uint64_t b = wb_learn::max_bytes(getenv("RX_VK_WB_MAX_KB"));
@@ -3773,8 +3773,35 @@ uint64_t wb_cap() {
 // (a written binding [lo, hi): false, write it all back; true, only the guest ranges in keep, the parts the CPU has touched)
 bool wb_leave_out(uint64_t lo, uint64_t hi, std::vector<std::pair<uint64_t, uint64_t>>& keep) {
     if (!wb_cap()) return false;
+    // (recompzel, Zora's River waterfall, 2026-11-16) A texture's storage the GPU writes through a buffer is uploaded into
+    // its image again from guest memory (vk_texture.cpp gpu_wrote_into, "the GPU wrote its storage: uploaded again"): that
+    // upload is a read the table never saw. With the write-back left out it took what guest memory held before, and the
+    // block-linear tiles of a 1920x1080 target the waterfall samples came back stale: rectangles of an older frame over the
+    // water, flickering as they changed. The texture storage the uploads read (tex_merged) is always written back.
+    // (shadow_mu before wb_learn_mu; pools_mu is held by the caller, shadow_mu comes after it)
+    static thread_local std::vector<std::pair<uint64_t, uint64_t>> tex;
+    tex.clear();
+    {
+        std::lock_guard sk(shadow_mu);
+        auto it = std::upper_bound(tex_merged.begin(), tex_merged.end(), std::make_pair(lo, ~uint64_t(0)));
+        if (it != tex_merged.begin()) --it;
+        for (; it != tex_merged.end() && it->first < hi; ++it)
+            if (it->second > lo) tex.push_back({std::max(lo, it->first), std::min(hi, it->second)});
+    }
+    if (!tex.empty() && tex.front().first == lo && tex.front().second == hi) return false;   // (all of it texture storage)
     std::lock_guard lk(wb_learn_mu);
     if (!wb_table.plan(lo, hi, wb_cap(), mirror_epoch, keep)) return false;   // (mirror_epoch: the submission)
+    if (!tex.empty()) {   // (the texture parts with what the CPU touched, merged)
+        keep.insert(keep.end(), tex.begin(), tex.end());
+        std::sort(keep.begin(), keep.end());
+        size_t m = 0;
+        for (const auto& r : keep) {
+            if (m && r.first <= keep[m - 1].second) keep[m - 1].second = std::max(keep[m - 1].second, r.second);
+            else keep[m++] = r;
+        }
+        keep.resize(m);
+        st_wb_tex_kept += (int64_t)tex.size();
+    }
     uint64_t kept = 0;
     for (const auto& k : keep) kept += k.second - k.first;
     st_wb_left++, st_wb_left_bytes += (int64_t)(hi - lo - kept);
@@ -3805,9 +3832,10 @@ static void wb_learn_report() {   // (memory_end_submission, every 600 submits)
     if (!wb_cap()) return;
     std::lock_guard lk(wb_learn_mu);
     logf("vk: write-backs left out (600 submits): %lld, %.1f MB; %zu bindings followed, %zu ranges the CPU read, %llu resets; CPU reads "
-         "or writes of one left out: %lld so far", (long long)st_wb_left, st_wb_left_bytes / 1048576.0, wb_table.seen(), wb_table.reads(),
-         (unsigned long long)wb_table.resets(), (long long)st_wb_stale);
-    st_wb_left = st_wb_left_bytes = 0;
+         "or writes of one left out: %lld so far; texture storage kept in them: %lld ranges", (long long)st_wb_left,
+         st_wb_left_bytes / 1048576.0, wb_table.seen(), wb_table.reads(), (unsigned long long)wb_table.resets(), (long long)st_wb_stale,
+         (long long)st_wb_tex_kept);
+    st_wb_left = st_wb_left_bytes = st_wb_tex_kept = 0;
 }
 // (hookshot, diagnostics) RX_VK_LOG_WB_SKIPS=1: the written bindings left out, by guest range, every 600 submits
 struct WbSkip { uint64_t hi, n, bytes; };

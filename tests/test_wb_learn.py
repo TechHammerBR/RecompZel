@@ -48,8 +48,8 @@ def check_source():
     bind = mem[mem.index("p->gpu_written = true;   // (its mirror kept: mirrors_give_back)"):]
     bind = bind[:bind.index("return remember({p->mirror, off, size, 0});")]
     need("vk_memory.cpp: the written binding", bind,
-         ["if (!wb_leave_out(wlo, whi, keep)) writebacks.push_back({p, off, whi - p->lo});",
-          "for (const auto& [klo, khi] : keep) writebacks.push_back({p, klo - p->lo, khi - p->lo});",
+         ["if (!wb_leave_out(wlo, whi, keep)) writebacks.push_back({p, off, whi - p->lo, tl_event_write});",
+          "for (const auto& [klo, khi] : keep) writebacks.push_back({p, klo - p->lo, khi - p->lo, tl_event_write});",
           "rb_hazard_locked(p->lo + off, p->lo + std::min(off + size, p->hi - p->lo));"])
     if "wb_max" in bind:
         raise SystemExit("vk_memory.cpp: the plain size cap is back beside the learned one")
