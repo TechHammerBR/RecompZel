@@ -1347,6 +1347,9 @@ void mic_chosen() {
     mic_row_ends();
     mic_tell_host();
 }
+// (recompzel) the card the options were last set for: "vendor:device:VRAM MB" (gpu_card= in hookshot_options.ini). A different card
+// at the start gets the settings for its memory again (menu_first_start_for_gpu); empty: a file from before, or none yet
+std::string gpu_card_saved, gpu_card_now;
 void save() {
     // (hookshot) the lines that are not the menu's are kept: the controls, pad_ and key_ (host/nn_hid.c)
     // (and every other line the menu does not write, such as discord_app_id=: they were dropped at the next save)
@@ -1363,7 +1366,7 @@ void save() {
             const std::string key(line, (size_t)(eq - line));
             // (recompzel) every key written below that is not a row: memory_budget was missing, so the old line was kept as "other" and
             // written again beside the new one: two more lines every session (152 of them in a file after a day). tests/test_options_save_keys.py
-            bool mine = key == "microphone_device" || key == "memory_budget" || key == "options_version";
+            bool mine = key == "microphone_device" || key == "memory_budget" || key == "options_version" || key == "gpu_card";
             for (const Row& r : rows)
                 if (!mine && r.value && key == ini_key(r)) mine = true;
             if (!mine) others += line, others += others.back() == '\n' ? "" : "\n";
@@ -1381,6 +1384,10 @@ void save() {
         }
         if (!mic_want.empty()) fprintf(f, "microphone_device=%s\n", mic_want.c_str());   // (hookshot: also while it is unplugged)
         if (opts.budget > 0) fprintf(f, "memory_budget=%d\n", opts.budget);   // (not a row: the budgets Custom keeps)
+        {   // (recompzel: the card these options are for, menu_first_start_for_gpu)
+            const std::string& card = gpu_card_now.empty() ? gpu_card_saved : gpu_card_now;
+            if (!card.empty()) fprintf(f, "gpu_card=%s\n", card.c_str());
+        }
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on)
         fprintf(f, "options_version=4\n");
@@ -2983,6 +2990,11 @@ void menu_init() {
             if (!strcmp(line, "dynamic_resolution")) old_dynres = atoi(eq + 1);
             if (!strcmp(line, "menu_size") && atoi(eq + 1) == 0) menu_auto = true;
             if (!strcmp(line, "memory_budget")) opts.budget = std::min(std::max(atoi(eq + 1), 0), 5);
+            if (!strcmp(line, "gpu_card")) {   // (recompzel: the card the options were set for)
+                gpu_card_saved = eq + 1;
+                while (!gpu_card_saved.empty() && (gpu_card_saved.back() == '\n' || gpu_card_saved.back() == '\r' || gpu_card_saved.back() == ' '))
+                    gpu_card_saved.pop_back();
+            }
             if (!strcmp(line, "microphone_device")) {   // (hookshot: the microphone, by its name)
                 mic_want = mic_key(eq + 1);
                 while (!mic_want.empty() && (mic_want.back() == '\n' || mic_want.back() == '\r')) mic_want.pop_back();
@@ -3034,31 +3046,69 @@ void menu_init() {
 /// smaller card does not start at the docked 2048 x 1152 with the full-size memory budget. A GTX 1050 (4 GB) lost the device at
 /// the first scene that way (Discord 2026-11-10); the Minimum preset's handheld picture and budget are what such cards run.
 /// An integrated GPU or a card of up to 4.5 GB: Minimum, with the plain scale (as RX_VK_LOW_SPEC=1); up to 6.5 GB: Low; larger:
-/// the defaults, as before. Docked either way (the handheld profile gave a GTX 1050 a black picture). Options already saved are never changed. RX_VK_AUTO_PRESET=0: off
+/// the defaults, as before. Docked either way (the handheld profile gave a GTX 1050 a black picture). RX_VK_AUTO_PRESET=0: off
+/// (recompzel) and the same when the card changes: the options remember theirs (gpu_card=), and another card at the start gets the
+/// settings for its memory again. A GTX 970 started with a file from an RTX card (Custom, 7 made frames, the Compute mesh row):
+/// none of the 4 GB settings held, 5.5 GB of VRAM used of 2.9, 3 fps (2026-11-17); the RTX 3080 Ti put in after it would have kept
+/// whatever the 970 had. A file from before gpu_card= on a card of up to 4.5 GB counts as changed too (once); on a larger one it only
+/// records the card. RX_VK_AUTO_PRESET_ON_CHANGE=0: a changed card keeps the options as they are
 void menu_first_start_for_gpu(const VkPhysicalDeviceProperties& props, const VkPhysicalDeviceMemoryProperties& mem) {
-    if (!first_start) return;
+    const bool first = first_start;
     first_start = false;
-    if (getenv("RX_VK_AUTO_PRESET") && atoi(getenv("RX_VK_AUTO_PRESET")) == 0) return;
-    if (getenv("RX_VK_LOW_SPEC") && atoi(getenv("RX_VK_LOW_SPEC")) != 0) return;   // (chosen already, menu_init)
     uint64_t vram = 0;
     for (uint32_t i = 0; i < mem.memoryHeapCount; i++)
         if (mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) vram = std::max<uint64_t>(vram, mem.memoryHeaps[i].size);
     const bool integrated = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
     // (RX_VK_AUTO_PRESET_VRAM_MB=<n>: the card's memory taken as n MB, to try the choice on a larger card)
     const uint64_t mb = getenv("RX_VK_AUTO_PRESET_VRAM_MB") ? (uint64_t)atoll(getenv("RX_VK_AUTO_PRESET_VRAM_MB")) : vram >> 20;
-    const int preset = integrated || mb <= 4608 ? 1 : mb <= 6656 ? 2 : 0;
-    if (!preset) return;
-    opts.preset = opts.budget = preset;
-    apply_preset(preset);
-    sync_preset_budgets(preset);
-    if (preset == 1) opts.upscale = 0, opts.sharpness = 0;
-    // (docked kept: the presets' handheld profile is what a player chooses; on the GTX 1050 above it gave a black picture.
-    // The Render resolution and the memory budget are what lighten the card)
-    opts.handheld = 0;
+    {
+        char key[64];
+        snprintf(key, sizeof key, "%04x:%04x:%llu", (unsigned)props.vendorID, (unsigned)props.deviceID, (unsigned long long)mb);
+        gpu_card_now = key;
+    }
+    const bool small = integrated || mb <= 4608;
+    const bool changed = !first && (gpu_card_saved.empty() ? small : gpu_card_saved != gpu_card_now);
+    const bool auto_off = getenv("RX_VK_AUTO_PRESET") && atoi(getenv("RX_VK_AUTO_PRESET")) == 0;
+    const bool change_off = getenv("RX_VK_AUTO_PRESET_ON_CHANGE") && atoi(getenv("RX_VK_AUTO_PRESET_ON_CHANGE")) == 0;
+    const bool low_spec = getenv("RX_VK_LOW_SPEC") && atoi(getenv("RX_VK_LOW_SPEC")) != 0;   // (chosen already, menu_init)
+    if (auto_off || low_spec || (!first && (!changed || change_off))) {
+        if (gpu_card_saved != gpu_card_now) save();   // (the card recorded: a file from before gpu_card=, or the choice left alone)
+        gpu_card_saved = gpu_card_now;
+        return;
+    }
+    const int preset = small ? 1 : mb <= 6656 ? 2 : 0;
+    if (changed) {
+        // (what the last card's settings would get wrong on this one: the rows a preset sets, back to their defaults first, so a
+        // larger card does not keep a smaller one's 50 % and handheld picture; the Mesh shaders row to Automatic (Compute on a card
+        // with mesh shaders, Native on one without, were for the other card); and on a small card no made frames, which cost it
+        // more than they give)
+        const Options d{};
+        opts.resolution = d.resolution, opts.upscale = d.upscale, opts.sharpness = d.sharpness, opts.handheld = d.handheld;
+        opts.pace = d.pace, opts.preset = d.preset, opts.budget = d.budget;
+        opts.mesh_mode = 0;
+        sync_preset_budgets(0);
+        if (small) opts.framegen = 0;
+    }
+    if (preset) {
+        opts.preset = opts.budget = preset;
+        apply_preset(preset);
+        sync_preset_budgets(preset);
+        if (preset == 1) opts.upscale = 0, opts.sharpness = 0;
+        // (docked kept: the presets' handheld profile is what a player chooses; on the GTX 1050 above it gave a black picture.
+        // The Render resolution and the memory budget are what lighten the card)
+        opts.handheld = 0;
+    }
+    const bool known_before = !gpu_card_saved.empty();
+    gpu_card_saved = gpu_card_now;
     restart_init();   // (what this run starts with)
     save();   // (host/nn_applet.c reads handheld_profile from the file when the game first asks its mode, after this)
-    logf("vk: first start on %s (%s, %llu MB of VRAM): the %s preset", props.deviceName, integrated ? "integrated" : "dedicated",
-         (unsigned long long)mb, tx_preset(preset));
+    if (first)
+        logf("vk: first start on %s (%s, %llu MB of VRAM): the %s preset", props.deviceName, integrated ? "integrated" : "dedicated",
+             (unsigned long long)mb, preset ? tx_preset(preset) : "default");
+    else
+        logf("vk: another GPU (%s, %llu MB of VRAM; the options were for %s): the settings for its memory, the %s preset%s",
+             props.deviceName, (unsigned long long)mb, known_before ? "another card" : "an unknown card",
+             preset ? tx_preset(preset) : "default", small ? ", no made frames" : "");
 }
 
 int menu_vsync() { return getenv("RX_VK_FIFO") ? 1 : getenv("RX_VK_IMMEDIATE") ? 2 : opts.vsync; }
