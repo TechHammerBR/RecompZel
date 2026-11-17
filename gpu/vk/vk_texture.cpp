@@ -3474,6 +3474,17 @@ void texture_written(Texture* tex, const char* why) {
         tex->wb_burst = frame_no;
     }
     if (!tex->gpu_written || tex->released) tex->first_written = frame_no;
+    // (recompzel, 2026-11-17: Hookshot #3004 by way of Longshot 9fccd0fd and HeyListen b42e890d, GPL-3.0) A texture in a
+    // virtual pool that the GPU writes first is marked uploaded below without the first upload, which notes its pages' mapping
+    // (texture_dirty from the upload path): its first check after the game finalized it took all of its storage for remapped,
+    // and the whole image was uploaded from guest memory over the GPU's texels (HUD labels blank after a zone change, black or
+    // stale surfaces in Zora's Domain, textures flickering the first time an area is seen). Noted here by the writers that give
+    // a reason: each holds the ParLock a change to the map needs, or is the dry pass. RX_VK_NO_DRAWN_PAGE_MAP=1: as before
+    static const bool note_map = !env_on("RX_VK_NO_DRAWN_PAGE_MAP");
+    if (why && strcmp(why, "?") != 0 && note_map && tex->gpu >= (1ull << 40) && tex->page_map.empty() && tex->guest_size) {
+        static thread_local Ranges mapped;
+        texture_dirty(*tex, 0, mapped);
+    }
     tex->last_written = frame_no;
     tex->gpu_written = true;
     tex->gpu_gen = memory_generation();

@@ -1008,7 +1008,12 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_COPY_B2T: if (!dry) { ParLock lk; copy_b2t(cmd, s, payload<nvn_p_copy_bt>(a, avail), true); } break;
         case NOP_COPY_T2B: if (!dry) { ParLock lk; copy_b2t(cmd, s, payload<nvn_p_copy_bt>(a, avail), false); } break;
-        case NOP_COPY_T2T: if (!dry) { ParLock lk; copy_t2t(cmd, s, payload<nvn_p_copy_tt>(a, avail)); } break;
+        case NOP_COPY_T2T: {
+            ParLock lk;
+            if (dry) dry_mark_copy_target(payload<nvn_p_copy_tt>(a, avail));   // (HeyListen 74e1f4e5: see vk_xfer.cpp)
+            else copy_t2t(cmd, s, payload<nvn_p_copy_tt>(a, avail));
+            break;
+        }
         case NOP_CLEAR_TEX: if (!dry) { ParLock lk; clear_tex(cmd, s, payload<nvn_p_clear_tex>(a, avail)); } break;
         case NOP_UPDATE_UB: {
             const auto u = payload<nvn_p_update_ub>(a, avail);

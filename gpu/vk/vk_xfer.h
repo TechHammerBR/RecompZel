@@ -19,5 +19,7 @@ void copy_b2t(VkCommandBuffer cmd, NvnState& s, const nvn_p_copy_bt& p, bool to_
 void copy_t2t(VkCommandBuffer cmd, NvnState& s, const nvn_p_copy_tt& p);
 /// a whole level to a value (nvn_p_clear_tex)
 void clear_tex(VkCommandBuffer cmd, NvnState& s, const nvn_p_clear_tex& p);
+/// the parallel replay's dry pass: a copy's destination marked as written by the GPU, before any segment records
+void dry_mark_copy_target(const nvn_p_copy_tt& p);
 
 } // namespace mkwvk
