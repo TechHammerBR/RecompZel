@@ -3479,8 +3479,9 @@ void texture_written(Texture* tex, const char* why) {
     // (texture_dirty from the upload path): its first check after the game finalized it took all of its storage for remapped,
     // and the whole image was uploaded from guest memory over the GPU's texels (HUD labels blank after a zone change, black or
     // stale surfaces in Zora's Domain, textures flickering the first time an area is seen). Noted here by the writers that give
-    // a reason: each holds the ParLock a change to the map needs, or is the dry pass. RX_VK_NO_DRAWN_PAGE_MAP=1: as before
-    static const bool note_map = !env_on("RX_VK_NO_DRAWN_PAGE_MAP");
+    // a reason: each holds the ParLock a change to the map needs, or is the dry pass. Opt-in (RX_VK_DRAWN_PAGE_MAP=1) since its first
+    // play: in Castle Town's market the texture lookups went from 0.25 to 1.23 ms a frame with it (not yet measured apart)
+    static const bool note_map = env_on("RX_VK_DRAWN_PAGE_MAP");
     if (why && strcmp(why, "?") != 0 && note_map && tex->gpu >= (1ull << 40) && tex->page_map.empty() && tex->guest_size) {
         static thread_local Ranges mapped;
         texture_dirty(*tex, 0, mapped);

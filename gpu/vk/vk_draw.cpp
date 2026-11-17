@@ -6600,6 +6600,14 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     }
     if (d.mesh) {
         if (p.fallback) {   // (hookshot: the generated vertex stage reads the records; one vertex a corner)
+            // (recompzel, from HeyListen 98f34e24) the generated vertex stage reads no vertex stream, but the pipeline keeps the stride
+            // dynamic like every other graphics pipeline, and a draw needs one bound in the command buffer: a recording whose first
+            // draw is a fallback draw had none (validation VUID-vkCmdDraw-pStrides-04913). One empty stream; the next draw binds its own
+            if (!last_vb_valid && zero_buffer) {
+                const VkBuffer b = zero_buffer;
+                const VkDeviceSize off = 0, size = 65536, stride = 0;
+                vkCmdBindVertexBuffers2(cmd, 0, 1, &b, &off, &size, &stride);
+            }
             vkCmdDrawIndirect(cmd, fallback_draw_records, 0, 1, sizeof(VkDrawIndirectCommand));   // (its count: the records taken)
             st_mesh++;
             st_draws++, pass().draws++;

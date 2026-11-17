@@ -62,6 +62,9 @@ struct Device {
     bool swapchain_colorspace = false;   // (hookshot) VK_EXT_swapchain_colorspace: HDR10 surfaces are listed
     bool hdr = false;                    // (hookshot) the swapchain is HDR10 (ST 2084, Rec. 2020): framegen_hdr writes it
     bool mesh_fallback = false;   // (hookshot) no VK_EXT_mesh_shader: task and mesh programs as compute shaders (vk_shader.cpp)
+    // (recompzel, from HeyListen 98f34e24) the float controls the device reports, a bit a width (1: 16 bits, 2: 32, 4: 64): a program
+    // declaring a denorm mode the device lacks is invalid, and an older driver (Maxwell, Pascal: no mesh shaders) need not ignore it
+    uint32_t denorm_preserve_widths = 7, denorm_flush_widths = 7;
     bool task_mesh_fallback = false;
     bool uses_mesh_fallback(bool has_task) const {
         return mesh_fallback || (task_mesh_fallback && has_task);

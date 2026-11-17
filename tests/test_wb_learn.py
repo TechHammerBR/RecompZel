@@ -34,10 +34,10 @@ def check_source():
     mem = (ROOT / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
     rep = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     need("vk_memory.cpp", mem, ['#include "wb_learn.h"'])
-    # (the cap from RX_VK_WB_MAX_KB through the header's rule, 1024 KB when unset, 0: none; the table's probation from
+    # (the cap from RX_VK_WB_MAX_KB through the header's rule, none when unset or 0; the table's probation from
     # RX_VK_WB_PROBATION)
     need("vk_memory.cpp: wb_cap()", block(mem, "uint64_t wb_cap()"),
-         ['const char* e = getenv("RX_VK_WB_MAX_KB");', 'wb_learn::max_bytes(e ? e : "1024")', 'env_int("RX_VK_WB_PROBATION", (int)wb_table.probation)'])
+         ['const char* e = getenv("RX_VK_WB_MAX_KB");', 'wb_learn::max_bytes(e)', 'env_int("RX_VK_WB_PROBATION", (int)wb_table.probation)'])
     need("vk_memory.cpp: wb_leave_out()", block(mem, "bool wb_leave_out(uint64_t lo, uint64_t hi"),
          ["if (!wb_cap()) return false;", "std::lock_guard lk(wb_learn_mu);", "wb_table.plan(lo, hi, wb_cap(), mirror_epoch, keep)"])
     # (a CPU read or write counts only in a large binding the table follows)
