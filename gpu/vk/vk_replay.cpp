@@ -1419,16 +1419,20 @@ void maybe_split(VkCommandBuffer& cmd) {
 // EXPERIMENTAL, off unless asked for: its first runs (2026-11-11) gained nothing, 54.7 fps against 58.9 standing in Castle Town
 // and 60.4 against 61.7 on the tour. The frame time of a scene with a crowd moves by 2 ms within seconds (one trial read 18.59
 // and then 16.44 ms for the same way), more than the difference being measured, so the trials decide on noise
+// (recompzel, 2026-11-17) On by default with 8 or more hardware threads: 4 recording threads, as HeyListen (TICK-006, 6bf932fc)
+// after the dry pass's fixes (a clear's targets, a texture copy's destination: dry_mark_copy_target), Kokiri 54 -> 65 fps and
+// Hyrule Field 49 -> 62 there; here the replay thread is the frame's limit in Hyrule Field (9.5 ms of 13.5, i9-14900KF).
+// RX_VK_PARALLEL=0: off, as before
 int par_threads_max() {
     static const int n = [] {
         if (const char* e = getenv("RX_VK_PARALLEL")) return std::clamp(atoi(e), 0, 8);
         if (const char* e = getenv("RX_VK_PARALLEL_AUTO")) return std::clamp(atoi(e), 0, 8);
-        return 0;
+        return std::thread::hardware_concurrency() >= 8 ? 4 : 0;
     }();
     return n;
 }
-bool par_auto() {
-    static const bool v = !getenv("RX_VK_PARALLEL") && par_threads_max() >= 2;
+bool par_auto() {   // (the tuner only when asked for: RX_VK_PARALLEL_AUTO)
+    static const bool v = !getenv("RX_VK_PARALLEL") && getenv("RX_VK_PARALLEL_AUTO") && par_threads_max() >= 2;
     return v;
 }
 bool par_auto_on = false;   // (the replay thread's: the parallel replay is the one in use now)

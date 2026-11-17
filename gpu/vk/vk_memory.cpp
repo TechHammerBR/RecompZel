@@ -3762,7 +3762,11 @@ wb_learn::Table wb_table;
 int64_t st_wb_left, st_wb_left_bytes, st_wb_stale, st_wb_tex_kept;
 uint64_t wb_cap() {
     static const uint64_t v = [] {
-        const uint64_t b = wb_learn::max_bytes(getenv("RX_VK_WB_MAX_KB"));
+        // (recompzel, 2026-11-17) 1024 KB by default: Hyrule Field wrote back ~70 MB a frame of bindings the CPU never reads
+        // (HeyListen took the same copies from 67.5 to 13.9 MB a frame). Texture storage in them is always written back
+        // (wb_leave_out). RX_VK_WB_MAX_KB=0: everything written back, as before
+        const char* e = getenv("RX_VK_WB_MAX_KB");
+        const uint64_t b = wb_learn::max_bytes(e ? e : "1024");
         wb_table.probation = (uint32_t)std::max(1, env_int("RX_VK_WB_PROBATION", (int)wb_table.probation));
         if (b) logf("vk: written bindings over %llu KB are written back only where the CPU reads or writes them, after %u submissions "
                     "whole (RX_VK_WB_MAX_KB)", (unsigned long long)(b >> 10), wb_table.probation);
