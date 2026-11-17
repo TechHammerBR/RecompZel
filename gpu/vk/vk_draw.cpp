@@ -30,9 +30,11 @@
 #include <setjmp.h>
 #include <signal.h>
 
+#include "compat/hookshot_env.h"   // (env_on, env_value_off: the switches' one rule)
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 
 #include "vk_paths.h"
+#include "pipeline_cache_file.h"
 #include "vk_draw.h"
 #include "vk_menu.h"          // (opts.anisotropy: the Anisotropic filtering row; resolution_scale)
 #include "upscaler_rows.h"    // (upscale_lod_bias: which upscalers draw the 3D smaller)
@@ -40,6 +42,7 @@
 #include "vk_temporal.h"
 #include "vk_fsr3.h"          // (AMD FSR 3.1 in the gameplay upscale's place)
 #include "vk_fsr3_inputs.h"
+#include "pcache_stamp.h"
 #include "vk_dump.h"
 #include "vk_gprof.h"
 #include "vk_jobs.h"
@@ -713,31 +716,17 @@ std::atomic<int64_t> pcache_built_since_save{0};
 // most precompiled pipelines as not found in the app's cache (~460 of ~12,900 here), which it then serves from its own.
 std::atomic<size_t> pcache_saved_size{0};
 /// A pipeline cache file's data, or nothing when it cannot be read or was made by another device or driver
-std::vector<uint8_t> pcache_file_read(const std::string& path) {
-    std::vector<uint8_t> data;
-    if (FILE* f = fopen(path.c_str(), "rb")) {
-        _fseeki64(f, 0, SEEK_END);
-        const int64_t sz = _ftelli64(f);
-        _fseeki64(f, 0, SEEK_SET);
-        if (sz > 32) {
-            data.resize((size_t)sz);
-            if (fread(data.data(), 1, data.size(), f) != data.size()) data.clear();
-        }
-        fclose(f);
-    }
-    // (data of another device or driver is dropped before Vulkan sees it)
-    if (data.size() >= 32) {
-        uint32_t head_size, version, vendor, device;
-        std::memcpy(&head_size, data.data(), 4);
-        std::memcpy(&version, data.data() + 4, 4);
-        std::memcpy(&vendor, data.data() + 8, 4);
-        std::memcpy(&device, data.data() + 12, 4);
-        if (head_size < 32 || head_size > data.size() || version != VK_PIPELINE_CACHE_HEADER_VERSION_ONE ||   // (hookshot)
-            vendor != dev.props.vendorID || device != dev.props.deviceID ||
-            std::memcmp(data.data() + 16, dev.props.pipelineCacheUUID, VK_UUID_SIZE))
-            data.clear();
-    }
-    return data;
+PipelineCacheFile pcache_file_read(const std::string& path) {
+    return PipelineCacheFile::read(path, [](const uint8_t* head, uint64_t size) {
+        uint32_t head_size = 0, version = 0, vendor = 0, device = 0;
+        std::memcpy(&head_size, head, 4);
+        std::memcpy(&version, head + 4, 4);
+        std::memcpy(&vendor, head + 8, 4);
+        std::memcpy(&device, head + 12, 4);
+        return head_size >= 32 && head_size <= size && version == VK_PIPELINE_CACHE_HEADER_VERSION_ONE &&
+               vendor == dev.props.vendorID && device == dev.props.deviceID &&
+               !std::memcmp(head + 16, dev.props.pipelineCacheUUID, VK_UUID_SIZE);
+    });
 }
 std::string pcache_dir;
 
@@ -766,14 +755,9 @@ std::string play_path(uint32_t n) {
 size_t play_file_write(VkPipelineCache cache, const std::string& path) {
     size_t n = 0;
     if (vkGetPipelineCacheData(dev.device, cache, &n, nullptr) != VK_SUCCESS || !n) return 0;
-    std::vector<uint8_t> data(n);
-    if (vkGetPipelineCacheData(dev.device, cache, &n, data.data()) != VK_SUCCESS) return 0;
-    const std::string tmp = path + ".tmp";
-    FILE* f = fopen(tmp.c_str(), "wb");
-    if (!f) return 0;
-    bool ok = fwrite(data.data(), 1, n, f) == n;
-    ok = fclose(f) == 0 && ok;   // (its last bytes go to the disk at the close)
-    return ok && MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) ? n : 0;
+    auto data = PipelineCacheFile::writable(path, n);
+    if (data.empty() || vkGetPipelineCacheData(dev.device, cache, &n, data.data()) != VK_SUCCESS) return 0;
+    return data.publish(n) ? n : 0;
 }
 /// (pcache_init, before any other thread has pcache) the play files the last starts wrote, merged into pcache; at kPlayFilesKept
 /// of them pcache is written into its file and they are removed. A file of another driver is of no use: removed. The number merged
@@ -791,12 +775,16 @@ size_t play_files_merge() {
         if (num.size() > 9 || num.find_first_not_of("0123456789") != std::string::npos) continue;
         play_seq = std::max(play_seq, (uint32_t)std::stoul(num));
         const std::string path = e.path().string();
-        const std::vector<uint8_t> part = pcache_file_read(path);
+        auto part = pcache_file_read(path);
         VkPipelineCache tmp = VK_NULL_HANDLE;
         VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
         ci.initialDataSize = part.size(), ci.pInitialData = part.data();
-        if (part.empty() || vkCreatePipelineCache(dev.device, &ci, nullptr, &tmp) != VK_SUCCESS) {
-            remove(path.c_str());
+        if (part.empty()) {
+            if (part.rejected()) remove(path.c_str()); // Only a proven incompatible header can discard a generation.
+            continue;
+        }
+        if (vkCreatePipelineCache(dev.device, &ci, nullptr, &tmp) != VK_SUCCESS) {
+            if (part.reset()) remove(path.c_str()); // Release a mapped Windows view before removing rejected bytes.
             continue;
         }
         if (vkMergePipelineCaches(dev.device, pcache, 1, &tmp) == VK_SUCCESS) merged.push_back(path), merged_kb += part.size() >> 10;
@@ -865,8 +853,15 @@ void play_cache_save() {
 ///  1. the generation's cache: one the driver has in its own cache comes back, copied into the generation;
 ///  2. pcache: one it holds comes back from it (the computes the prepare warmed, on a driver without a cache of its own);
 ///  3. else it is compiled, into the generation's cache.
-/// One the caller already asks without compiling (a dispatch's compute pipeline, the stage libraries) takes steps 1 and 2 alone:
-/// asked of pcache first it too would grow it in play, NVIDIA answering from its own cache.
+/// One the caller already asks without compiling (a dispatch's compute pipeline) takes steps 1 and 2 alone: asked of pcache
+/// first it too would grow it in play, NVIDIA answering from its own cache.
+/// A stage library asked without compiling is the exception: pcache first, then the generation, never compiled. A draw waits
+/// for it on the replay thread, and pcache is where the prepare's warm pass put the stage libraries: found there the ask is an
+/// in-memory hit, while asked of the empty generation first every one came from the driver's disk cache, about five times as
+/// slow (a 10-minute first visit on an RTX 4070 Ti SUPER: 7.3 s of links against 1.3 s, 2.2 ms a pipeline against 0.4).
+/// pcache grows by it only for a library the warm pass did not leave there (a folder prepared before the warm pass), and
+/// only in memory: it is not written in play for that (pipeline_cache_save) until it has grown 64 MB.
+/// RX_VK_PLAY_ASK_START_FIRST=0: the generation first for the libraries too, as before
 template <class CI>
 VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline*), const CI* ci, VkPipeline* pl) {
     PlayCache* g = play_cache.load();
@@ -881,6 +876,19 @@ VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline
     }
     CI ask = *ci;
     ask.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+    static const bool start_first = !getenv("RX_VK_PLAY_ASK_START_FIRST") || atoi(getenv("RX_VK_PLAY_ASK_START_FIRST")) != 0;
+    if (ask_only && (ci->flags & VK_PIPELINE_CREATE_LIBRARY_BIT_KHR) && start_first) {
+        VkResult r = create(pcache, &ask, pl);
+        if (r == VK_SUCCESS) {
+            g->from_start.fetch_add(1);
+        } else if (r == VK_PIPELINE_COMPILE_REQUIRED) {
+            *pl = VK_NULL_HANDLE;
+            r = create(g->cache, &ask, pl);   // (one play compiled into this generation)
+            if (r == VK_SUCCESS) g->built.fetch_add(1), g->from_driver.fetch_add(1);
+        }
+        g->users.fetch_sub(1);
+        return r;
+    }
     VkResult r = create(g->cache, &ask, pl);
     if (r == VK_SUCCESS) {
         g->built.fetch_add(1), g->from_driver.fetch_add(1);
@@ -898,21 +906,51 @@ VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline
     g->users.fetch_sub(1);
     return r;
 }
+/// (pipeline_cache_save) play has begun and what it makes goes into the play generations
+bool play_cache_in_use() { return play_cache.load() != nullptr; }
 // ---- (end of the play caches) ----
 
 bool pcache_no_save = false;   // (RX_VK_PCACHE_LOAD=0: pcache_init)
+// (RX_VK_PCACHE_LOAD=0, an A/B of what the file costs in memory: its 2.5 GB read whole and held by the driver. The cache
+// starts empty and is not saved; the driver's own shader cache is all there is)
+bool pcache_load_off() {
+    static const bool off = [] { const char* e = getenv("RX_VK_PCACHE_LOAD"); return e && env_value_off(e); }();   // (hookshot_env.h: 0/off/false/no)
+    return off;
+}
+/// (hookshot) The pipeline cache's files go when they were made for another translator than this one (program_cache_stamp,
+/// which the program cache and the prepare record start over by): their pipelines can no longer be hit, and the file only grew,
+/// read whole at every start and held by the driver (pcache_stamp.h). Once a run, before the first of pcache_init and
+/// prepare_run: whether files went, so that prepare_run makes the stage libraries the warm pass kept in them again
+/// (prepared_for.warmed), whatever its record says. RX_VK_PCACHE_STAMP=0: kept whatever made them, as before
+bool pcache_drop_stale() {
+    static const bool dropped = [] {
+        static const bool by_stamp = [] { const char* e = getenv("RX_VK_PCACHE_STAMP"); return !e || !env_value_off(e); }();
+        if (pcache_load_off() || !by_stamp) return false;
+        char exe[MAX_PATH];
+        const DWORD n = game_module_path(exe, MAX_PATH);
+        std::string dir(exe, n);
+        dir = dir.substr(0, dir.find_last_of("\\/") + 1);
+        const pcache_stamp::Dropped gone = pcache_stamp::check(dir, program_cache_stamp());
+        if (gone.files)
+            logf("vk: pipeline cache: %zu files made for another translator dropped (%llu MB); it starts empty", gone.files,
+                 (unsigned long long)(gone.bytes >> 20));
+        return gone.files > 0;
+    }();
+    return dropped;
+}
 void pcache_init() {
     if (pcache) return;
     char exe[MAX_PATH];
     const DWORD n = game_module_path(exe, MAX_PATH);
     std::string dir(exe, n);
     pcache_dir = dir = dir.substr(0, dir.find_last_of("\\/") + 1);
+    if (const size_t removed = PipelineCacheFile::cleanup_temporaries(dir))
+        logf("vk: pipeline cache: %zu old temporary files removed", removed);
     pcache_path = dir + "mkw_vk_pipelines.bin";
-    // (RX_VK_PCACHE_LOAD=0, an A/B of what the file costs in memory: its 2.5 GB read whole and held by the driver. The cache
-    // starts empty and is not saved; the driver's own shader cache is all there is)
-    static const bool off = getenv("RX_VK_PCACHE_LOAD") && atoi(getenv("RX_VK_PCACHE_LOAD")) == 0;
+    const bool off = pcache_load_off();
     pcache_no_save = off;
-    std::vector<uint8_t> data = off ? std::vector<uint8_t>{} : pcache_file_read(pcache_path);
+    pcache_drop_stale();   // (before the files are read)
+    auto data = off ? PipelineCacheFile{} : pcache_file_read(pcache_path);
     VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     ci.initialDataSize = data.size();
     ci.pInitialData = data.empty() ? nullptr : data.data();
@@ -2194,18 +2232,21 @@ uint32_t aniso_override() {
     return env >= 0 ? (uint32_t)env : anisotropy_row();
 }
 // (hookshot) The upscalers' texture LOD bias. OoT draws its 3D at 3/4 of the output and gives its world's materials a LOD bias of
-// -0.5 for that (sampler_make's log line). DLSS, FSR 3.1 and FSR 4 at a smaller fixed Render resolution scale up from less, so
-// those samplers (the ones the game biases below 0) get log2(share / 0.75) more: the mips the output's size wants, as NVIDIA's
-// DLSS guide asks (log2(render / display)). DLSS Quality (67%) -0.17, Balanced -0.37, Performance -0.58, Ultra Performance
-// -1.17. 0 with the game's own upscale, DLAA and FSR 4's native AA, at Auto, and from 75% up. RX_VK_UPSCALE_LOD_BIAS=0: off.
-// Part of every sampler's key; the menu's Upscaler, Render resolution and Quality preset rows move the samplers' generation
+// -0.5 for that (sampler_make's log line). An upscaler that draws from another share adds to the samplers the game biases below 0
+// (upscaler_rows.h upscale_lod_bias_for): DLSS and DLAA NVIDIA's log2(render / output) - 1 in all (Quality -1.17 more, DLAA -0.58,
+// Auto -1), FSR 3.1 and FSR 4 log2(share / 0.75) below 75 %; 0 with the game's own upscale, Off and FSR 4's native AA.
+// RX_VK_UPSCALE_LOD_BIAS=0: off. RX_VK_DLSS_LOD_OFFSET=<steps>: DLSS's -1 for a run (0: the render size's own detail, as
+// before). Part of every sampler's key; the menu's Upscaler, Render resolution and Quality preset rows move the samplers' generation
 float upscale_lod_bias() {
     static const bool off = getenv("RX_VK_UPSCALE_LOD_BIAS") && atoi(getenv("RX_VK_UPSCALE_LOD_BIAS")) == 0;
     if (off) return 0.0f;
+    static const float offset = [] {
+        const char* e = getenv("RX_VK_DLSS_LOD_OFFSET");
+        const float v = e && *e ? (float)atof(e) : -1.0f;
+        return std::isfinite(v) ? std::clamp(v, -3.0f, 0.0f) : -1.0f;
+    }();
     const int up = fsr3_wanted() ? (int)upscaler_rows::FSR3 : temporal_mode();
-    const int share = resolution_scale();   // (in 1/10000 of the output; 0: Auto)
-    if (!upscaler_rows::scales_by_mode(up) || share <= 0) return 0.0f;
-    return std::min(0.0f, std::log2((float)share / 7500.0f));
+    return upscaler_rows::upscale_lod_bias_for(up, resolution_scale(), offset);   // (share in 1/10000 of the output; 0: Auto)
 }
 /// compare: the shader reads depth with a reference (a sampler without one cannot compare)
 VkSampler sampler_make(int id, bool compare);
@@ -6559,6 +6600,14 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     }
     if (d.mesh) {
         if (p.fallback) {   // (hookshot: the generated vertex stage reads the records; one vertex a corner)
+            // (recompzel, from HeyListen 98f34e24) the generated vertex stage reads no vertex stream, but the pipeline keeps the stride
+            // dynamic like every other graphics pipeline, and a draw needs one bound in the command buffer: a recording whose first
+            // draw is a fallback draw had none (validation VUID-vkCmdDraw-pStrides-04913). One empty stream; the next draw binds its own
+            if (!last_vb_valid && zero_buffer) {
+                const VkBuffer b = zero_buffer;
+                const VkDeviceSize off = 0, size = 65536, stride = 0;
+                vkCmdBindVertexBuffers2(cmd, 0, 1, &b, &off, &size, &stride);
+            }
             vkCmdDrawIndirect(cmd, fallback_draw_records, 0, 1, sizeof(VkDrawIndirectCommand));   // (its count: the records taken)
             st_mesh++;
             st_draws++, pass().draws++;
@@ -7555,7 +7604,12 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     PreparedFor prepared_for;
     double hash_ms = 0;
     const PrepareWhy why = prepare_check(path, seed_path(), program_cache_stamp(), &prepared_for, &hash_ms);
-    const bool libraries = gpl_wanted() && !getenv("RX_VK_NO_WARM");
+    // (hookshot) the pipeline cache's files dropped at this start (pcache_drop_stale: another translator's, or a folder from
+    // before the stamp file) took the stage libraries the warm pass had kept in them: made again, whatever the record says,
+    // once a run, by the start's own preparation (the background one in play leaves the driver's part to first use)
+    static std::atomic<bool> rewarm_once{true};
+    if (!background && pcache_drop_stale() && rewarm_once.exchange(false)) prepared_for.warmed = 0;   // (read as not made)
+    const bool libraries = gpl_wanted() && !env_on("RX_VK_NO_WARM");
     const uint64_t warmed = warmed_stamp(libraries);
     const std::string warming = path + ".warming";
     if (hash_ms > 0)
@@ -8561,24 +8615,30 @@ void pipeline_cache_save(bool force) {
         while (busy.load()) Sleep(1);   // (the one under way, then this one)
         busy = true;
     }
-    auto save = [] {
+    auto save = [force] {
         struct Done { ~Done() { busy = false; } } done;
         try {
             size_t n = 0;
             // (the size last read or written: nothing new, not fetched nor written again; see pcache_saved_size)
-            if (vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n && n != pcache_saved_size) {
-                std::vector<uint8_t> data(n);
-                if (vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS) {
-                    const std::string tmp = pcache_path + ".tmp";
-                    if (FILE* f = fopen(tmp.c_str(), "wb")) {
-                        bool ok = fwrite(data.data(), 1, n, f) == n;
-                        ok = fclose(f) == 0 && ok;   // (its last bytes go to the disk at the close)
-                        // (only a file in place counts as saved: a failed write is tried again at the next save)
-                        if (ok && MoveFileExA(tmp.c_str(), pcache_path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
-                            pcache_saved_size = n;
-                            logf("vk: pipeline cache saved (%zu KB)", n >> 10);
-                        }
-                    }
+            // (in play only once it has grown by a good deal: what play makes is in the play files, and the little pcache still
+            // grows by there (a stage library the driver's own cache answered, copied into it) had it written whole at every
+            // save all the same, 2.4 GB 25 times in a 10-minute first visit for 9 MB more. Past the threshold it is written,
+            // so a folder prepared before the warm pass keeps its libraries through a crash. The window's close does not write it
+            // (pipeline_cache_close saves the generation only); a forced save does: Restart now, the prepare. RX_VK_PLAY_SAVE_START_MB=<n>: the growth it is written at in play (64; 0: any, as before))
+            static const size_t play_grown = (size_t)(getenv("RX_VK_PLAY_SAVE_START_MB") ? std::max<long long>(0, atoll(getenv("RX_VK_PLAY_SAVE_START_MB"))) : 64) << 20;
+            bool write = vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n && n != pcache_saved_size;
+            if (write && !force && play_grown && play_cache_in_use() && n < pcache_saved_size + play_grown) {
+                write = false;
+                static std::atomic<int> told{0};
+                if (told++ < 4)
+                    logf("vk: pipeline cache %zu KB larger in play: written once it is %zu MB larger, or by a forced save",
+                         (n - std::min<size_t>(n, pcache_saved_size)) >> 10, play_grown >> 20);
+            }
+            if (write) {
+                auto data = PipelineCacheFile::writable(pcache_path, n);
+                if (!data.empty() && vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS && data.publish(n)) {
+                    pcache_saved_size = n;
+                    logf("vk: pipeline cache saved (%zu KB)", n >> 10);
                 }
             }
         } catch (const std::exception& e) {
@@ -8624,5 +8684,7 @@ UniformUpload uniform_upload(uint64_t size) {
     if (at == UINT64_MAX) return {};
     return {{cur->stream, at, size, 0}, cur->mapped + at, cur->stream_alloc};
 }
+
+int64_t draw_dummy_textures() { return 0; }   // (Triforce's frame trace column; the dummy bindings are not counted here)
 
 } // namespace mkwvk

@@ -1,6 +1,7 @@
 // The Vulkan back end's start: vulkan-1.dll, the instance, the device (Vulkan 1.3 and the extensions the NVN replay
 // wants where the GPU has them: mesh shaders, host memory import, graphics pipeline libraries), the window's
 // swapchain, and the rx_* table (vk_api.h). The NVN replay itself is vk_replay.cpp.
+#include "compat/hookshot_env.h"   // (env_on, env_value_off: the switches' one rule)
 #include "vk_paths.h"
 #include "vk_loader.h"
 
@@ -225,6 +226,15 @@ struct ComputeDerivativesFeatures {
     VkBool32 computeDerivativeGroupQuads = VK_FALSE;
     VkBool32 computeDerivativeGroupLinear = VK_FALSE;
 };
+/// (hookshot) Whether the shaders' float adds to storage buffers are asked to be the GPU's own atomic (create_device):
+/// RX_VK_NATIVE_FADD by the switches' rule (hookshot_env.h env_value_off: 0, false, off, no or empty is off, any other
+/// value on); unset, only with NVIDIA's driver, the one the native add was tried on in the game (an RTX 4090 in Kakariko
+/// and on Death Mountain Trail). AMD's RDNA 3 and later and Intel's Arc report the feature too but were not tried: they
+/// keep the loop unless the switch asks, until runs on them say otherwise
+static bool native_fadd_wanted(const char* env, VkDriverId driver) {
+    if (env) return !env_value_off(env);
+    return driver == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+}
 
 bool create_device() {
     uint32_t n = 0;
@@ -289,6 +299,20 @@ bool create_device() {
         optional(VK_AMD_BUFFER_MARKER_EXTENSION_NAME, dev.buffer_marker);
     optional(VK_EXT_DEVICE_FAULT_EXTENSION_NAME, dev.device_fault);
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
+    // (hookshot) the GPU's own float add on storage buffers: the game's RED/ATOM.ADD.F32 become one OpAtomicFAddEXT instead
+    // of a compare-exchange loop, which gives up after CAS_LOOP_MAX_TRIES attempts and loses that add (eden
+    // spirv_emit_context.cpp DefineStorageBuffers). By default with NVIDIA's driver only (native_fadd_wanted);
+    // RX_VK_NATIVE_FADD=1 asks for it on any GPU, =0 keeps the loop on every one, the extension not even enabled
+    const char* const fadd_env = getenv("RX_VK_NATIVE_FADD");
+    VkPhysicalDeviceDriverProperties fadd_driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+    {
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        p2.pNext = &fadd_driver;
+        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+    }
+    const bool fadd_wanted = native_fadd_wanted(fadd_env, fadd_driver.driverID);
+    bool atomic_float = false;
+    if (fadd_wanted) optional(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, atomic_float);
     optional(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, dev.swap_mutable);   // (hookshot: the overlays, vk_imgui.cpp)
     dlss_device_extensions(want, exts);   // (hookshot: NVIDIA DLSS's, vk_dlss.cpp)
     bool fsr_descriptor_buffer = false;   // (hookshot: only with a Vulkan FSR 4 library that exports the FSR API itself beside the game, vk_fsr4.cpp)
@@ -381,6 +405,8 @@ bool create_device() {
     if (dev.view_2d_of_3d) *tail = &v2d3d, tail = &v2d3d.pNext;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR coop{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR};
     if (dev.coop_matrix) *tail = &coop, tail = &coop.pNext;
+    VkPhysicalDeviceShaderAtomicFloatFeaturesEXT afloat{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
+    if (atomic_float) *tail = &afloat, tail = &afloat.pNext;
     VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
     if (fsr_descriptor_buffer) *tail = &descriptor_buffer, tail = &descriptor_buffer.pNext;
     VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mutable_descriptor{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT};
@@ -395,6 +421,20 @@ bool create_device() {
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
     dev.coop_matrix = dev.coop_matrix && coop.cooperativeMatrix &&
                       f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
+    {   // (only the float add on buffers on: the one the translator emits)
+        dev.float_atomic_add = atomic_float && afloat.shaderBufferFloat32AtomicAdd;
+        void* const next = afloat.pNext;
+        afloat = VkPhysicalDeviceShaderAtomicFloatFeaturesEXT{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT};
+        afloat.pNext = next;
+        afloat.shaderBufferFloat32AtomicAdd = dev.float_atomic_add ? VK_TRUE : VK_FALSE;
+        const char* const how = dev.float_atomic_add ? "native (VK_EXT_shader_atomic_float)"
+                                : !fadd_wanted       ? "compare-exchange loop"
+                                : atomic_float       ? "compare-exchange loop (no shaderBufferFloat32AtomicAdd)"
+                                                     : "compare-exchange loop (no VK_EXT_shader_atomic_float)";
+        if (fadd_env) logf("vk: float atomic add on storage buffers: %s, RX_VK_NATIVE_FADD=%s", how, fadd_env);
+        else logf("vk: float atomic add on storage buffers: %s, %s", how,
+                  fadd_wanted ? "NVIDIA's driver" : "by default only with NVIDIA's driver (RX_VK_NATIVE_FADD=1: native where the GPU has it)");
+    }
     // (bounds-checked buffer access: an out-of-range access dropped instead of faulting the device. On by default: the GPU
     // culling pass 53caac5f faulted the device while a save loaded, about one start in three, and the scene's lighting read garbage
     // for single frames (the black flashes); with it, neither in A/B runs at the same GPU time. Lichii's OoT branch keeps it on too.
@@ -440,6 +480,19 @@ bool create_device() {
     dev.eds3_blend = dev.dynamic_state3 && eds3.extendedDynamicState3ColorBlendEnable &&
                      eds3.extendedDynamicState3ColorBlendEquation && eds3.extendedDynamicState3ColorWriteMask;
     dev.eds3_a2c = dev.dynamic_state3 && eds3.extendedDynamicState3AlphaToCoverageEnable;
+    {   // (recompzel, from HeyListen 98f34e24) which denorm modes a shader may declare: every program says them, and not every device
+        // has them (GTX 9xx/10xx): strip_float_controls in vk_shader.cpp takes the missing ones out
+        VkPhysicalDeviceVulkan12Properties p12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+        p2.pNext = &p12;
+        vkGetPhysicalDeviceProperties2(dev.physical, &p2);
+        dev.denorm_preserve_widths = (p12.shaderDenormPreserveFloat16 ? 1u : 0u) | (p12.shaderDenormPreserveFloat32 ? 2u : 0u) |
+                                     (p12.shaderDenormPreserveFloat64 ? 4u : 0u);
+        dev.denorm_flush_widths = (p12.shaderDenormFlushToZeroFloat16 ? 1u : 0u) | (p12.shaderDenormFlushToZeroFloat32 ? 2u : 0u) |
+                                  (p12.shaderDenormFlushToZeroFloat64 ? 4u : 0u);
+        logf("vk: float controls: denorm preserve widths %#x, flush to zero %#x (modes the device lacks are taken out of the shaders)",
+             dev.denorm_preserve_widths, dev.denorm_flush_widths);
+    }
     dev.vk12 = f12;
     dev.vk13 = f13;
     {   // (hookshot, after TotK Recomp's vk_caps.c) NVN's programs are written for 32 lanes: the translator is told 32, and the lane

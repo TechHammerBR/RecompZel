@@ -45,9 +45,12 @@ def main():
         block(memory, "void reap_mirrors("),
         eviction,
     ])
-    # Rollback, prefetch drops and both published-import reapers must share the same owner-release point.
-    assert memory.count("vkDestroyBuffer(") == 1
-    assert memory.count("destroy_import_buffer(") == 9
+    # Rollback, prefetch drops, a trim's rollback (mirrors_trim) and both published-import reapers must share the same
+    # owner-release point.
+    # (Triforce: a mirror in pieces destroys its own sparse buffer, a mirror's and not an import's: those two apart)
+    pieces = memory.count("vkDestroyBuffer(dev.device, dead_mirrors.front().buffer, nullptr);") + memory.count("vkDestroyBuffer(dev.device, sb, nullptr);")
+    assert memory.count("vkDestroyBuffer(") - pieces == 1
+    assert memory.count("destroy_import_buffer(") == 10
     fixture = (ROOT / "tests/texel_buffer_ownership_test.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("/* DEAD IMPORT */", block(memory, "struct DeadImport {") + ";")
     fixture = fixture.replace("/* ACTUAL */", actual)

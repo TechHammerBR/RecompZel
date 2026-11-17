@@ -541,6 +541,7 @@ Shader::Profile make_profile() {
     p.support_typeless_image_loads = true;
     p.support_demote_to_helper_invocation = true;
     p.support_int64_atomics = true;
+    p.support_float32_atomic_add = dev.float_atomic_add;   // (one OpAtomicFAddEXT for a float add, not a compare-exchange loop: vk_main.cpp)
     p.support_derivative_control = true;
     p.support_native_ndc = false;   // (the vertex stage converts NVN's -1..1 depth: RuntimeInfo::convert_depth_mode)
     p.support_scaled_attributes = false;   // (*_UI2F / *_I2F read as integers, converted in the shader: R32 has no scaled format)
@@ -581,25 +582,102 @@ Shader::HostTranslateInfo host_info() {
     return h;
 }
 
+/// The pools a translation's IR lives in, with small block chunks (the default chunk of 8192 IR::Blocks of 8 KB each
+/// committed 68 MB a stage)
+struct Pools {
+    Shader::ObjectPool<Shader::IR::Inst> insts{8192};
+    Shader::ObjectPool<Shader::IR::Block> blocks{32};
+    Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_blocks{32};
+};
+/// (each thread's pools of its finished translations, emptied, for its next ones: fresh pages were 20-30% of a stage's
+/// translation time. Room for three, the most alive at once: task, mesh and fragment)
+std::vector<std::unique_ptr<Pools>>& spare_pools() {
+    static thread_local std::vector<std::unique_ptr<Pools>> spare = [] {
+        std::vector<std::unique_ptr<Pools>> v;
+        v.reserve(3);
+        return v;
+    }();
+    return spare;
+}
+/// (a released pool keeps the size of the largest stage it held for the thread's life: one bigger than this is freed)
+constexpr size_t kSparePoolBytes = 8u << 20;
+
 /// A translated stage: its IR program (kept for the next stage's inputs) and the pools its IR lives in
 struct Translation {
-    Shader::ObjectPool<Shader::IR::Inst> insts;
-    Shader::ObjectPool<Shader::IR::Block> blocks;
-    Shader::ObjectPool<Shader::Maxwell::Flow::Block> flow_blocks;
+    std::unique_ptr<Pools> pools;
     Shader::IR::Program program;
+    Translation() {
+        auto& spare = spare_pools();
+        if (spare.empty()) {
+            pools = std::make_unique<Pools>();
+        } else {
+            pools = std::move(spare.back());
+            spare.pop_back();
+        }
+    }
+    ~Translation() {
+        size_t bytes = program.blocks.size() * (sizeof(Shader::IR::Block) + sizeof(Shader::Maxwell::Flow::Block));
+        for (const auto* block : program.blocks) bytes += block->Instructions().size() * sizeof(Shader::IR::Inst);
+        program = {};
+        if (bytes > kSparePoolBytes) return;
+        pools->flow_blocks.ReleaseContents();
+        pools->blocks.ReleaseContents();
+        pools->insts.ReleaseContents();
+        spare_pools().push_back(std::move(pools));
+    }
 };
 
 std::unique_ptr<Translation> translate(Env& env, bool graphics, bool one_exit = false) {
     auto t = std::make_unique<Translation>();
     // (NVN2 task / mesh programs get one exit: their counts are set there, as Eden's pipeline cache does)
-    Shader::Maxwell::Flow::CFG cfg{env, t->flow_blocks,
+    Shader::Maxwell::Flow::CFG cfg{env, t->pools->flow_blocks,
                                    env.StartAddress() + (graphics ? static_cast<u32>(sizeof(Shader::ProgramHeader)) : 0u),
                                    one_exit};
-    t->program = Shader::Maxwell::TranslateProgram(t->insts, t->blocks, env, cfg, host_info());
+    t->program = Shader::Maxwell::TranslateProgram(t->pools->insts, t->pools->blocks, env, cfg, host_info());
     return t;
 }
 
-VkShaderModule make_module(const std::vector<uint32_t>& spirv) {
+/// (recompzel, from HeyListen 98f34e24, GPL-3.0) The denorm modes (DenormPreserve, DenormFlushToZero) a shader declares for a width the
+/// device does not report, and their capability when it reports none of that kind, taken out of the module's preamble. Eden declares
+/// them for any program that uses them (the profile says every device has them); a GPU without them (GTX 9xx/10xx) may reject the
+/// module or lose the device. A program loaded from the program cache is cleaned here too, so the cache stays as it was
+std::vector<uint32_t> strip_float_controls(const std::vector<uint32_t>& spirv, uint32_t preserve, uint32_t flush) {
+    constexpr uint32_t kOpCapability = 17, kOpExecutionMode = 16, kOpFunction = 54;
+    constexpr uint32_t kModePreserve = 4459, kModeFlush = 4460, kCapPreserve = 4464, kCapFlush = 4465;
+    const auto width_bit = [](uint32_t w) { return w == 16 ? 1u : w == 32 ? 2u : w == 64 ? 4u : 0u; };
+    std::vector<uint32_t> out;
+    bool changed = false;
+    size_t i = 5;
+    while (i < spirv.size()) {
+        const uint32_t op = spirv[i] & 0xFFFF, wc = spirv[i] >> 16;
+        if (!wc || i + wc > spirv.size() || op == kOpFunction) break;
+        bool drop = false;
+        if (op == kOpExecutionMode && wc == 4) {
+            if (spirv[i + 2] == kModePreserve) drop = !(preserve & width_bit(spirv[i + 3]));
+            if (spirv[i + 2] == kModeFlush) drop = !(flush & width_bit(spirv[i + 3]));
+        } else if (op == kOpCapability) {
+            if (spirv[i + 1] == kCapPreserve) drop = !preserve;
+            if (spirv[i + 1] == kCapFlush) drop = !flush;
+        }
+        if (drop && !changed) {
+            changed = true;
+            out.assign(spirv.begin(), spirv.begin() + (ptrdiff_t)i);
+        }
+        if (changed && !drop) out.insert(out.end(), spirv.begin() + (ptrdiff_t)i, spirv.begin() + (ptrdiff_t)(i + wc));
+        i += wc;
+    }
+    if (!changed) return {};
+    out.insert(out.end(), spirv.begin() + (ptrdiff_t)i, spirv.end());
+    return out;
+}
+
+VkShaderModule make_module(const std::vector<uint32_t>& spirv_in) {
+    // (RX_VK_KEEP_DENORM=1: the modules as translated)
+    static const bool keep = getenv("RX_VK_KEEP_DENORM") != nullptr;
+    const bool lacks = !keep && (dev.denorm_preserve_widths != 7 || dev.denorm_flush_widths != 7);
+    const std::vector<uint32_t> cleaned =
+        lacks ? strip_float_controls(spirv_in, dev.denorm_preserve_widths, dev.denorm_flush_widths) : std::vector<uint32_t>{};
+    const std::vector<uint32_t>& spirv = cleaned.empty() ? spirv_in : cleaned;
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = spirv.size() * 4;
     ci.pCode = spirv.data();
@@ -677,12 +755,17 @@ uint32_t descriptor_handle(const NvnState& s, const Stage& st, const Shader::Ima
 uint8_t texture_answer(uint32_t handle) {
     if (!handle) return 0xFF;
     // (by the texture slot, until a slot is registered anew: variant checks ask on every draw)
-    static thread_local std::unordered_map<uint32_t, std::pair<uint32_t, uint8_t>> known;   // slot -> (version, answer)
+    // (hookshot, fps: a flat table by slot, not a hash map: every draw's variant check asks this for each texture it samples,
+    // and the map's lookups were ~16% of the back end's time on the replay thread. Slots are the texture pool's indices, ~33k in OoT)
+    struct Known { uint32_t version; uint8_t answer, set; };
+    static thread_local std::vector<Known> known;
     const uint32_t id = handle & 0xFFFFF;
     const uint32_t version = texture_slot_version((int)id);
-    if (auto it = known.find(id); it != known.end() && it->second.first == version) return it->second.second;
+    if (id >= known.size()) known.resize(std::min<size_t>(std::max<size_t>(id + 1, known.size() * 2), 1u << 20));
+    Known& k = known[id];
+    if (k.set && k.version == version) return k.answer;
     const uint8_t a = (uint8_t)((uint8_t)handle_texture_type(handle) | (handle_is_integer(handle) ? 0x80 : 0));
-    known[id] = {version, a};
+    k = {version, a, 1};
     return a;
 }
 /// What the bound textures answer now, for a program whose translation asked about them
@@ -1129,6 +1212,10 @@ uint64_t disk_stamp() {
                               profile().has_broken_spirv_fragment_shuffle ? 1u : 0u, (uint32_t)dev.sg32_stages,
                               getenv("RX_VK_WARP64") ? 1u : 0u};
     add(lanes, sizeof lanes);
+    // (recompzel, with Hookshot #2306: and whether float adds to storage buffers are the GPU's own atomic, so programs made
+    // with OpAtomicFAddEXT are not read back on a GPU or a setting without it)
+    const uint32_t fadd = profile().support_float32_atomic_add ? 1u : 0u;
+    add(&fadd, sizeof fadd);
     // (the records keep Shader::Info as it lies in memory: a cache written by another C++ library (the MSVC build's, then the
     // llvm-mingw one's libc++) has other layouts, and reading it crashed at start. The library and the sizes, so it starts again)
     const uint32_t abi[] = {(uint32_t)sizeof(Shader::Info), (uint32_t)sizeof(Program), (uint32_t)sizeof(std::vector<uint32_t>),
@@ -1151,6 +1238,10 @@ uint64_t disk_stamp() {
         add(mma_order_b.data(), sizeof(uint32_t) * mma_order_b.size());
         add(mma_order_c.data(), sizeof(uint32_t) * mma_order_c.size());
     }
+    // (and whether a float add is the GPU's own atomic (make_profile): a program made with OpAtomicFAddEXT is no use to a GPU
+    // without it, nor one made with RX_VK_NATIVE_FADD=0's loop wanted back once it is native again)
+    const uint32_t float_add = profile().support_float32_atomic_add ? 1u : 0u;
+    add(&float_add, sizeof float_add);
     // (RX_VK_GP_, not RX_VK_GP: that took RX_VK_GPL with it, which changes no translation, and switching the stage libraries on
     // threw the whole program cache away. What the libraries are good for is the prepare's second stamp, vk_draw.cpp warmed_stamp)
     for (char** e = _environ; e && *e; e++)

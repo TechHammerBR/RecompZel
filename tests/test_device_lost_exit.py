@@ -49,6 +49,7 @@ void checkpoints_report() {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));   // (a slow report: the others must wait for it)
     report_done = true;
 }
+void memory_trial_device_lost() {}   // (Triforce: the memory handling on trial off from the next start; nothing to do here)
 [[noreturn]] void replay_fatal(const char* why) {
     std::printf("%s: %d report(s), %s\n", why ? "fatal" : "?", reports.load(), report_done ? "done" : "NOT done");
     if (reports != 1 || !report_done) std::printf("FAIL: the process ended before its one report was written\n");

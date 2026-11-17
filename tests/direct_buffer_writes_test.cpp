@@ -41,7 +41,12 @@ static void require(bool condition, const char* message) {
 struct ParLock { ParLock() {} ~ParLock() {} };
 static void texture_gpu_wrote(uint64_t, uint64_t) { ++texture_writes; }
 static void rb_hazard_locked(uint64_t lo, uint64_t hi) { ++hazards; hazard_lo = lo; hazard_hi = hi; }
+// (gpu/vk/wb_learn.h's table: every write-back queued here; tests/test_wb_learn.py runs its rules)
+static bool wb_leave_out(uint64_t, uint64_t, std::vector<std::pair<uint64_t, uint64_t>>&) { return false; }
+static bool wb_skips_log() { return false; }
+static void wb_skip_note(uint64_t, uint64_t) {}
 static bool mirror_on() { return mirrors; }
+static void note_in_place_read(bool = false) {}   // (the readback's part wait: tests/test_readback_part.py checks every such read is noted)
 static Pool* pool_of(uint64_t guest, uint64_t size) {
     ++lookups;
     return have_pool && guest >= pool.lo && guest <= pool.hi && size <= pool.hi - guest ? &pool : nullptr;
@@ -51,7 +56,24 @@ static void mirror_sync(Pool& p) { ++synced; p.synced_epoch = mirror_epoch; p.sy
 static uint64_t texture_segment() { return 0; }
 static void publish_cap_ranges() { throw std::runtime_error("unexpected mirror publication"); }
 static void logf(const char*, ...) {}
-static bool import_in_background(uint64_t, uint64_t) { throw std::runtime_error("unexpected asynchronous import"); }
+static bool import_in_background(uint64_t, uint64_t, const char** = nullptr) { throw std::runtime_error("unexpected asynchronous import"); }
+// (Triforce: the timeline's progress, put-off late pages, mirrors in pieces, the mirrors' use this submission; none in this model)
+static uint64_t vk_timeline_completed() { return 0; }
+static std::atomic<int> deferred_late_n{0};
+static void late_deferred_bound(uint64_t, uint64_t) {}
+static bool pieces_resident(Pool*, uint64_t, uint64_t) { return true; }
+static bool pieces_direct(Pool*, uint64_t, uint64_t) { return false; }
+static bool mirror_use_on() { return false; }
+static void mirror_use_note(const Pool*, uint64_t, uint64_t) {}
+static thread_local const char* tl_sync_why = nullptr;
+static bool mirror_pieces_make(Pool&, uint64_t, uint64_t, bool) { return true; }
+static int64_t st_piece_direct;
+struct PieceWant { uint64_t lo, off, size; };
+static std::vector<PieceWant> piece_wanted;
+static thread_local bool tl_event_write = false, tl_from_compute = false;
+struct DevProps { uint32_t vendorID = 0; };   // (not NVIDIA: the background import (Triforce, RX_VK_ASYNC_IMPORT) stays off)
+struct DevModel { DevProps props; };
+static DevModel dev;
 static BufferRef stream_copy(const uint8_t*, uint64_t) { throw std::runtime_error("unexpected streaming copy"); }
 static const uint8_t* gpu_ptr(uint64_t, uint64_t* avail) {
     *avail = mapping_valid ? 4ull << 20 : 0;
@@ -62,6 +84,8 @@ struct Host { const uint8_t* (*gpu_ptr)(uint64_t, uint64_t*); uint64_t (*gpu_gue
 static Host interface{gpu_ptr, gpu_guest};
 static Host* host = &interface;
 
+uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint64_t* part = nullptr, uint64_t* whole = nullptr);
+#include "../gpu/vk/compat/hookshot_env.h"   // (env_on: the switches' one rule, as vk_memory.cpp reads RX_VK_NO_READBACK_WAIT)
 #include "direct_write_actual.inc"
 
 static void readback_disabled(bool off) {
@@ -87,6 +111,10 @@ static void page_state(uint64_t guest, uint64_t size, bool expected) {
         const uint64_t after = (guest + size + 4095) & ~4095ull;
         ever = true;
         require(memory_writeback_value(after, 1, &ever) == 0 && !ever, "registered a page beyond the written range");
+        // (written in place: no part of its submission is enough for a read of it, the whole submission is waited for)
+        uint64_t part = 1, whole = 0;
+        require(memory_writeback_value(guest, size, nullptr, &part, &whole) == mem_rec_value && part == 0 && whole == mem_rec_value,
+                "a range written in place must wait for its whole submission");
     }
 }
 

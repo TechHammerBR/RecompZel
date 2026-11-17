@@ -32,6 +32,7 @@ using VkShaderStageFlags = uint32_t;
 constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
 struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
+    bool float_atomic_add = false;
     struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
 } dev;
 
@@ -100,6 +101,7 @@ def main():
 void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
     bool added = false;
     const auto add = [&](const uint32_t* values, size_t bytes) {
+        if (bytes == sizeof(uint32_t)) return;   // (recompzel: the native float add's bit, added after the lanes)
         assert(bytes == 5 * sizeof(uint32_t));
         assert(values[0] == uint32_t(size > 32) && values[1] == size);
         assert(values[2] == uint32_t(workaround) && values[3] == pinned && values[4] == uint32_t(forced));
