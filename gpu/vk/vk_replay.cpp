@@ -1419,15 +1419,14 @@ void maybe_split(VkCommandBuffer& cmd) {
 // EXPERIMENTAL, off unless asked for: its first runs (2026-11-11) gained nothing, 54.7 fps against 58.9 standing in Castle Town
 // and 60.4 against 61.7 on the tour. The frame time of a scene with a crowd moves by 2 ms within seconds (one trial read 18.59
 // and then 16.44 ms for the same way), more than the difference being measured, so the trials decide on noise
-// (recompzel, 2026-11-17) On by default with 8 or more hardware threads: 4 recording threads, as HeyListen (TICK-006, 6bf932fc)
-// after the dry pass's fixes (a clear's targets, a texture copy's destination: dry_mark_copy_target), Kokiri 54 -> 65 fps and
-// Hyrule Field 49 -> 62 there; here the replay thread is the frame's limit in Hyrule Field (9.5 ms of 13.5, i9-14900KF).
-// RX_VK_PARALLEL=0: off, as before
+// (recompzel, 2026-11-17) Tried on by default (4 threads, as HeyListen's TICK-006): on an i9-14900KF + RTX 4080 in Hyrule Field
+// the replay thread went from 7.8 to 5.3 ms a frame but the frame rate fell, 86.5 -> 66-68 fps at 1,500-2,200 draws, so it stays
+// off unless asked for (RX_VK_PARALLEL=<n>). HeyListen's gain came with its other parallel work (held flush, rounds, balance)
 int par_threads_max() {
     static const int n = [] {
         if (const char* e = getenv("RX_VK_PARALLEL")) return std::clamp(atoi(e), 0, 8);
         if (const char* e = getenv("RX_VK_PARALLEL_AUTO")) return std::clamp(atoi(e), 0, 8);
-        return std::thread::hardware_concurrency() >= 8 ? 4 : 0;
+        return 0;
     }();
     return n;
 }
