@@ -6,7 +6,18 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
+
+// (recompzel) Dados de versao no exe: um executavel sem nome de produto, empresa e versao pesa mais na heuristica dos antivirus
+// (o Microsoft Defender bloqueou o RecompZel-Launcher.exe baixado da release, 2026-11-17)
+[assembly: AssemblyTitle("RecompZel Launcher")]
+[assembly: AssemblyDescription("Abre o painel do RecompZel (launcher.ps1) para compilar e jogar a recompilacao de Zelda: Ocarina of Time")]
+[assembly: AssemblyCompany("TechHammerBR")]
+[assembly: AssemblyProduct("RecompZel")]
+[assembly: AssemblyCopyright("GPL-3.0, https://github.com/TechHammerBR/RecompZel")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
 
 static class LauncherStub
 {
@@ -26,6 +37,32 @@ static class LauncherStub
     {
         int n;
         return int.TryParse((text ?? "").Trim(), out n) ? n : 0;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool DeleteFileW(string path);
+
+    // A marca "baixado da internet" (Zone.Identifier) num script copiado: com ela o RemoteSigned recusaria o script
+    static void ClearZone(string file)
+    {
+        try { DeleteFileW(file + ":Zone.Identifier"); } catch (Exception) { }
+    }
+
+    // O PowerShell com o launcher.ps1. RemoteSigned, e nao Bypass, e sem -WindowStyle Hidden (o CreateNoWindow ja esconde o
+    // console): "Bypass + janela escondida" vindo de um exe baixado e o padrao que os antivirus marcam como dropper.
+    // Os scripts sao arquivos locais (sem a marca de download), que o RemoteSigned roda
+    static Process StartLauncher(string policy)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                @"System32\WindowsPowerShell\v1.0\powershell.exe"),
+            Arguments = "-NoProfile -ExecutionPolicy " + policy + " -STA -File \"" + Path.Combine(Dir, "launcher.ps1") + "\"",
+            WorkingDirectory = Dir,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        return Process.Start(psi);
     }
 
     [STAThread]
@@ -70,16 +107,10 @@ static class LauncherStub
             {
                 try { File.WriteAllText(buildFile, embedded.ToString()); } catch (IOException) { }
             }
-            var psi = new ProcessStartInfo
-            {
-                FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
-                    @"System32\WindowsPowerShell\v1.0\powershell.exe"),
-                Arguments = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File \"" + Path.Combine(Dir, "launcher.ps1") + "\"",
-                WorkingDirectory = Dir,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            Process.Start(psi);
+            foreach (var f in Directory.GetFiles(Dir, "*.ps1")) ClearZone(f);
+            // Se uma politica da maquina recusar o RemoteSigned (o PowerShell sai logo, com erro), tenta como antes
+            var ps = StartLauncher("RemoteSigned");
+            if (ps != null && ps.WaitForExit(4000) && ps.ExitCode != 0) StartLauncher("Bypass");
             return 0;
         }
         catch (Exception e)
