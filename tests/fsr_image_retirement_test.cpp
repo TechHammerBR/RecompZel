@@ -72,6 +72,8 @@ void gpu_time_end(Recording&) {}
 void end_pass(VkCommandBuffer) {}
 void flush_ub_updates(VkCommandBuffer) {}
 void memory_end_submission(VkCommandBuffer, uint64_t) {}
+bool memory_mirror_bind_wait(VkSemaphoreSubmitInfo*) { return false; }   // (Triforce: the mirrors' piece binds: none here)
+void texture_end_recording(VkCommandBuffer) {}   // (Triforce: the bake's write-backs at a recording's end: none here)
 void full_barrier(VkCommandBuffer, const char*) {}
 void logf(const char*, ...) {}
 void device_lost() { need(false, "unexpected device loss"); }

@@ -77,6 +77,7 @@ std::map<VkCommandBuffer,int> slots;
 bool texture_uploads_recorded() { return true; }
 void gprof_submitted(int,bool) {}
 void gpu_time_end(Recording&) {}
+bool memory_mirror_bind_wait(VkSemaphoreSubmitInfo*) { return false; }   // (Triforce: the mirrors' piece binds: none here)
 VKAPI_ATTR VkResult VKAPI_CALL vkEndCommandBuffer(VkCommandBuffer) { return VK_SUCCESS; }
 VkSemaphore timeline{},rec_timeline{};
 uint64_t rec_seq=0;

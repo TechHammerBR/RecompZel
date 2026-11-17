@@ -183,6 +183,9 @@ VkCommandBuffer last_barrier_cmd = VK_NULL_HANDLE;
 thread_local VkCommandBuffer last_pass_end_cmd = VK_NULL_HANDLE;
 bool is_bc(VkFormat) { return false; }
 bool is_astc(VkFormat) { return false; }
+// (Triforce: the mirrors' piece binds, flushed before a recording is submitted and waited for by its submission: none here)
+void memory_mirror_binds_flush() {}
+bool memory_mirror_bind_wait(VkSemaphoreSubmitInfo*) { return false; }
 #include "init_upload.inc"
 #include "init_hooks.inc"
 

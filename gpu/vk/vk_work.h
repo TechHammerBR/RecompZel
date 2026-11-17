@@ -132,3 +132,5 @@ inline void note_work() {
 #define vmaDestroyBuffer(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaDestroyBuffer), ::vmaDestroyBuffer(__VA_ARGS__))
 #define vmaDestroyImage(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaDestroyImage), ::vmaDestroyImage(__VA_ARGS__))
 #define vmaInvalidateAllocation(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaInvalidateAllocation), ::vmaInvalidateAllocation(__VA_ARGS__))
+// (recompzel: Triforce frees the memory of a sparse mirror's pieces and of blocks made ahead with vmaFreeMemory)
+#define vmaFreeMemory(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaFreeMemory), ::vmaFreeMemory(__VA_ARGS__))

@@ -74,7 +74,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hookshot-native-astc-count-") as temp:
         src, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         src.write_text(FIXTURE.replace("/* ACTUAL_HELPER */", helper), encoding="utf-8")
-        subprocess.run([a.cxx, "-std=c++17", "-O0", "-Wall", "-Wextra", "-Werror", str(src), "-o", str(exe)], check=True)
+        subprocess.run([a.cxx, "-std=c++17", "-O0", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", str(src), "-o", str(exe)], check=True)
         out = subprocess.run([str(exe)], input="".join("%d %d %d %d %d\n" % c for c in cases), capture_output=True, text=True,
                              check=True).stdout.split()
     assert len(out) == len(cases), (len(out), len(cases))
