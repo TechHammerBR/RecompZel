@@ -1942,7 +1942,11 @@ bool low_vram_texture_mips() {
         uint64_t used = 0, allowed = 0;
         return vram_usage(&used, &allowed) && allowed && allowed <= (4ull << 30) + (512ull << 20);
     }();
-    return !disabled && small && opts.preset == 1;
+    // (recompzel) Custom too, not Minimum alone: a tuned row turns the preset to Custom, and an options file brought from
+    // another PC is Custom from the start. A GTX 970 (4 GB, 3.4 allowed) on Custom kept its decoded ASTC whole: 2147 textures,
+    // 2983 MB against a 1563 MB budget, 5.5 GB used of 2.9 allowed in Kokiri Forest, paged, 3 fps (2026-11-17). Only a larger
+    // preset chosen on purpose (Low and up) keeps the full levels
+    return !disabled && small && (opts.preset == 1 || opts.preset == 0);
 }
 
 Texture* create(const Key& key, const nvn_tex* t, VkFormat vf, bool astc, int bw, int bh, int bpb, bool as_target) {
@@ -4674,7 +4678,10 @@ void texture_frame(uint64_t completed) {
     // lost 1700 MB of textures in seconds, made again on unpausing (the long wait), and the HUD's drawn textures went with them.
     // RX_VK_SQUEEZE_ALWAYS=1: as before
     static const bool squeeze_always = getenv("RX_VK_SQUEEZE_ALWAYS") != nullptr;
-    const bool room_in_blocks = !squeeze_always && block_free >= allowed / 8;
+    // (recompzel) but not once the count is well past the allowance (a tenth over): the driver is paging VRAM out, and the free
+    // space in the blocks is not keeping the count down. The GTX 970 above sat at 5.5 GB of 2.9 with 695 MB free in the blocks,
+    // never squeezed, for minutes
+    const bool room_in_blocks = !squeeze_always && block_free >= allowed / 8 && used <= allowed + allowed / 10;
     // (nor while the textures' pool is down to its blocks made at the start, which VMA keeps: what this evicts would leave the
     // count as it is, the same ratchet. RX_VK_SQUEEZE_ALWAYS=1 squeezes there too)
     if (known && !by_blocks && !(kept_only && !squeeze_always) && used > squeeze_line && !room_in_blocks) {
