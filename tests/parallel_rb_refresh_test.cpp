@@ -82,6 +82,23 @@ void mirror_sync(Pool& p) {   // (model: no CPU page is dirty here)
     p.synced_epoch = mirror_epoch;
     p.sync_seg = texture_segment();
 }
+// (Triforce: mirrors in pieces, direct reads and the event writes; none in this model: whole mirrors, no events)
+static void clip_resident(const Pool&, std::vector<VkBufferCopy>&, bool = false) {}
+static bool pieces_resident(Pool*, uint64_t, uint64_t) { return true; }
+static bool pieces_direct(Pool*, uint64_t, uint64_t) { return false; }
+static bool mirror_pieces_make(Pool&, uint64_t, uint64_t, bool) { return true; }
+static const bool par = false;
+static int64_t st_piece_direct;
+struct PieceWant { uint64_t lo, off, size; };
+static std::vector<PieceWant> piece_wanted;
+static std::map<uint64_t, std::pair<int64_t, int>> direct_by_pool;
+static std::map<uint64_t, uint64_t> direct_bytes_by_pool;
+static void shadow_forget(Pool&, uint64_t, uint64_t) {}
+static void wb_pages_note(uint64_t, uint64_t, uint64_t, uint64_t) {}
+static uint64_t mem_rec_value;
+static void note_in_place_read() {}
+static thread_local bool tl_event_write = false, tl_from_compute = false;
+static void memory_mirror_binds_flush() {}
 #include "rb_refresh.inc"
 // (gpu/vk/wb_learn.h's table: every write-back queued in this model; tests/test_wb_learn.py runs its rules)
 static bool wb_leave_out(uint64_t, uint64_t, std::vector<std::pair<uint64_t, uint64_t>>&) { return false; }
@@ -97,6 +114,7 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     if (gpu + size > p->hi) return {};
     const uint64_t off = gpu - p->lo;
     if (!mirror_upload || p->mstate != Pool::MIRROR_ON) return {p->buffer, off, size, 0};
+    auto remember = [](BufferRef r) { return r; };   // (the read memo: none in this model)
 #include "rb_bindtail.inc"
     return {p->mirror, off, size, 0};
 }

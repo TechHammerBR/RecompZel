@@ -61,7 +61,9 @@ FIXTURE = r"""
 #include <mutex>
 #include <vector>
 constexpr uint64_t kPageShift = 12, kChunkPages = 16, kPages = 64;
+#include <unordered_map>
 static bool env_on(const char*) { return false; }   // (no switch set)
+static uint64_t vk_timeline_completed() { return 0; }   // (Triforce: wb_pages_note trims its recent runs by it)
 namespace {
 /* PAGES */
 static int failures;
@@ -262,7 +264,13 @@ def main():
     memory = (a.source / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
     replay = (a.source / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     pages = memory[memory.index("std::mutex wb_pages_mu;"):memory.index("uint64_t memory_writeback_value(")]
+    # (Triforce: the late pages' second copy, between the two, reads captures and the pools: not this test's, left out)
+    if "// (Triforce) see late_unresolved_n." in pages:
+        cut = pages.index("// (Triforce) see late_unresolved_n.")
+        pages = pages[:cut] + "} // namespace\n"
     pages += block(memory, "uint64_t memory_writeback_value(")
+    if "bool wb_inflight_in(" in pages:   # (Triforce: take_capture's, not used here)
+        pages += "\n[[maybe_unused]] static auto* const wb_inflight_in_kept = &wb_inflight_in;\n"
     submit = replay[replay.index("void submit_recording("):]
     bookkeeping = between(submit, "std::lock_guard mk(rec_map_mu);", "while (part_rec.size() > 8192) part_rec.erase(part_rec.begin());")
     assert len(bookkeeping) < 3000, "the bookkeeping must be in submit_recording's rec_timeline block"

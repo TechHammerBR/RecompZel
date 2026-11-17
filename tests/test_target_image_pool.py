@@ -56,15 +56,16 @@ class TargetImagePoolTests(unittest.TestCase):
         make = block(self.tex, "Texture* create(const Key& key")
         self.assertIn("create_image(ci, x.image, x.allocation, false, as_target && !is_bc(x.format) && !is_astc(x.format))", make)
         vma = (ROOT / "gpu" / "vk" / "vk_vma.cpp").read_text(encoding="utf-8")
-        image = block(vma, "bool create_image(const VkImageCreateInfo& ci")
+        # (Triforce: create_image times and counts, the pool is chosen in create_image_inner)
+        image = block(vma, "bool create_image_inner(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated, bool target, bool textures) {")
         self.assertIn("target && target_images_pool() ? target_images_pool() : images_pool()", image)
         pool = block(vma, "VmaPool target_images_pool()")
         self.assertIn('getenv("RX_VK_TARGET_BLOCKS")', pool)
-        self.assertIn("pi.blockSize = image_block_bytes();", pool)
+        self.assertIn("pi.blockSize = target_block();", pool)   # (Triforce: the targets' own block size)
         self.assertIn("void vma_log_image_blocks()", vma)
 
     def test_the_dead_targets_are_swept_every_ten_presents(self):
-        frame = block(self.tex, "void texture_frame(uint64_t completed)")
+        frame = block(self.tex[self.tex.rindex("void texture_sweep("):], "void texture_sweep(")   # (Triforce: texture_frame's sweep is a function of its own)
         self.assertIn('getenv("RX_VK_DEAD_EVERY")', frame)
         self.assertIn(": 10;", frame[frame.index('getenv("RX_VK_DEAD_EVERY")'):])
         self.assertIn("frame_no % (dead_targets ? dead_every : 600)", frame)
@@ -90,7 +91,9 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertLess(loop.index("if (it->pool_key) {"), loop.index("destroy_image(it->image, it->allocation);"))
         self.assertIn("pool_put(*it);", loop[:loop.index("destroy_image(")])
         trim = frame.index("pool_trim();")
-        self.assertLess(trim, frame.index("if (frame_no % 10) return;"))   # (every present, not every tenth)
+        # (every present, not every tenth: before the sweep, which has its own present test)
+        self.assertLess(trim, frame.index("texture_sweep(completed"))
+        self.assertIn("frame_no % (dead_targets ? dead_every : 600)", block(self.tex[self.tex.rindex("void texture_sweep("):], "void texture_sweep("))
         self.assertIn("pool_pressed = known && pressure > pressure_line;", frame)
         # (recompzel) 90% is still the baseline; DLSS-G running tightens it (nvngx_dlssg.dll crashed twice when the pool
         # gave back what Streamline held, both times past 90% of what the driver allowed)
@@ -101,8 +104,10 @@ class TargetImagePoolTests(unittest.TestCase):
 
     def test_the_trim_is_bounded_a_present_and_gives_back_idle_and_excess_images(self):
         trim = block(self.tex, "size_t pool_trim()")
-        self.assertIn("pool_pressed ? 0 : pool_cap()", trim)
-        self.assertIn("pool_pressed ? 64 : 16", trim)
+        # (Triforce: pressed and no floor of blocks kept: give_back)
+        self.assertIn("const bool give_back = pool_pressed && !target_floor_kept();", trim)
+        self.assertIn("give_back ? 0 : pool_cap()", trim)
+        self.assertIn("give_back ? 64 : 16", trim)
         self.assertIn("frame_no - v[i].since <= 120", trim)
         self.assertIn("pool_bytes <= cap", trim)
         self.assertIn("pool_destroy(v[i]);", trim)

@@ -44,7 +44,8 @@ def check_source():
     if not make.index(own) < make.index("pool_take(pool_key, x.image, x.allocation, x.views)"):
         raise SystemExit("vk_texture.cpp: the textures' pool is no longer tried before the render targets' pool and blocks")
     # (while a pass is open nothing of the pool is freed: VMA holds the allocations it listed)
-    frame = block(tex, "void texture_frame(uint64_t completed)")
+    # (Triforce: texture_frame's sweep is texture_sweep, called at its end: the two read as one, in that order)
+    frame = block(tex, "void texture_frame(uint64_t completed)") + "\n" + block(tex[tex.rindex("void texture_sweep("):], "void texture_sweep(")
     step_at, sweep = frame.index("compact_step(completed);"), frame.index("for (auto it = dead.begin(); it != dead.end();) {")
     if not step_at < sweep or "if (compact.in_pass) break;" not in frame[sweep:sweep + 400]:
         raise SystemExit("vk_texture.cpp: the dead list is no longer held while a compaction pass is open")
@@ -77,7 +78,7 @@ def check_source():
     need("vk_texture.cpp: compact_step()", block(tex, "void compact_step(uint64_t completed)"),
          ["if (!compact_on()) return;", "vram_compact::run_from(min_free, compact.pressed)", "vram_compact::rest(compact.pressed)",
           "t != present_source", "image_compact_ignore(i);", "destroy_gen++;"])
-    need("vk_vma.cpp: create_image()", block(vma, "bool create_image(const VkImageCreateInfo& ci"),
+    need("vk_vma.cpp: create_image_inner()", block(vma, "bool create_image_inner(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated, bool target, bool textures) {"),
          ["textures && textures_pool() ? textures_pool()"])
     need("vk_vma.cpp: image_compact_begin()", block(vma, "bool image_compact_begin("), ["di.pool = texture_pool;"])
 

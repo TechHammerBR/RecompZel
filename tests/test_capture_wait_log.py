@@ -30,7 +30,8 @@ class CaptureWaitLogTests(unittest.TestCase):
 
     def test_the_late_page_wait_is_timed_on_its_own(self):
         late = block(self.take, "if (c->late_value && c->map)")
-        wait = late.index("vk_timeline_wait(c->late_value);")
+        # (Triforce: the wait is for v, which is c->late_value unless RX_VK_LATE_NEW narrowed it)
+        wait = late.index("vk_timeline_wait(v);") if "vk_timeline_wait(v);" in late else late.index("vk_timeline_wait(c->late_value);")
         self.assertRegex(late[:wait], r"const auto (\w+) = std::chrono::steady_clock::now\(\);")
         self.assertIn("st_tk_late +=", late[wait:])
         self.assertIn("st_tk_late_n++", late[wait:])
@@ -41,7 +42,8 @@ class CaptureWaitLogTests(unittest.TestCase):
         self.assertRegex(self.take, r"st_tk_stamp \+= std::chrono::duration<double, std::milli>\(tk1 - tk_locked\)")
 
     def test_the_log_line_names_the_wait_and_resets_it(self):
-        line = re.search(r'logf\("vk: a capture taken \(ms\):.*?\);', self.take, re.S).group(0)
+        # (to the call's end at a line's end: the format itself holds a ");")
+        line = re.search(r'logf\("vk: a capture taken \(ms\):.*?\);$', self.take, re.S | re.M).group(0)
         self.assertIn("GPU wait for late pages", line)
         self.assertIn("pools lock", line)
         self.assertIn("st_tk_late / 600", line)
