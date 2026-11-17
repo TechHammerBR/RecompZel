@@ -6123,4 +6123,7 @@ void memory_stats(int64_t* mirrors, uint64_t* mirror_mb, int64_t* sync_bytes, in
     *mirrors = st_mirrors, *mirror_mb = mirror_bytes >> 20, *sync_bytes = st_sync_bytes, *sync_copies = st_sync_copies;
     *wb_bytes = st_wb_bytes;
 }
+uint64_t memory_pools_generation() {
+    return pools_gen.load(std::memory_order_acquire);
+}
 } // namespace mkwvk
