@@ -49,10 +49,14 @@ struct Quant {
 };
 
 // 7 bits plus the p-bit nearest to e[4] (0..255), the two candidates tried as the CPU encoder does.
+// (recompzel, 2026-11-17, as HeyListen's issue 16 fix) An end of alpha 0 takes p-bit 0 and one of 255 p-bit 1, the only
+// ones that give them back: the nearest RGBA gave a transparent white end (255, 255, 255, 0) p-bit 1, so alpha 1, and a
+// HUD sprite's whole quad then blended white over the scene (the squares around the minimap, BC7 only)
 Quant quantize(const float e[4]) {
     Quant out_q;
     int best = 0x7fffffff;
-    for (int pb = 0; pb < 2; ++pb) {
+    const int pb_lo = e[3] >= 255.0 ? 1 : 0, pb_hi = e[3] <= 0.0 ? 0 : 1;
+    for (int pb = pb_lo; pb <= pb_hi; ++pb) {
         int err = 0;
         int t[4];
         for (int c = 0; c < 4; ++c) {
@@ -83,7 +87,15 @@ void choose_indices(const int px[16][4], inout Fit f) {
     for (int i = 0; i < 16; ++i) {
         int best = 0;
         int best_err = 0x7fffffff;
+        // (a texel of alpha 0 or 255 only takes an entry of that alpha: the pinned end is one; none, any)
+        bool pinned = px[i][3] == 0 || px[i][3] == 255;
+        if (pinned) {
+            bool any = false;
+            for (int k = 0; k < 16; ++k) any = any || pal[k][3] == px[i][3];
+            pinned = any;
+        }
         for (int k = 0; k < 16; ++k) {
+            if (pinned && pal[k][3] != px[i][3]) continue;
             int e = 0;
             for (int c = 0; c < 4; ++c) {
                 const int d = px[i][c] - pal[k][c];
@@ -99,8 +111,29 @@ void choose_indices(const int px[16][4], inout Fit f) {
     }
 }
 
-Fit fit_endpoints(const int px[16][4], const float e0[4], const float e1[4]) {
+// The ends' alpha put on the block's alpha 0 and 255 where it has them, and on its alpha when that is one value (the axis
+// and least squares leave them a little off)
+void pin_alpha(inout float e0[4], inout float e1[4], const int px[16][4]) {
+    int alo = 255, ahi = 0;
+    for (int i = 0; i < 16; ++i) alo = min(alo, px[i][3]), ahi = max(ahi, px[i][3]);
+    if (alo == ahi) {
+        e0[3] = float(alo), e1[3] = float(alo);
+        return;
+    }
+    const bool low0 = e0[3] <= e1[3];
+    if (alo == 0) {
+        if (low0) e0[3] = 0.0;
+        else e1[3] = 0.0;
+    }
+    if (ahi == 255) {
+        if (low0) e1[3] = 255.0;
+        else e0[3] = 255.0;
+    }
+}
+
+Fit fit_endpoints(const int px[16][4], float e0[4], float e1[4]) {
     Fit f;
+    pin_alpha(e0, e1, px);
     const Quant q0 = quantize(e0);
     const Quant q1 = quantize(e1);
     for (int c = 0; c < 4; ++c) {
