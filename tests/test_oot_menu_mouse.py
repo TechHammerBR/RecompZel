@@ -72,6 +72,7 @@ static int pointer_hidden;   /* (the cursor hidden while the pad is in use: the 
 static int menu_frees, menu_gone;   /* (the game's menus' mouse: freed for a menu's frame; their close told) */
 void hos_mouse_game_menu(void) { menu_frees++; }
 void hos_mouse_game_menu_gone(void) { menu_gone++; }
+volatile int64_t hos_menu_shown_ns;   /* (host/nn_vi.c: 60 fps while a menu is in front) */
 int hos_mouse_wheel_take(void) { const int w = wheel_next; wheel_next = 0; return w; }   /* (the wheel only, mouse kept) */
 int hos_mouse_game_pointer(int *x, int *y, int *w, int *h, uint32_t *pressed, int *wheel) {
     *x = ptr_x, *y = ptr_y, *w = 3840, *h = 2160, *pressed = pressed_next, *wheel = wheel_next;
