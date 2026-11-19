@@ -351,21 +351,41 @@ def patch_movie_frames(s):
 # - f_800672e0, the water renderer: its ripple simulation runs (int)step times the water's substeps (+76 of the pass) each frame.
 #   Cut to 0, the rings Link and the actors make in water stood still above 60 fps. Found by atk3001 for Lichii (zortos293/
 #   Lichii#1152), as ported to Fritchii (Frizti/Fritchii d389685a4, 063dbb741): its remainder is kept per water object (x21).
+# - f_803edf70, the time of day (after upstream Hookshot f0c40fc96, #2093, as HeyListen took it): each frame it adds (int)(2 * step)
+#   game seconds (+60) to the seconds of the day. Cut, it added 1 a frame below 120 fps (the day slower) and 0 above 120, where
+#   the clock stood still and the sun swung back and forth over the frozen hour. The function cuts into x8 once more, in the
+#   branch that sets the time from another source: that one stays the game's (the anchor is the cut stored to +60).
+# - f_80652cb0, the Deku Tree's floor web (after upstream db0dd7140, #2929): it cuts the elapsed time over 1/60 to whole
+#   simulation steps, then clamps them to 0..3. Cut to 0, the web did not react when Link jumped on it above 60 fps.
+# - f_832b32b0, the Scarecrow's Song playback, f_832b6840, its eight-note recording (mode 10), and f_832b2690, its completion
+#   (after upstream Hookshot 2d8044fb, Longshot 08771847, HeyListen ddef6139): the elapsed frames (+0x265fc) advance the saved
+#   note delays and are saved as the notes' lengths. Cut to 0 above 60 fps, playback waited on its first note and a recording
+#   lost its rhythm. The cuts are unsigned; f_832b6840 has another unsigned cut (mode 13) left as it is: its anchor is the
+#   cut followed by the addition to x10. A song whose rhythm was lost is not restored: record it again.
 # hos_frame_whole carries the fractions per counter while the frames' own time is the step, so each moves at the game's rate;
-# otherwise it cuts as the game does. A site is added here once it is seen to misbehave in game. (A site's function, its code to
-# replace, and the counter's address for its remainder.)
+# otherwise it cuts as the game does. A site is added here once it is seen to misbehave in game. (A site's function, the code
+# to replace (the first of the candidates the function has once), and the counter's address for its remainder.)
+CUT = "    c->x[%d]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,%d,3,c->fpcr,&c->fpsr);\n"
+STORE = "    recomp_store32(c,%s,c->x[%d]);\n"
+ADD = ("    { uint64_t _a=c->x[%d],_b=((uint64_t)(uint32_t)(((uint32_t)(c->x[8])) << 0)),_r=_a+_b; _r&=0xFFFFFFFFULL; "
+       "c->x[8]=_r; }\n")
+
+
+def _site(addr, reg, key, signed=True, add=None):
+    cut = CUT % (reg, 1 if signed else 0)
+    olds = (cut + ADD % add,) if add is not None else (cut, cut + STORE % (key, reg))
+    return ("void f_%s(Ctx *__restrict A64_NOESC c) {\n" % addr, olds, key)
+
+
 WHOLE_SITES = (
-    # (the cut alone, the function's one: the multiply before it is a64_fpx_hot_mul32_fma32 in a lift where the function is
-    # among A64_HOT_FUNCS)
-    ("void f_80a87e50(Ctx *__restrict A64_NOESC c) {@",
-     "    c->x[12]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);@",
-     "c->x[19] + 864"),
-    # (the cut alone, the function's one)
-    ("void f_800672e0(Ctx *__restrict A64_NOESC c) {@",
-     "    c->x[9]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);@",
-     "c->x[21]"),
+    _site("80a87e50", 12, "c->x[19] + 864"),
+    _site("800672e0", 9, "c->x[21]"),
+    _site("803edf70", 8, "c->x[19] + 60"),
+    _site("80652cb0", 22, "c->x[19] + 2296"),
+    _site("832b32b0", 8, "c->x[19] + 0x265fc", signed=False),
+    _site("832b6840", 8, "c->x[9]", signed=False, add=10),
+    _site("832b2690", 8, "c->x[19] + 0x265fc", signed=False),
 )
-WHOLE_SITES = tuple((h.replace("@", "\n"), o.replace("@", "\n"), k) for h, o, k in WHOLE_SITES)
 WHOLE_MARK = "/* (the step's whole frames: nx2/oot_patches.py) */"
 WHOLE_DECL = "extern uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits);\n"
 
@@ -384,15 +404,18 @@ def patch_whole_frames(s):
     """The counters of WHOLE_SITES take hos_frame_whole's whole frames: (s, the sites patched here). A file without the function,
     one patched before, or one whose code differs (another game version) is left as it is."""
     done = 0
-    for head_text, old, key in WHOLE_SITES:
+    for head_text, olds, key in WHOLE_SITES:
         head = s.find(head_text)
         if head < 0:
             continue
         end = s.find("\n}\n", head)
         body = s[head:end if end >= 0 else len(s)]
-        new = whole_new(old, key)
-        if new in body or body.count(old) != 1:
+        if WHOLE_MARK in body:   # (patched before)
             continue
+        old = next((o for o in olds if body.count(o) == 1), None)
+        if old is None:
+            continue
+        new = whole_new(old, key)
         at = head + body.index(old)
         s = s[:at] + new + s[at + len(old):]
         done += 1
