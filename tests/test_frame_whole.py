@@ -63,8 +63,8 @@ int main(void) {
 }
 """
 
-LIFTED = ['#include "a64.h"\n' + head + "    c->x[9] = recomp_load32(c,(c->x[19] + 864));\n" + old + "return;\n}\n"
-          for head, old, _ in oot_patches.WHOLE_SITES]
+LIFTED = ['#include "a64.h"\n' + head + "    c->x[9] = recomp_load32(c,(c->x[19] + 864));\n" + olds[0] + "return;\n}\n"
+          for head, olds, _ in oot_patches.WHOLE_SITES]   # (each site's first anchor: the cut, or the cut and its addition)
 
 
 class FrameWholeTests(unittest.TestCase):
@@ -82,6 +82,26 @@ class FrameWholeTests(unittest.TestCase):
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
+    def test_anchor_with_the_store_when_the_cut_comes_twice(self):
+        # (f_803edf70, the time of day: the same cut into x8 twice, the one stored to +60 hooked, the other the game's)
+        head, olds, key = next(site for site in oot_patches.WHOLE_SITES if "803edf70" in site[0])
+        cut = olds[0]
+        lifted = '#include "a64.h"\n' + head + cut + "    c->x[9]=c->x[8];\n" + olds[1] + "return;\n}\n"
+        out, n = oot_patches.patch_whole_frames(lifted)
+        self.assertEqual(n, 1)
+        self.assertEqual(out.count("recomp_fp_to_int"), 1)   # (the other cut stays the game's)
+        self.assertIn("hos_frame_whole(%s," % key, out.split("c->x[9]=c->x[8];")[1])
+
+    def test_unsigned_cut_before_its_addition(self):
+        # (f_832b6840, the Scarecrow's Song recording: two unsigned cuts, the one before the addition to x10 hooked)
+        head, olds, key = next(site for site in oot_patches.WHOLE_SITES if "832b6840" in site[0])
+        other = olds[0].replace("c->x[10]", "c->x[13]")
+        lifted = '#include "a64.h"\n' + head + other + olds[0] + "return;\n}\n"
+        out, n = oot_patches.patch_whole_frames(lifted)
+        self.assertEqual(n, 1)
+        self.assertEqual(out.count("recomp_fp_to_int"), 1)
+        self.assertIn("c->x[13]", out.split("=hos_frame_whole(")[0])   # (the mode-13 cut, before the hooked one, untouched)
+
     def test_patch_replaces_the_cut_once(self):
         for lifted, (_, old, key) in zip(LIFTED, oot_patches.WHOLE_SITES):
             out, n = oot_patches.patch_whole_frames(lifted)
@@ -95,7 +115,7 @@ class FrameWholeTests(unittest.TestCase):
             none = lifted.replace("void f_8", "void f_9")
             self.assertEqual(oot_patches.patch_whole_frames(none), (none, 0))
         # (a lift where the function is hot: its float helpers are a64_fpx_hot_*, the cut the same)
-        _, old0, _ = oot_patches.WHOLE_SITES[0]
+        old0 = oot_patches.WHOLE_SITES[0][1][0]
         hot = LIFTED[0].replace(old0, "    _v=a64_fpx_hot_mul32_fma32(c,_a,_b,_z);\n    a64_vset64(c->vreg[0],_v);}\n" + old0)
         self.assertEqual(oot_patches.patch_whole_frames(hot)[1], 1)
 
