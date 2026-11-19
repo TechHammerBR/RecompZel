@@ -18,6 +18,7 @@ static volatile LONG nvsync;
 static HANDLE vsync_thread;
 
 static int fps_max(void);   /* (below: HOS_FPS_MAX) */
+static int fps_now(int64_t now);   /* (below: 60 while a menu is in front) */
 static DWORD WINAPI vsync_main(void *p) {
     (void)p;
     const int64_t period = 1000000000LL / fps_max();
@@ -129,6 +130,24 @@ static int fps_max(void) {
         else if (v > 60) hos_log("vi: frame rate cap %d: pacing, the game's limiter and its time step follow it", v);
     }
     return v;
+}
+/* (RecompZel) The rate in effect now: the cap, or 60 while a game menu is in front. Above 60 the ocarina's song pick
+   (Forest Temple, adult Link) crashed the game (guest null read under f_8177b3a0, twice at ~600 fps uncapped; fine with the
+   60 cap), and the menus gain nothing from more frames. host/oot_menu.c stamps hos_menu_shown_ns each frame a screen with a
+   focused button, or the pause menu, runs; 150 ms after the last stamp the cap is back. HOS_MENU_FPS60=0: off */
+volatile int64_t hos_menu_shown_ns;
+static int menu_hold(int64_t now, int64_t shown, int cap, int on) {
+    return on && cap > 60 && shown && now - shown >= 0 && now - shown < 150000000;
+}
+static int fps_now(int64_t now) {
+    static int on = -1, was;
+    if (on < 0) on = !(getenv("HOS_MENU_FPS60") && !atoi(getenv("HOS_MENU_FPS60")));
+    const int held = menu_hold(now, __atomic_load_n(&hos_menu_shown_ns, __ATOMIC_RELAXED), fps_max(), on);
+    if (held != was) {
+        was = held;
+        hos_log("vi: %s", held ? "a game menu in front: 60 fps, the console's step" : "menu closed: the frame rate cap again");
+    }
+    return held ? 60 : fps_max();
 }
 static int64_t next_frame_at, window_start, frames_in_window;
 static volatile LONG64 presents;
@@ -375,7 +394,8 @@ static void realtime_step(int64_t now) {
             clock_before = game_clock, at_before = now;
         }
         if (target && *limit > 0 && *limit < target) *limit = target;
-        if (fps_max() > 60 && *limit > 0 && *limit < fps_max()) *limit = fps_max();
+        const int cap_now = fps_now(now);
+        if (cap_now > 60 && *limit > 0 && *limit < cap_now) *limit = cap_now;
     }
     /* (the Insert menu's Game speed "per frame": a frame is a 60th of a second of game time. Not past 60 fps: the game would run
        faster than real time, so a cap above 60 keeps the real-time step whatever that row says) */
@@ -409,7 +429,7 @@ static void realtime_step(int64_t now) {
        HOS_FPS_STEP=0, or a lift without the hook (hos_step_probe unset): the rate up to the cap, as before */
     static int timed_step = -1;
     if (timed_step < 0) timed_step = !(getenv("HOS_FPS_STEP") && !atoi(getenv("HOS_FPS_STEP")));
-    const int timed = fps_max() > 60 && timed_step && hos_step_probe;
+    const int timed = fps_now(now) > 60 && timed_step && hos_step_probe;
     if (timed) {
         const double secs = sum / count, shortest = 1.0 / (fps_max() > 240 ? fps_max() : 240);
         const float f = (float)(secs > 4.0 / 60.0 ? 4.0 / 60.0 : secs < shortest ? shortest : secs);
@@ -419,7 +439,7 @@ static void realtime_step(int64_t now) {
     } else {
         __atomic_store_n(&hos_frame_seconds_bits, 0, __ATOMIC_RELAXED);
     }
-    const int top = timed ? 60 : fps_max();
+    const int top = timed ? 60 : fps_now(now);
     const double ratio = sum / count * 60.0;
     int *slot = (int *)GP(mod + 0x2c8);
     if (*slot < 15 || *slot > fps_max()) {
@@ -480,7 +500,7 @@ void hos_vi_native_presented(const int64_t phases[4]) {
         if (ms < 0) ms = getenv("HOS_FRAME_SLEEP_MS") ? atoi(getenv("HOS_FRAME_SLEEP_MS")) : 0;
         if (ms) hos_sleep_ns(ms * 1000000LL);
     }
-    const int64_t period = 1000000000LL / fps_max() * present_interval, now = hos_now_ns();
+    const int64_t now = hos_now_ns(), period = 1000000000LL / fps_now(now) * present_interval;
     realtime_step(now);
     /* (behind by more than a frame: the next one is paced from now, with no burst to catch up) */
     next_frame_at = next_frame_at && now - next_frame_at < period ? next_frame_at + period : now + period;

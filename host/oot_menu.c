@@ -797,6 +797,14 @@ void hos_oot_menu_tick(Ctx *c, uint64_t screen) {
             seen[i].running && now - seen[i].seen_ns < 100000000 &&
             (!front || seen[i].first_ns > front->first_ns))   /* (its focus gone for under 0.5 s: a list's moment between rows) */
             front = &seen[i];
+    {   /* (host/nn_vi.c fps_now: 60 fps while a menu is in front) */
+        extern volatile int64_t hos_menu_shown_ns;
+        const uint64_t pause = pause_screen_now();
+        int pause_runs = 0;
+        for (int i = 0; pause && i < (int)(sizeof seen / sizeof *seen); i++)
+            if (seen[i].screen == pause && seen[i].running && now - seen[i].seen_ns < 100000000) pause_runs = 1;
+        if (front || pause_runs) __atomic_store_n(&hos_menu_shown_ns, now, __ATOMIC_RELAXED);
+    }
     static uint64_t front_was;
     if (trace && front && front->screen != front_was) hos_log("menu: the mouse is for screen %#llx", (unsigned long long)front->screen);
     front_was = front ? front->screen : 0;
