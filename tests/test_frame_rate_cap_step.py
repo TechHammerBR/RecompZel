@@ -185,7 +185,7 @@ def main():
     check("V-Sync" in row and "real time" in row, "the row's help does not say Uncapped keeps real time and V-Sync limits it")
 
     vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
-    host = "\n".join(block(vi, m) for m in ("static float text_scale(", "static int fps_max(void) {", "static int realtime_rate(", "static void realtime_step("))
+    host = "volatile int64_t hos_menu_shown_ns;\n" + "\n".join(block(vi, m) for m in ("static float text_scale(", "static int fps_max(void) {", "static int menu_hold(", "static int fps_now(int64_t now) {", "static int realtime_rate(", "static void realtime_step("))
     fixture = FIXTURE.replace("@HOST@", host).replace("@HOOK@", "\n".join(oot_patches.STEP_HOOK.split("\n")[:2]))
     with tempfile.TemporaryDirectory(prefix="cap-step-") as tmp:
         c = Path(tmp) / "fixture.c"
