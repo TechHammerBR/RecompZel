@@ -522,6 +522,7 @@ private:
     std::unordered_map<uint64_t, bool> pointer_answers;   // (IsCbufStorageBufferPointer's)
 };
 
+}  // namespace (float16_shaders is the renderer's: vk_internal.h)
 /// (recompzel, after HeyListen ff7bde09, Mooseca) Whether the translated shaders keep the game's 16-bit floats: where the device
 /// has shaderFloat16. A module that declares the Float16 capability without it is invalid (VUID-VkShaderModuleCreateInfo-pCode-08740)
 /// and what the driver does with it is undefined: the profile said every device had them, and a GTX 970 (no shaderFloat16) showed
@@ -548,6 +549,8 @@ bool float16_shaders() {
     }();
     return on;
 }
+
+namespace {
 
 Shader::Profile make_profile() {
     Shader::Profile p{};
