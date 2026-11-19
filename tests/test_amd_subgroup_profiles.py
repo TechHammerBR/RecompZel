@@ -34,7 +34,10 @@ struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
     bool float_atomic_add = false;
     struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
+    struct { unsigned shaderInt8 = 1, shaderFloat16 = 1; } vk12;   // (make_profile: 8/16-bit types where the device has them)
+    struct { unsigned shaderInt16 = 1; } features;
 } dev;
+constexpr unsigned VK_FALSE = 0;
 
 using Shader::Stage;
 using Id = uint32_t;

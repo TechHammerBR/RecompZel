@@ -39,6 +39,7 @@ static const char* fixture_getenv(const char* name) {
     return nullptr;
 }
 #define getenv fixture_getenv
+static bool float16_shaders() { return !no_f16; }   // (vk_shader.cpp: no f16 shaders, RX_VK_NO_F16 among the reasons)
 namespace Shader { namespace Backend { namespace SPIRV { static bool mma_software = true; } } }
 using VkCommandBuffer = int;
 using VkImageView = int;
