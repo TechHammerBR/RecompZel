@@ -153,6 +153,7 @@ bool movie_upscale(VkCommandBuffer, uint64_t, uint64_t, Texture *) {
 bool gameplay_network(uint64_t key) {
     return key == 0xfd029a317a9a4b94ull || key == 0x9dc98871eb7fc101ull;
 }
+bool float16_shaders() { return true; }   // (vk_shader.cpp; a device with shaderFloat16, as before)
 enum class ViewUse { Sample, Storage };
 VkImageView texture_view(Texture *t, const nvn_tex *, const nvn_view *v, VkImageViewType type,
                          ViewUse use, VkFormat *f, VkFormat forced = VK_FORMAT_UNDEFINED) {

@@ -110,6 +110,11 @@ struct BufferRef {
         return buffer != VK_NULL_HANDLE;
     }
 };
+
+/// Whether translated shaders keep 16-bit floats (vk_shader.cpp): the device's shaderFloat16, or RX_VK_NO_F16 / RX_VK_F16. Without
+/// them the translator lowers the game's f16 math to 32 bits and the cooperative-matrix networks are left out (vk_draw.cpp's
+/// stand-ins draw their upscale)
+bool float16_shaders();
 bool memory_init();                                   // vk_memory.cpp
 void memory_cpu_owned(uint64_t guest, uint64_t size);   // (hookshot: words the replay writes on the CPU, left out of write-backs)
 // (hookshot) The replay's own CPU writes of guest memory, by GPU address: every one goes through guest_cpu_write (or, for a

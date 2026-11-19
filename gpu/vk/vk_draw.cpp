@@ -6986,7 +6986,9 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
         const uint64_t a = (uint64_t)t.d.width * t.d.height;
         if (a > in_area) in = t, in_area = a, in_h = s.tex[5][i];
     }
-    if (!in_area || out_area <= in_area) return false;
+    // (recompzel, after HeyListen ff7bde09) a gameplay network may keep the size: 9dc98871 at Render resolution 100%. Left out (no
+    // f16 shaders) and skipped here, the 3D picture was black under the HUD
+    if (!in_area || out_area < in_area || (out_area == in_area && !gameplay_network(key))) return false;
     Texture* src = texture_get(&in, true);
     Texture* dst = texture_get(&out, false);
     if (!src || !dst || !src->image || !dst->image || (src->aspect | dst->aspect) != VK_IMAGE_ASPECT_COLOR_BIT || src->bc ||
@@ -7015,7 +7017,9 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     // Failed upscales can receive RGB9E5 bits in a shared R11 image, including the 75% gameplay TAAU.
     // Match the observed base-level 2D case only; other fallbacks keep their existing blit.
     const bool gameplay_taau = key == 0xfd029a317a9a4b94ull;
-    if ((!gameplay_network(key) || gameplay_taau) && in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
+    // (recompzel, after HeyListen ff7bde09) every gameplay network too when they are left out (no f16 shaders): their input is the
+    // scene's RGB9E5 bits in a B10G11R11 image, which the blit below read as B10G11R11: full-screen yellow and magenta noise
+    if ((!gameplay_network(key) || gameplay_taau || !float16_shaders()) && in.d.format == NVN_FORMAT_RGB9E5F && out.d.format == NVN_FORMAT_R11G11B10F &&
         src->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && dst->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 &&
         (fd.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) &&
         src->type == VK_IMAGE_TYPE_2D && dst->type == VK_IMAGE_TYPE_2D && src->depth == 1 && dst->depth == 1 &&
@@ -7087,8 +7091,8 @@ bool taau_key(uint64_t key) {
     // (the real network where the card runs it as the console does; on the software multiplies it cost most of a frame on AMD's cards, and a
     // locked 60 with this in its place: Hookshot issue 52)
     static const char* keys = getenv("RX_VK_TAAU_KEYS") ? getenv("RX_VK_TAAU_KEYS")
-                              : Shader::Backend::SPIRV::mma_software || getenv("RX_VK_NO_F16")
-                                    ? "fd029a317a9a4b94" : "-";   // (RX_VK_NO_F16: vk_shader.cpp leaves the network out)
+                              : Shader::Backend::SPIRV::mma_software || !float16_shaders()
+                                    ? "fd029a317a9a4b94" : "-";   // (no f16 shaders: vk_shader.cpp leaves the network out)
     char hex[24];
     snprintf(hex, sizeof hex, "%016llx", (unsigned long long)key);
     bool match = false;
