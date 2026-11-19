@@ -932,12 +932,15 @@ LevelGeo level_geo(const Texture& tex, uint32_t level) {   // (level: the image'
 }
 
 /// The guest bytes [gpu, gpu + n) in host memory: in place when contiguous, else copied into scratch
+/// (recompzel, after HeyListen 9a697a6c / 9f725aa1) set by upload() around a texture's first upload / re-upload: its storage as of
+/// the submit takes only the recorded submission's own copies (vk_memory.cpp, memory_as_submitted)
+thread_local bool tl_first_upload = false, tl_reupload = false;
 const uint8_t* guest_bytes(uint64_t gpu, uint64_t n, std::vector<uint8_t>& scratch) {
     uint64_t avail = 0;
     const uint8_t* p = host->gpu_ptr(gpu, &avail);
     // (below 1 TB the GPU address is the guest's: the storage as it was at the submit being replayed, where the game has
     // rewritten it since (vk_memory.cpp, "texture storage in the capture"))
-    if (p && avail >= n) return gpu < (1ull << 40) ? memory_as_submitted(gpu, p, n, scratch) : p;
+    if (p && avail >= n) return gpu < (1ull << 40) ? memory_as_submitted(gpu, p, n, scratch, tl_first_upload, tl_reupload) : p;
     if (n >= (32u << 20)) {   // (a big sparse texture's pages, gathered on several threads: the course maps' 349 MB)
         scratch.resize(n);
         const uint32_t nt = std::clamp(std::thread::hardware_concurrency() / 2, 1u, 6u);
@@ -1450,7 +1453,9 @@ bool upload_inner(Texture& tex, const Ranges* dirty);
 bool upload(Texture& tex, const Ranges* dirty) {
     const auto t0 = std::chrono::steady_clock::now();
     up_route = UP_CPU;
+    tl_first_upload = !tex.uploaded, tl_reupload = tex.uploaded;
     const bool ok = upload_inner(tex, dirty);
+    tl_first_upload = tl_reupload = false;
     const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
     frame_upload_ns.fetch_add(ns, std::memory_order_relaxed);
     std::lock_guard lk(up_mu);
