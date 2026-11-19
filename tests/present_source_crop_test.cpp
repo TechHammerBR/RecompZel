@@ -56,12 +56,13 @@ void vkCmdClearColorImage(VkCommandBuffer, VkImage, VkImageLayout, const VkClear
     CHECK(c->float32[0] == 0 && c->float32[1] == 0 && c->float32[2] == 0 && c->float32[3] == 1); ++clears;
 }
 bool init() { ++initializations; return true; }
-bool ensure_size(VkCommandBuffer, uint32_t w, uint32_t h) {
-    ++sizes; allocated_w = w; allocated_h = h; return true;
-}
+bool ensure_size(VkCommandBuffer, uint32_t w, uint32_t h);
 int64_t now_ns() { return 1000000; }
 int multiplier() { return 2; }
 int display_refresh_mhz() { return 60000; }
+bool ensure_size(VkCommandBuffer, uint32_t w, uint32_t h) {   // (as the real one: the sets made for this multiplier)
+    ++sizes; allocated_w = w; allocated_h = h; fg.mult = multiplier(); return true;
+}
 int auto_slots(int64_t, int64_t, int64_t, int64_t&, float*, int64_t*, int) { return 0; }
 void display_main() { std::abort(); } // Never started: isolated recorder sets thread_started.
 void full_barrier(VkCommandBuffer) {}

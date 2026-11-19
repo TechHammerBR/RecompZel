@@ -125,9 +125,10 @@ const void* descriptor_ok(const void* p, size_t n) {
     if (!p) return nullptr;
     const uintptr_t q = (uintptr_t)p, base = (uintptr_t)host->guest_base();
     if (q >= base && q + n <= base + host->guest_size()) return p;
-    uint64_t avail = 0;
-    if (const uint8_t* h = host->gpu_ptr((uint64_t)q, &avail); h && avail >= n) return h;
-    // (the host's own copies: registrations made before the renderer started, kept by host/rx_backend.c)
+    // (the host's own copies: registrations made before the renderer started, kept by host/rx_backend.c. A registration's
+    // pointer is a host pointer, never a GPU address: asked as one (host->gpu_ptr), a heap address between 16 MB and 512 GB, as
+    // Windows gives them, named guest memory, and the registration was copied from there, all zero: a sampler filtered nearest
+    // and a texture slot had no image (Castle Town's sunlight, blocky halos). After HeyListen d7d3b7c8 / Hookshot #1117)
     MEMORY_BASIC_INFORMATION mi{};
     if (VirtualQuery(p, &mi, sizeof mi) == sizeof mi && mi.State == MEM_COMMIT &&
         (mi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY)) && !(mi.Protect & PAGE_GUARD) &&
