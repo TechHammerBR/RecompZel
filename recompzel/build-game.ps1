@@ -10,9 +10,27 @@ trap { Write-Host ('ERRO: ' + $_) -ForegroundColor Red; Pause-Fechar; exit 1 }
 . (Join-Path $PSScriptRoot 'env-recompzel.ps1')
 [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal'   # o PC continua utilizavel durante o build
 
+# 2) pastas: mantem o layout do launcher (C:\DEV) se ele existir, senao usa uma pasta propria
+if (-not $Out) {
+    $Out = 'C:\Games\RecompZel'
+    if (-not (Test-Path $Out) -and (Test-Path 'C:\Games\HookshotDev')) {   # pasta antiga: renomeie para RecompZel quando o jogo estiver fechado
+        $Out = 'C:\Games\HookshotDev'
+        Write-Host 'Aviso: usando a pasta antiga C:\Games\HookshotDev. Renomeie para C:\Games\RecompZel quando o jogo estiver fechado.'
+    }
+}
+# (recompzel) sem o .nup, mas com o jogo ja construido nesta pasta: o build guarda uma copia do codigo do jogo (.hookshot_exefs)
+# e os arquivos (romfs) na pasta do jogo, e reconstroi a partir deles (make_game.py --update), sem precisar do .nup de novo
+function Tem-Copia-Do-Jogo { (Test-Path -LiteralPath (Join-Path $Out '.hookshot_exefs')) -and (Test-Path -LiteralPath (Join-Path $Out 'romfs')) }
+$Atualizar = $false
+if (($Nup -and -not (Test-Path -LiteralPath $Nup)) -and (Tem-Copia-Do-Jogo)) {
+    Write-Host "O .nup informado nao existe mais: $Nup" -ForegroundColor Yellow
+    Write-Host "Reconstruindo a partir da copia do jogo guardada em $Out (nao precisa do .nup)."
+    $Atualizar = $true
+}
+
 # 1) arquivo do jogo
 $informado = [bool]$Nup
-if (-not $Nup) {
+if (-not $Atualizar -and -not $Nup) {
     $dirs = @('Downloads', 'Desktop', 'Documents') | ForEach-Object { Join-Path $env:USERPROFILE $_ } | Where-Object { Test-Path $_ }
     $todos = @(Get-ChildItem -Path $dirs -Recurse -File -Filter '*.nup' -ErrorAction SilentlyContinue | Sort-Object Length -Descending)
     # primeiro o que tem o ID do jogo (0400486024DEC000) no nome; se o arquivo foi renomeado, usa o maior .nup achado
@@ -23,7 +41,11 @@ if (-not $Nup) {
         Write-Host "  $Nup"
     }
 }
-if (-not $Nup -and [Environment]::UserInteractive) {
+if (-not $Nup -and (Tem-Copia-Do-Jogo)) {
+    Write-Host "Nao achei o .nup. Reconstruindo a partir da copia do jogo guardada em $Out (nao precisa do .nup)."
+    $Atualizar = $true
+}
+if (-not $Atualizar -and -not $Nup -and [Environment]::UserInteractive) {
     # nao achou nenhum: abre uma janela para voce escolher o arquivo
     try {
         Write-Host 'Nao achei o arquivo do jogo. Abrindo uma janela para voce escolher o .nup (se nao aparecer, olhe a barra de tarefas)...'
@@ -39,32 +61,24 @@ if (-not $Nup -and [Environment]::UserInteractive) {
         $dono.Dispose()
     } catch {}
 }
-if ($informado -and -not (Test-Path -LiteralPath $Nup)) {
+if (-not $Atualizar -and $informado -and -not (Test-Path -LiteralPath $Nup)) {
     Write-Host "O arquivo informado nao existe: $Nup" -ForegroundColor Red
     Pause-Fechar
     exit 2
 }
-if (-not $Nup -or -not (Test-Path -LiteralPath $Nup)) {
+if (-not $Atualizar -and (-not $Nup -or -not (Test-Path -LiteralPath $Nup))) {
     Write-Host 'Nao achei o arquivo do jogo (.nup, versao v131072). Rode de novo assim:'
     Write-Host '  .\build-game.ps1 -Nup "C:\caminho\The Legend of Zelda Ocarina of Time [0400486024DEC000][v131072].nup"'
     Pause-Fechar
     exit 2
 }
 # a versao vem no nome do arquivo; o build so aceita a v131072 e so reclamaria depois de minutos
-if ((Split-Path $Nup -Leaf) -match '\[v(\d+)\]' -and $Matches[1] -ne '131072') {
+if (-not $Atualizar -and (Split-Path $Nup -Leaf) -match '\[v(\d+)\]' -and $Matches[1] -ne '131072') {
     Write-Host "O arquivo e a versao v$($Matches[1]) do jogo. O RecompZel precisa da v131072. Use o .nup dessa versao." -ForegroundColor Red
     Pause-Fechar
     exit 2
 }
 
-# 2) pastas: mantem o layout do launcher (C:\DEV) se ele existir, senao usa uma pasta propria
-if (-not $Out) {
-    $Out = 'C:\Games\RecompZel'
-    if (-not (Test-Path $Out) -and (Test-Path 'C:\Games\HookshotDev')) {   # pasta antiga: renomeie para RecompZel quando o jogo estiver fechado
-        $Out = 'C:\Games\HookshotDev'
-        Write-Host 'Aviso: usando a pasta antiga C:\Games\HookshotDev. Renomeie para C:\Games\RecompZel quando o jogo estiver fechado.'
-    }
-}
 # mesma regra do launcher: a pasta dos scripts (C:\DEV no PC do desenvolvedor, %LOCALAPPDATA%\RecompZel com o .exe); rodando de dentro do repositorio, %LOCALAPPDATA%\RecompZel
 $base = if ((Split-Path $PSScriptRoot -Leaf) -eq 'recompzel' -and (Test-Path (Join-Path (Split-Path $PSScriptRoot -Parent) 'nx2\make_game.py'))) {
             # (recompzel: rodando de dentro do repositorio, a pasta DEV ao lado dele, se existir)
@@ -107,7 +121,7 @@ function Update-Clone {
 }
 Update-Clone
 Set-Location $Repo
-Write-Host "Jogo:    $Nup"
+if ($Atualizar) { Write-Host "Jogo:    a copia guardada em $Out" } else { Write-Host "Jogo:    $Nup" }
 Write-Host "Destino: $Out"
 # NVIDIA DLSS (reescalonamento), so quando o launcher pede (-Dlss): baixa o SDK da NVIDIA, sob a licenca NVIDIA RTX SDKs aceita no launcher,
 # e compila o motor com ele. Sem -Dlss o jogo e construido sem o SDK da NVIDIA.
@@ -121,7 +135,8 @@ if ($Dlss) {
 Write-Host "Iniciando o build. Pode levar de dezenas de minutos a mais de uma hora. Nao feche esta janela."
 Write-Host "Acompanhe em $Log"
 $t0 = Get-Date
-& $Py -I (Join-Path $Repo 'nx2\make_game.py') --nup $Nup --out $Out --work $Work --language pt-BR --fsr @extra --log $Log
+if ($Atualizar) { & $Py -I (Join-Path $Repo 'nx2\make_game.py') --update $Out --work $Work --fsr @extra --log $Log }
+else { & $Py -I (Join-Path $Repo 'nx2\make_game.py') --nup $Nup --out $Out --work $Work --language pt-BR --fsr @extra --log $Log }
 $code = $LASTEXITCODE
 $min = [math]::Round(((Get-Date) - $t0).TotalMinutes, 1)
 Write-Host ""

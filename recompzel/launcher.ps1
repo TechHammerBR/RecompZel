@@ -184,6 +184,7 @@ $STR['pt'] = @{
     e_script = 'Nao achei o script de build: {0}'
     e_script2 = 'Nao achei o script: {0}'
     nup_use = 'Usar este arquivo do jogo?{n}{n}{0}{n}{n}Sim = usar este.   Nao = escolher outro arquivo.'
+    nup_copy = 'Nao achei o arquivo do jogo (.nup), mas a pasta do jogo guarda uma copia dele do ultimo build.{n}{n}Sim = reconstruir a partir dessa copia (nao precisa do .nup).   Nao = escolher o .nup.'
     nup_title = 'Escolha o arquivo do jogo (.nup) do Zelda Ocarina of Time'
     nup_filter = 'Arquivo do jogo (*.nup)|*.nup|Todos os arquivos|*.*'
     nup_none = 'Sem o arquivo do jogo (.nup) o build nao comeca.'
@@ -357,6 +358,7 @@ $STR['en'] = @{
     e_script = 'Could not find the build script: {0}'
     e_script2 = 'Could not find the script: {0}'
     nup_use = 'Use this game file?{n}{n}{0}{n}{n}Yes = use it.   No = choose another file.'
+    nup_copy = 'Your game file (.nup) was not found, but the game folder keeps a copy of it from the last build.{n}{n}Yes = rebuild from that copy (no .nup needed).   No = choose the .nup.'
     nup_title = 'Choose your Zelda Ocarina of Time game file (.nup)'
     nup_filter = 'Game file (*.nup)|*.nup|All files|*.*'
     nup_none = 'The build cannot start without the game file (.nup).'
@@ -973,6 +975,11 @@ function Select-NupFile {
     if ($cand) {
         if ([System.Windows.MessageBox]::Show($win, ((T 'nup_use') -f $cand), 'RecompZel', 'YesNo', 'Question') -eq 'Yes') { return $cand }
     }
+    # (recompzel) sem .nup, mas com o jogo ja construido: o build guarda o codigo do jogo (.hookshot_exefs) e os arquivos (romfs) na
+    # pasta do jogo, e build-game.ps1 reconstroi a partir deles (make_game.py --update) quando nao recebe -Nup nem acha um .nup
+    if (-not $cand -and (Test-GameCopy)) {
+        if ([System.Windows.MessageBox]::Show($win, (T 'nup_copy'), 'RecompZel', 'YesNo', 'Question') -eq 'Yes') { return '<copia>' }
+    }
     $dlg = New-Object Microsoft.Win32.OpenFileDialog
     $dlg.Title = T 'nup_title'
     $dlg.Filter = T 'nup_filter'
@@ -981,15 +988,22 @@ function Select-NupFile {
     if ($dlg.ShowDialog($win) -ne $true) { return $null }
     return $dlg.FileName
 }
+# (recompzel) a pasta do jogo guarda a copia do jogo que um build anterior leu (.hookshot_exefs e romfs)
+function Test-GameCopy {
+    $o = Get-OutDir
+    if (-not $o) { $o = 'C:\Games\RecompZel' }
+    return ((Test-Path -LiteralPath (Join-Path $o '.hookshot_exefs')) -and (Test-Path -LiteralPath (Join-Path $o 'romfs')))
+}
 # Inicia o build: escolhe o .nup aqui no launcher e passa para o build-game.ps1 (-Nup), sem janela escondida atras
 function Start-GameBuild([string]$buildPath) {
     $nup = Select-NupFile
     if (-not $nup) { [System.Windows.MessageBox]::Show($win, (T 'nup_none'), 'RecompZel') | Out-Null; return $false }
-    try { Set-Content -LiteralPath $NupMemo -Value $nup -Encoding UTF8 } catch {}
+    $fromCopy = ($nup -eq '<copia>')
+    if (-not $fromCopy) { try { Set-Content -LiteralPath $NupMemo -Value $nup -Encoding UTF8 } catch {} }
     $script:obs0 = $null; $script:lastCountTime = [datetime]::MinValue
     $a = Get-BuildArgs $buildPath
     [Environment]::SetEnvironmentVariable('RZ_PAUSE', '1', 'Process')   # (build-game.ps1: a janela espera Enter so se der erro)
-    $a += @('-Nup', ('"' + $nup + '"'))   # (aspas: o caminho pode ter espacos)
+    if (-not $fromCopy) { $a += @('-Nup', ('"' + $nup + '"')) }   # (aspas: o caminho pode ter espacos; sem -Nup: a copia guardada)
     Start-Process powershell.exe -ArgumentList $a
     return $true
 }
