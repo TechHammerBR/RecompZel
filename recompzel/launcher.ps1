@@ -75,7 +75,7 @@ $STR['pt'] = @{
     ram_save = 'Nao carregar o cache de pipelines (teste: nos logs nao reduziu a RAM e a abertura demora mais)'
     ram_tip = 'RX_VK_PCACHE_LOAD=0'
     par = 'Traduzir os comandos em varias threads (mais FPS em cidades, como o Burgo de Hyrule)'
-    par_tip = 'RX_VK_PARALLEL: 4 threads em processador de 16 threads ou mais, 2 a 3 nos menores. No Burgo de Hyrule (i7-11700F): media de ~39 para ~44 FPS, pior momento de 14 para 31. Desligado por padrao: no projeto original ja deu quadro preto de um instante (Kakariko). Se aparecer, desligue.'
+    par_tip = 'RX_VK_PARALLEL_AUTO: 4 threads em processador de 16 threads ou mais, 2 a 3 nos menores. O jogo mede o quadro com e sem a cada ~15 s e so usa as threads quando elas deixam o quadro ao menos 4% mais rapido (num i7-11700F ajudou no Burgo de Hyrule; num i9-14900KF forcada custou fps). Desligado por padrao: no projeto original ja deu quadro preto de um instante (Kakariko). Se aparecer, desligue.'
     rec = 'Mandar os comandos ao driver de video numa thread separada (teste: para processadores de 6 nucleos)'
     sim = 'Simular processador de 6 nucleos e 12 threads (teste, como um Ryzen 5 5600G)'
     sim_tip = 'O jogo abre preso a 6 nucleos com 12 threads deste PC (os primeiros), como num processador 6/12. Os nucleos continuam os deste PC, entao o resultado e melhor que num 5600G de verdade, mas a divisao do trabalho entre as threads e a mesma. Para medir otimizacoes de CPU. Volta a ficar desmarcada ao abrir o launcher.'
@@ -248,7 +248,7 @@ $STR['en'] = @{
     ram_save = 'Do not load the pipeline cache (a test: logs show no RAM saving and the start takes longer)'
     ram_tip = 'RX_VK_PCACHE_LOAD=0'
     par = 'Translate the commands on several threads (more FPS in towns, such as Hyrule Castle Town)'
-    par_tip = 'RX_VK_PARALLEL: 4 threads on a CPU with 16 threads or more, 2 to 3 on smaller ones. In Castle Town market (i7-11700F): from ~39 to ~44 FPS on average, the worst moment from 14 to 31. Off by default: the original project once saw a one-frame black scene with it (Kakariko). If you see one, turn it off.'
+    par_tip = 'RX_VK_PARALLEL_AUTO: 4 threads on a CPU with 16 threads or more, 2 to 3 on smaller ones. The game times its frames with and without every ~15 s and uses the threads only when they make the frame at least 4% faster (they helped an i7-11700F in Castle Town; forced, they cost an i9-14900KF frames). Off by default: the original project once saw a one-frame black scene with it (Kakariko). If you see one, turn it off.'
     rec = 'Send the commands to the video driver on a separate thread (test: for 6-core CPUs)'
     sim = 'Simulate a 6-core, 12-thread CPU (test, like a Ryzen 5 5600G)'
     sim_tip = 'The game starts held to 6 cores with 12 threads of this PC (the first ones), as on a 6/12 CPU. The cores are still this PC''s, so the result is better than on a real 5600G, but the work is split between threads the same way. For measuring CPU optimizations. Unchecked again each time the launcher opens.'
@@ -1452,12 +1452,18 @@ $btnPlay.Add_Click({
     if ($chkRam.IsChecked -or $mp.PCache) { [Environment]::SetEnvironmentVariable('RX_VK_PCACHE_LOAD', '0', 'Process') }
     else { [Environment]::SetEnvironmentVariable('RX_VK_PCACHE_LOAD', $null, 'Process') }
     # (recompzel) a traducao dos comandos (o replay) em varias threads: 4 com 16 threads logicas ou mais, 2 a 3 nos menores.
-    # Nao no modo seguro. Desmarcada, a variavel sai (vale mais que um RX_VK_PARALLEL herdado de um .bat de teste)
+    # Pelo medidor do motor (RX_VK_PARALLEL_AUTO), nao forcada: a cada ~15 s ele mede o quadro com e sem e fica com a que
+    # deu ao menos 4% menos tempo. Forcada (RX_VK_PARALLEL), custou fps onde as threads do jogo ja ocupam o processador: um
+    # i9-14900KF de 32 threads foi de 86,5 para 66-68 fps no campo de Hyrule; num de 8 nucleos e 16 threads (o mesmo sem os
+    # nucleos de eficiencia) cada pool importada para a GPU escrever ou numa parte paralela ia para a thread do replay (101
+    # esperas de 16 a 22 ms em 27 min, 2026-11-17). Nao no modo seguro. Desmarcada, as variaveis saem (valem mais que um
+    # RX_VK_PARALLEL herdado de um .bat de teste)
+    [Environment]::SetEnvironmentVariable('RX_VK_PARALLEL', $null, 'Process')
     if ($chkPar.IsChecked -and -not $chkSafe.IsChecked) {
         $cpuN = if ($chkSim.IsChecked) { 12 } else { [Environment]::ProcessorCount }   # (o teste 6/12: as threads de um processador 6/12)
         $parN = [math]::Min(4, [math]::Max(2, [int][math]::Floor($cpuN / 4)))
-        [Environment]::SetEnvironmentVariable('RX_VK_PARALLEL', [string]$parN, 'Process')
-    } else { [Environment]::SetEnvironmentVariable('RX_VK_PARALLEL', $null, 'Process') }
+        [Environment]::SetEnvironmentVariable('RX_VK_PARALLEL_AUTO', [string]$parN, 'Process')
+    } else { [Environment]::SetEnvironmentVariable('RX_VK_PARALLEL_AUTO', $null, 'Process') }
     # (recompzel) as chamadas ao driver numa thread propria (RX_VK_RECORDER=thread, opt-in do Hookshot; ligado por padrao no
     # totk-pc-recomp). So sem a traducao em varias threads, que o motor recusaria junto, e fora do modo seguro
     if ($chkRec.IsChecked -and -not $chkPar.IsChecked -and -not $chkSafe.IsChecked) { [Environment]::SetEnvironmentVariable('RX_VK_RECORDER', 'thread', 'Process') }
@@ -1520,7 +1526,7 @@ $btnPlay.Add_Click({
     }
     # a nota da rodada fica sempre em portugues (e lida pelo medir-rodada.ps1)
     $meshNow = Read-Mesh
-    $script:roundNote = ('VRAM={0}MB UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8} PARALLEL={9} RECORDER={10} SIM6_12={11}' -f $vramOptions[$cbVram.SelectedIndex].Mb, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked, [Environment]::GetEnvironmentVariable('RX_VK_PARALLEL', 'Process'), [Environment]::GetEnvironmentVariable('RX_VK_RECORDER', 'Process'), [bool]$chkSim.IsChecked)
+    $script:roundNote = ('VRAM={0}MB UPLOAD_BUDGET_MS={1} FRAMEGEN={2} DIAG={3} FSR4={4} MESH={5} DLSSG={6} DLSS={7} LINEAR={8} PARALLEL={9} RECORDER={10} SIM6_12={11}' -f $vramOptions[$cbVram.SelectedIndex].Mb, $uploadOptions[$cbUpload.SelectedIndex].Pt, $fgOptions[$cbFg.SelectedIndex].Pt, [bool]$chkDiag.IsChecked, $useFsr, $meshNow, $useDlss, $useDsr, [bool]$chkLinear.IsChecked, [Environment]::GetEnvironmentVariable('RX_VK_PARALLEL_AUTO', 'Process'), [Environment]::GetEnvironmentVariable('RX_VK_RECORDER', 'Process'), [bool]$chkSim.IsChecked)
     $script:gameOut = Get-OutDir
     # (recompzel) shaders deixados de fora: pular-shaders.txt na pasta do jogo (chaves em hex). Hoje: 7dfc7a637c93e49e, o
     # brilho vermelho da sala das teias da Arvore Deku, que sai com um triangulo branco na AMD (le o identificador errado de
