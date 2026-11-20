@@ -32,6 +32,7 @@
 #include "vk_texture.h"   // (upload_command_buffer)
 #include "vk_gprof.h"      // (RX_VK_PASS_TIMING)
 #include "import_hold.h"
+#include "mirror_budget.h"   // (mirror_budget's rules: Auto's, and a preset's cap)
 #include "mirror_trim.h"
 #include "wb_learn.h"
 #include "vk_paths.h"       // (game_module_path: triforce_mirror_keep.txt)
@@ -672,8 +673,29 @@ bool memory_table_flush() {
     table_defer = false;
     if (table_pending.empty()) return false;
     std::vector<std::pair<uint64_t, uint64_t>> pages;   // (page, value), in the order they were set
-    for (const TableRun& r : table_pending)
-        for (uint64_t i = 0; i < r.count; i++) pages.push_back({r.first + i, r.address ? r.address + (i << 12) : 0});
+    // (hookshot) a heap that has no room left (Windows' commit limit: #2941, 32 GB of RAM with a 2 GB page file, Hookshot at 24 GB
+    // as Hyrule Field loaded) threw std::bad_alloc here, on the presenting thread, and nothing between it and the game's code
+    // catches: the game closed. Then the changes are written into the table at once, as RX_VK_TABLE_NOW does: work submitted
+    // before may read them early, against the game closing
+    try {
+        size_t n = 0;
+        for (const TableRun& r : table_pending) n += r.count;
+        pages.reserve(n);
+        for (const TableRun& r : table_pending)
+            for (uint64_t i = 0; i < r.count; i++) pages.push_back({r.first + i, r.address ? r.address + (i << 12) : 0});
+    } catch (const std::bad_alloc&) {
+        static std::atomic<int> said{0};
+        uint64_t n = 0;
+        for (const TableRun& r : table_pending) {
+            n += r.count;
+            for (uint64_t i = 0; i < r.count; i++) guest_pages[r.first + i] = r.address ? r.address + (i << 12) : 0;
+        }
+        table_pending.clear();
+        if (said.fetch_add(1) < 8)
+            logf("vk: page table: no memory for this recording's %llu page changes (the commit limit?): written at once",
+                 (unsigned long long)n);
+        return false;
+    }
     table_pending.clear();
     std::stable_sort(pages.begin(), pages.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     std::vector<uint64_t> run;
@@ -854,7 +876,27 @@ void page_same_set(uint64_t p, uint32_t stamp, uint32_t before) {
 }
 } // namespace
 
-namespace { void cap_view_bump(); }   // (defined with cap_view_gen below, in this file's anonymous namespace)
+namespace {
+/// (hookshot) Whether addresses asked in ascending order fall in sorted, disjoint [lo, hi) ranges: a cursor that only
+/// moves forward, one pass over the ranges for a whole scan, where a binary search for every page cost log2(ranges)
+/// compares each (the collections give their pages in address order: host/rx_backend.c's collect_in walks sorted, merged
+/// ranges, hos_gpu_guest_ranges' for memory_collect_written, and capture_make's own `mirrored` list for the pages of a
+/// Capture, which capture_make's staging and take_capture walk). An address below the last one asked searches again: any
+/// order, the same answer
+struct RangeWalk {
+    const std::vector<std::pair<uint64_t, uint64_t>>& r;
+    size_t next = 0;   // (the first range that starts past the last address asked)
+    uint64_t last = 0;
+    bool in(uint64_t a) {
+        if (a < last) next = (size_t)(std::upper_bound(r.begin(), r.end(), std::make_pair(a, ~uint64_t(0))) - r.begin());
+        else
+            while (next < r.size() && r[next].first <= a) next++;
+        last = a;
+        return next && a < r[next - 1].second;
+    }
+};
+void cap_view_bump();   // (defined with cap_view_gen below)
+}
 const std::vector<std::pair<uint64_t, uint64_t>>& capture_ranges_merged();
 void shadow_written(const uint32_t* pages, int64_t n);   // (the write-back's diff, below: pages the captures took)
 void shadow_written_collected(const uint32_t* pages, int64_t n);   // (the write-back's diff, below: pages the collection found)
@@ -866,14 +908,10 @@ void memory_collect_written() {
         stamp_src_note(g, 1);
         // (the captured ranges once a call: a lock, a pool-list refresh and three searches for every dirty page cost the
         // replay thousands of lock cycles a submit, the cost that retired gpu_pages' lock below)
-        const auto& owned = capture_ranges_merged();
-        const auto in_capture = [&owned](uint64_t guest) {
-            auto it = std::upper_bound(owned.begin(), owned.end(), std::make_pair(guest, ~uint64_t(0)));
-            return it != owned.begin() && guest < std::prev(it)->second;
-        };
+        RangeWalk in_capture{capture_ranges_merged()};
         for (int64_t i = 0; i < n; i++) {
             const uint64_t guest = (uint64_t)pages[i] << kPageShift;
-            if (!owned.empty() && in_capture(guest)) {   // (written after its submit's capture: the next capture takes it, as it is then)
+            if (in_capture.in(guest)) {   // (written after its submit's capture: the next capture takes it, as it is then)
                 uint64_t avail = 0;
                 if (const uint8_t* q = host->gpu_ptr(guest, &avail)) host->mark_written(q, 4096);
                 continue;
@@ -1467,11 +1505,11 @@ std::map<uint64_t, std::pair<uint64_t, uint64_t>> tex_spans;   // lo -> (hi, the
 std::vector<std::pair<uint64_t, uint64_t>> tex_merged;          // (tex_spans merged; shadow_mu)
 bool tex_spans_changed = false;
 uint64_t tex_merged_bytes = 0;
-
-bool in_tex_merged(uint64_t guest) {   // (shadow_mu held)
+bool in_tex_merged(uint64_t guest) {   // (shadow_mu held; still read by the late-page and shadow-erase paths)
     auto it = std::upper_bound(tex_merged.begin(), tex_merged.end(), std::make_pair(guest, ~uint64_t(0)));
     return it != tex_merged.begin() && guest < std::prev(it)->second;
 }
+
 void shadow_erase(uint32_t page) {   // (shadow_mu held)
     if (!shadow.erase(page)) return;
     auto r = shadow_regions.find(page >> 9);
@@ -2242,12 +2280,12 @@ std::unique_ptr<Capture> capture_make() {
                 c->sidx.assign((size_t)n, -1);
                 int32_t tn = 0;
                 size_t lj = 0;
+                RangeWalk in_texr{texr};   // (pages in address order: collect_in over `mirrored`)
                 for (int64_t i = 0; i < n; i++) {
                     while (lj < c->late.size() && c->late[lj] < (uint32_t)i) lj++;
                     if (lj < c->late.size() && c->late[lj] == (uint32_t)i) continue;
                     const uint64_t g = (uint64_t)pages[i] << kPageShift;
-                    auto it = std::upper_bound(texr.begin(), texr.end(), std::make_pair(g, ~uint64_t(0)));
-                    if (it != texr.begin() && g < std::prev(it)->second) c->sidx[(size_t)i] = tn++;
+                    if (in_texr.in(g)) c->sidx[(size_t)i] = tn++;
                 }
                 if (!tn || !stage_get(*c, (size_t)tn * 4096)) c->sidx.clear();
             }
@@ -2644,10 +2682,11 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
     if (tex_same && !c->copied.empty() && c->map && tex_capture_on()) {
         std::lock_guard sk(shadow_mu);
         if (!tex_merged.empty() && shadow_n.load(std::memory_order_relaxed)) {
+            RangeWalk in_tex{tex_merged};   // (c->copied in address order)
             for (size_t i = 0; i < c->copied.size(); i++) {
                 const uint32_t p = c->copied[i];
                 if (!dropped.empty() && dropped[c->slots[i]]) continue;
-                if (!in_tex_merged((uint64_t)p << 12)) continue;
+                if (!in_tex.in((uint64_t)p << 12)) continue;
                 const auto s = shadow.find(p);
                 if (s == shadow.end() || !s->second.b) continue;
                 if (memcmp(s->second.b.get(), (const uint8_t*)c->map + (uint64_t)c->slots[i] * 4096, 4096) != 0) {
@@ -2727,6 +2766,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
             // inserting the copied ones again was a free, an allocation and two hash operations a page, for the pages the
             // game rewrites every frame. c->slots[i] is the index in c->pages of c->copied[i], in order)
             {
+                RangeWalk in_tex{tex_merged};
                 size_t j = 0;
                 for (size_t i = 0; i < c->pages.size(); i++) {
                     if (j < c->slots.size() && c->slots[j] == i) {
@@ -2734,7 +2774,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                         continue;
                     }
                     const uint32_t p = c->pages[i];
-                    if (in_tex_merged((uint64_t)p << 12)) shadow_erase(p);
+                    if (in_tex.in((uint64_t)p << 12)) shadow_erase(p);
                 }
             }
             bool swept = false;
@@ -2743,9 +2783,10 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
             static thread_local std::vector<CopyPair> pairs;   // (the copies, made together once the slots are known)
             pairs.clear();
             size_t i = 0;
+            RangeWalk in_tex{tex_merged};   // (c->copied in address order too: a subset of c->pages)
             for (; i < c->copied.size(); i++) {
                 const uint32_t p = c->copied[i];
-                if (!in_tex_merged((uint64_t)p << 12)) continue;
+                if (!in_tex.in((uint64_t)p << 12)) continue;
                 if (shadow_n.load(std::memory_order_relaxed) >= kShadowMax && !shadow.count(p)) {
                     if (swept) break;
                     swept = true;
@@ -2780,7 +2821,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                 st_from_stage = st_from_map = 0, st_cached = 0;
             }
             for (; i < c->copied.size(); i++)   // (the shadow full: the copied pages not replaced lose their old copies)
-                if (in_tex_merged((uint64_t)c->copied[i] << 12)) shadow_erase(c->copied[i]);
+                if (in_tex.in((uint64_t)c->copied[i] << 12)) shadow_erase(c->copied[i]);
         }
     }
     const auto tk1 = std::chrono::steady_clock::now();
@@ -3204,7 +3245,7 @@ Pool* pool_lookup(uint64_t guest, uint64_t size) {
 //   write generations) are copied in, in the recording's upload command buffer (submitted right before it).
 // - GPU -> guest: what the submission's shaders and copies may write into a mirror is copied back into the imported
 //   pool at the submission's end, so the CPU (and everything that reads guest memory) sees it.
-// RX_VK_MIRROR=0: no mirrors; RX_VK_MIRROR_MB: their budget (default 3072).
+// RX_VK_MIRROR=0: no mirrors; RX_VK_MIRROR_MB: their budget (default by the card: mirror_budget.h auto_bytes).
 bool mirror_on() {
     static const int on = [] {
         const char* e = getenv("RX_VK_MIRROR");
@@ -3274,19 +3315,16 @@ bool preset_caps_memory() {
 }
 namespace {
 uint64_t mirror_budget() {
-    // (a quarter of the card, at most the 3 GB it was for all: on a 6 GB laptop those and the textures were past what the card has)
+    // (Auto: a quarter of the card, at most 3 GB, an eighth on cards of 4.5 GB or less: mirror_budget.h auto_bytes)
     static const uint64_t b = [] {
         if (const char* e = getenv("RX_VK_MIRROR_MB")) return (uint64_t)atoi(e) << 20;
-        const uint64_t vram = device_vram_bytes();
-        // (cards of 6 GB or less only: on 8 GB ones, a 3070 or a 4060, the game's memory read over PCIe instead left the GPU at a few
-        // percent and the frame stuttering)
-        if (vram && vram <= (6ull << 30) + (512ull << 20)) return vram / 8;
-        return vram ? std::min<uint64_t>(vram / 4, 3072ull << 20) : (uint64_t)(3072ull << 20);
+        return mirror_rule::auto_bytes(device_vram_bytes());   // (upstream #237: a 6 GB card a quarter, not an eighth)
     }();
     // (the Insert menu's quality preset sets one, 256 MB at Minimum (4GB): it was never read, and an 8 GB card kept ~2 GB of
     // mirrors with the 4GB preset on, 2026-11-08)
-    // (only on a card the preset is for: preset_caps_memory)
-    if (opts.mirror_mb > 0 && !getenv("RX_VK_MIRROR_MB") && preset_caps_memory()) return (uint64_t)opts.mirror_mb << 20;
+    // (only on a card the preset is for: preset_caps_memory; a preset's never past Auto's on this card: mirror_budget.h budget_bytes)
+    if (opts.mirror_mb > 0 && !getenv("RX_VK_MIRROR_MB") && preset_caps_memory())
+        return mirror_rule::budget_bytes((uint64_t)opts.mirror_mb << 20, opts.budget > 0, device_vram_bytes());
     return b;
 }
 uint64_t mirror_bytes = 0, mirror_epoch = 0;
@@ -4099,6 +4137,7 @@ void memory_pool_created(uint64_t gpu, uint64_t size) {
     bg_cv.notify_one();
 }
 
+extern std::deque<std::map<uint64_t, Pool>::node_type> evicted_pools;   // (imports_give_back's, below)
 int memory_guest_imported(uint64_t lo, uint64_t hi) {
     std::lock_guard lk(pools_mu);
     auto it = imported.upper_bound(hi);   // (pools by lo: those starting below hi, the last ones checked first)
@@ -4108,6 +4147,11 @@ int memory_guest_imported(uint64_t lo, uint64_t hi) {
         if (it->second.hi + (1ull << 30) < lo) break;   // (imports are at most 1 GB: none further down reaches lo)
     }
     for (const auto& nh : retired_pools)
+        if (nh.mapped().memory && nh.mapped().lo < hi && lo < nh.mapped().hi) return 1;
+    // (hookshot, 11-13) and the idle pools given back (imports_give_back) whose memory is not freed yet: waiting for the GPU, or
+    // for their wait on AMD and Intel. Not counted, the game's freed pages under them were decommitted while the driver still
+    // had them imported, which faulted the device (hos_mem.c FreeMemoryPages)
+    for (const auto& nh : evicted_pools)
         if (nh.mapped().memory && nh.mapped().lo < hi && lo < nh.mapped().hi) return 1;
     return 0;
 }

@@ -20,6 +20,7 @@
 #include <malloc.h>
 #endif
 #include <atomic>
+#include <new>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -48,6 +49,7 @@
 #include "video_core/textures/decoders.h"
 
 #include "host_shaders/astc_decoder_comp_spv.h"
+#include "astc_opaque.h"
 #include "host_shaders/bc_encoder_comp_spv.h"
 #include "host_shaders/bc7_encoder_comp_spv.h"
 #include "bc_levels.h"
@@ -157,6 +159,8 @@ VkFormat view_format_of(VkFormat image, bool astc_decoded, bool bc, int view_nvn
         const bool srgb = f == VK_FORMAT_R8G8B8A8_SRGB;
         if (linear_twin(image) == VK_FORMAT_BC7_UNORM_BLOCK)
             f = srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK;
+        else if (image == VK_FORMAT_BC1_RGBA_UNORM_BLOCK)   // (hookshot: an opaque texture's image is BC1, astc_opaque.h)
+            f = srgb ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
         else
             f = srgb ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
     }
@@ -306,6 +310,68 @@ bool system_commit_room(uint64_t* room) {
 bool compact_on() {   // (hookshot: the textures in a pool of their own, compacted: compact_step. On unless RX_VK_COMPACT=0)
     static const bool v = vram_compact::enabled(getenv("RX_VK_COMPACT"));
     return v;
+}
+// (hookshot) the commit the textures leave free for the rest of the system: texture_frame's commit rule. RX_VK_COMMIT_RESERVE_MB
+// (default 2560, 0: off). Windows only: Linux overcommits, and its limit is not one commit can reach
+static uint64_t commit_reserve() {
+    static const uint64_t v = getenv("RX_VK_COMMIT_RESERVE_MB") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_COMMIT_RESERVE_MB"))) << 20
+                                                                : 2560ull << 20;
+    return v;
+}
+// (what Windows lets the process commit before its limit, RAM plus the page file: GlobalMemoryStatusEx's ullAvailPageFile, the
+// limit less the whole system's commit. false where it cannot be read)
+static bool commit_headroom(uint64_t* free_bytes) {
+#if defined(_WIN32)
+    MEMORYSTATUSEX m{};
+    m.dwLength = sizeof m;
+    if (!GlobalMemoryStatusEx(&m)) return false;
+    *free_bytes = m.ullAvailPageFile;
+    return true;
+#else
+    (void)free_bytes;
+    return false;
+#endif
+}
+// (hookshot) and a reserve of commit for the renderer's own heap: at Windows' commit limit an allocation failed on the presenting
+// thread (#2941: std::bad_alloc in the page table's flush as Hyrule Field loaded, 32 GB of RAM with a 2 GB page file) and the
+// exception left the renderer for the game's code, which nothing catches: the game closed. The commit rule above shrinks the
+// textures only on its next pass, and a wait would not help where the presenting thread itself is short. So 128 MB is held
+// committed while there is room; the first allocation that fails gives it back (operator new's handler) and is tried again; the
+// commit rule then sees the headroom gone and the textures make room, and the reserve is held again once the headroom is back
+// above the rule's reserve. Windows only (Linux overcommits); RX_VK_COMMIT_RESERVE_MB=0 turns it off with the rule
+namespace {
+constexpr size_t kOomReserve = 128u << 20;
+std::atomic<void*> oom_block{nullptr};
+std::atomic<int> oom_given{0};   // (times given back, for the log)
+void oom_handler() {
+#if defined(_WIN32)
+    if (void* p = oom_block.exchange(nullptr)) {
+        VirtualFree(p, 0, MEM_RELEASE);
+        oom_given.fetch_add(1);
+        return;   // (operator new tries again)
+    }
+#endif
+    throw std::bad_alloc();
+}
+}   // namespace
+static void oom_reserve_tend(bool known, uint64_t commit_free, uint64_t reserve) {
+#if defined(_WIN32)
+    static bool installed;
+    static int said;
+    if (!reserve) return;
+    if (!installed) installed = true, std::set_new_handler(oom_handler);
+    if (const int n = oom_given.load(); n != said) {
+        said = n;
+        logf("vk: commit limit reached: an allocation took the renderer's 128 MB reserve (%d so far); the textures make room", n);
+    }
+    if (!oom_block.load() && known && commit_free > reserve + kOomReserve)
+        if (void* p = VirtualAlloc(nullptr, kOomReserve, MEM_COMMIT | MEM_RESERVE, PAGE_NOACCESS)) {
+            void* none = nullptr;
+            if (!oom_block.compare_exchange_strong(none, p)) VirtualFree(p, 0, MEM_RELEASE);
+        }
+#else
+    (void)known, (void)commit_free, (void)reserve;
+#endif
 }
 uint64_t pool_cap() {
     static const uint64_t mb = getenv("RX_VK_TARGET_POOL_MB") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_TARGET_POOL_MB"))) : 256;
@@ -810,7 +876,9 @@ void bc_encode_into(VkCommandBuffer cmd, uint32_t w, uint32_t h, uint32_t n, Tex
     wr[1].pBufferInfo = &bi;
     vkCmdPushDescriptorSetKHR(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, bc_layout, 0, 2, wr);
     descriptors_disturbed();
-    const BcPush pc{(w + 3) / 4, (h + 3) / 4, w, h, 1, 0};
+    // (hookshot: BC1 for an image kept BC1, the colour half alone: with no texel under half alpha the encoder's four-colour
+    // blocks, as BC3's colour half)
+    const BcPush pc{(w + 3) / 4, (h + 3) / 4, w, h, dst.format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK ? 0u : 1u, 0};
     vkCmdPushConstants(cmd, bc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
     vkCmdDispatch(cmd, (pc.blocks_x + 7) / 8, (pc.blocks_y + 7) / 8, n);
     full_barrier(cmd);
@@ -1000,6 +1068,77 @@ VkImageView astc_level_view(Texture* tex, uint32_t level, uint32_t layer) {
 /// (hookshot) why the last upload_astc_gpu on this thread failed, for the log of a BC3 image left to be tried again
 thread_local const char* astc_fail = nullptr;
 
+// (hookshot) Big ASTC textures whose every block decodes opaque (astc_opaque.h) are kept as BC1, BC3's colour half: the same
+// texels in half the video memory. A texture's first whole upload with texels in it decides (its image made BC3 is made again
+// as BC1 then); an upload into a BC1 image with alpha in it makes it BC3 again and uploads it whole. On by default;
+// RX_VK_ASTC_BC1=0: all BC3, as before.
+bool bc1_on() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_ASTC_BC1");
+        if (e && e[0] == '0') return false;
+        VkFormatProperties fp{};
+        vkGetPhysicalDeviceFormatProperties(dev.physical, VK_FORMAT_BC1_RGBA_UNORM_BLOCK, &fp);
+        return (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0;
+    }();
+    return on;
+}
+extern uint64_t destroy_gen;   // (below)
+/// (hookshot) tex's image made again in format f (BC1 or BC3, the same size, levels, layers and usage), its old image and views
+/// let go once the work that used them is done (as the compaction's move): its views are made again when next asked for
+bool bc_reformat(Texture& tex, VkFormat f) {
+    if (tex.format == f || tex.sparse || tex.pool_key) return false;
+    VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ci.flags = tex.create_flags;
+    ci.imageType = tex.type;
+    ci.format = f;
+    ci.extent = {tex.width, tex.height, tex.depth};
+    ci.mipLevels = tex.levels;
+    ci.arrayLayers = tex.layers;
+    ci.samples = tex.samples;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = tex.usage;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage image = VK_NULL_HANDLE;
+    VmaAllocation alloc = nullptr;
+    if (!(compact_on() && create_image(ci, image, alloc, false, false, true)) && !create_image(ci, image, alloc)) return false;
+    destroy_gen++;
+    Dead d{tex.last_value, tex.image, tex.allocation, {}, {}};
+    for (auto& kv : tex.views)
+        if (kv.second) d.views.push_back(kv.second);
+    dead.push_back(std::move(d));
+    tex.views.clear();
+    total_bytes -= std::min(total_bytes, tex.bytes + tex.pad);
+    const bool bc1 = f == VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+    const uint64_t was = tex.bytes;
+    tex.bytes = bc1 ? tex.bytes / 2 : tex.bytes * 2;   // (BC3: a byte a texel; BC1 half that)
+    tex.image = image, tex.allocation = alloc, tex.format = f;
+    tex.pad = std::max(tex.bytes, allocation_size(alloc)) - tex.bytes;
+    total_bytes += tex.bytes + tex.pad;
+    VkCommandBuffer cmd = upload_cmd();
+    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    b.srcStageMask = b.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    b.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = image;
+    b.subresourceRange = {tex.aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+    VkDependencyInfo di{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    di.imageMemoryBarrierCount = 1;
+    di.pImageMemoryBarriers = &b;
+    vkCmdPipelineBarrier2(cmd, &di);
+    static std::atomic<int64_t> n_bc1{0}, n_back{0}, saved{0};
+    if (bc1) n_bc1++, saved += (int64_t)(was - tex.bytes);
+    else n_back++, saved -= (int64_t)(tex.bytes - was);
+    const int64_t k = bc1 ? n_bc1.load() : n_back.load();
+    if (k <= 4 || (k & (k - 1)) == 0)
+        logf("vk: texture %#llx %ux%u x%u: %s (%lld opaque textures kept as BC1, %lld back to BC3; %lld MB less than BC3; "
+             "RX_VK_ASTC_BC1=0: all BC3)", (unsigned long long)tex.gpu, tex.width, tex.height, tex.layers,
+             bc1 ? "every block opaque, kept as BC1" : "alpha in it now, BC3 again", (long long)n_bc1.load(), (long long)n_back.load(),
+             (long long)(saved.load() >> 20));
+    return true;
+}
+
 bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     astc_fail = nullptr;
     if (tex.type != VK_IMAGE_TYPE_2D || tex.samples != VK_SAMPLE_COUNT_1_BIT || !astc_ready()) {
@@ -1036,6 +1175,20 @@ bool upload_astc_gpu(Texture& tex, uint64_t total, const Ranges* dirty) {
     VkCommandBuffer cmd = upload_cmd();
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, astc_pipe);
     const uint64_t align = std::max<uint64_t>(dev.props.limits.minStorageBufferOffsetAlignment, 4);
+    if (tex.bc && !tex.bc_resized && linear_twin(tex.format) != VK_FORMAT_BC7_UNORM_BLOCK && bc1_on()) {   // (hookshot: BC1 for a
+        // texture whose blocks are all opaque, astc_opaque.h; a BC7 image, RX_VK_ASTC_BC7's, stays BC7)
+        const bool is_bc1 = tex.format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+        const astc_opaque::Scan sc = astc_opaque::scan(s.data, staged);
+        if (is_bc1 && sc.alpha) {   // (new contents with alpha: BC3 again, every layer uploaded into it)
+            if (bc_reformat(tex, VK_FORMAT_BC3_UNORM_BLOCK)) {
+                tex.bc1 = 1;
+                return upload_astc_gpu(tex, total, nullptr);
+            }
+        } else if (!is_bc1 && !tex.bc1) {
+            if (sc.alpha) tex.bc1 = 1;
+            else if (all && astc_opaque::whole_opaque(sc) && bc_reformat(tex, VK_FORMAT_BC1_RGBA_UNORM_BLOCK)) tex.bc1 = 2;
+        }
+    }
     if (tex.bc) {   // (decoded into the scratch a run of consecutive layers at a time, re-encoded, copied in)
         if (!bc_scratch_layout(cmd, tex.bc_resized)) {
             astc_fail = "no memory for the BC3 scratch";
@@ -1425,6 +1578,7 @@ std::mutex up_mu;   // (uploads may come from a parallel replay's threads)
 std::atomic<int64_t> frame_upload_ns{0};   // (this frame's time in upload(), every thread's)
 std::atomic<int> frame_astc_admitted{0};   // (Triforce: this frame's new ASTC textures asked about so far: upload_defer)
 std::atomic<int64_t> st_deferred{0}, st_deferred_frame{0};
+std::atomic<int64_t> st_reup_deferred{0}, st_reup_deferred_frame{0};   // (recompzel: reupload_defer)
 void upload_frame_report() {
     std::lock_guard lk(up_mu);
     int64_t ns = 0;
@@ -2577,6 +2731,24 @@ bool upload_defer(const Texture& tex) {
     st_deferred.fetch_add(1, std::memory_order_relaxed), st_deferred_frame.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
+/// (recompzel) An ASTC texture already uploaded whose memory the game wrote again, met after this frame's uploads took
+/// RX_VK_REUPLOAD_BUDGET_MS (default 6): its new texels wait for a later frame, the draw sampling what it had. Each such
+/// upload decodes the ASTC on the GPU and re-encodes it (BC), 3 to 21 ms of the replay thread a texture: the boss challenge
+/// in the museum rewrote ~15 of them every few frames, 53-58 ms in single frames, five stutters a second at 46 fps
+/// (2026-11-20). A texture waits RX_VK_REUPLOAD_MAX_WAIT frames at most (default 4), then is uploaded whatever the budget.
+/// RX_VK_REUPLOAD_BUDGET_MS=0: no deferral, as before
+bool reupload_defer(Texture& tex) {
+    static const int64_t budget_ns =
+        (int64_t)((getenv("RX_VK_REUPLOAD_BUDGET_MS") ? atof(getenv("RX_VK_REUPLOAD_BUDGET_MS")) : 6.0) * 1000000);
+    static const uint64_t max_wait =
+        getenv("RX_VK_REUPLOAD_MAX_WAIT") ? (uint64_t)std::max(0, atoi(getenv("RX_VK_REUPLOAD_MAX_WAIT"))) : 4;
+    if (!budget_ns || !tex.uploaded || !tex.astc || tex.gpu_written || tex.released) return false;
+    if (tex.reupload_wait && frame_no - tex.reupload_wait >= max_wait) return false;   // (waited long enough: now)
+    if (frame_upload_ns.load(std::memory_order_relaxed) < budget_ns) return false;
+    if (!tex.reupload_wait) tex.reupload_wait = std::max<uint64_t>(frame_no, 1);
+    st_reup_deferred.fetch_add(1, std::memory_order_relaxed), st_reup_deferred_frame.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
 }  // namespace
 Texture* texture_touch(Texture* tex, bool for_sampling) {
     tex->last_frame = frame_no;
@@ -2662,6 +2834,7 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
                  (unsigned long long)frame_no, (unsigned long long)tex->last_written);
     }
     if (tex->uploaded && !gpu_dirty && !texture_dirty(*tex, since, dirty, !tex->gpu_written)) return tex;
+    if (!gpu_dirty && reupload_defer(*tex)) return tex;   // (recompzel: the texels it had, until the next look; upload_gen kept)
     const uint32_t gen = memory_generation();
     // (storage render targets took last, which the CPU has not written since: nothing to upload, the memory holds
     // nothing the GPU's images did not replace. The game's transient heaps move with the dynamic resolution, and a
@@ -2852,6 +3025,7 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
         tex->upload_gen = gen;
         tex->gpu_written = false;
         tex->released = false;
+        tex->reupload_wait = 0;
     } else if (tex->bc) {
         // (hookshot) a BC3 image holds nothing until its encode has run. Marked uploaded as the others are, its blocks as the
         // memory had them were drawn as coloured noise, and never made again unless the game wrote its memory: the path, the
@@ -4437,6 +4611,14 @@ void texture_frame(uint64_t completed) {
     upload_frame_report();
     frame_upload_ns.store(0, std::memory_order_relaxed);
     frame_astc_admitted.store(0, std::memory_order_relaxed);
+    if (const int64_t d = st_reup_deferred_frame.exchange(0, std::memory_order_relaxed)) {
+        // (recompzel: reupload_defer) textures whose new texels waited for a later frame
+        static int told;
+        const int64_t all = st_reup_deferred.load(std::memory_order_relaxed);
+        if (told++ < 20 || all % 2000 < d)
+            logf("vk: %lld re-uploads of ASTC textures left for a later frame (this frame's uploads took their budget; %lld so far)",
+                 (long long)d, (long long)all);
+    }
     if (const int64_t d = st_deferred_frame.exchange(0, std::memory_order_relaxed)) {
         // (the views and descriptor sets resolved to the placeholder this frame go stale, as when textures go: the next frame
         // looks those textures up again, and uploads them)
@@ -4693,6 +4875,31 @@ void texture_frame(uint64_t completed) {
         const uint64_t over = used - squeeze_line;
         budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
         rule_budget = std::min(rule_budget, total_bytes > over ? total_bytes - over : 0);
+    }
+    // (hookshot) and Windows' commit limit (RAM plus the page file): every VRAM block is charged to the process's commit, as the
+    // guest's memory is. A run on an RTX 4060 Ti held private commit at the VRAM blocks plus ~21 GB the whole way (19.3 GB at the
+    // start, 35.4 GB in Hyrule Field with 13.3 GB of blocks); a 16 GB PC with a fixed 32 GB page file reached its 47.9 GB limit at
+    // 33.9 GB of its own, a guest commit failed while an area loaded, and the game's next write there crashed it. Below the reserve
+    // the shortfall comes off the textures' budget, as the driver's limit's excess does above; the eviction and the compaction
+    // then give blocks back. RX_VK_COMMIT_RESERVE_MB=<MB> (default 2560; 0: off)
+    {
+        uint64_t commit_free = 0;
+        const uint64_t reserve = commit_reserve();
+        const bool headroom_known = reserve && commit_headroom(&commit_free);
+        oom_reserve_tend(headroom_known, commit_free, reserve);
+        if (headroom_known && commit_free < reserve) {
+            const uint64_t over = reserve - commit_free;
+            budget = std::min(budget, total_bytes > over ? total_bytes - over : 0);
+            rule_budget = std::min(rule_budget, total_bytes > over ? total_bytes - over : 0);
+            static uint64_t said_at;
+            if (!said_at || frame_no - said_at >= 600) {
+                said_at = frame_no;
+                logf("vk: commit limit near: %llu MB of commit left (reserve %llu MB); the textures' budget down to %llu MB of "
+                     "their %llu MB (RX_VK_COMMIT_RESERVE_MB)", (unsigned long long)(commit_free >> 20),
+                     (unsigned long long)(reserve >> 20), (unsigned long long)(budget >> 20),
+                     (unsigned long long)(total_bytes >> 20));
+            }
+        }
     }
     // (hookshot) the 90% rule and the driver's limit let go of their excess, not of an eighth of the cache: vram_compact.h.
     // RX_VK_EVICT_EXCESS=0: to 7/8 of their budget, as before

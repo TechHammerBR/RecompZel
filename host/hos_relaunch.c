@@ -13,6 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#ifdef _WIN32
+#include <process.h>   /* (_cexit) */
+#endif
 
 static volatile LONG relaunch_asked;
 
@@ -91,5 +94,16 @@ void hos_window_closed_exit(void) {
     hos_log(again ? "display: window closed for a restart (the Insert menu's Restart now)" : "display: window closed, exiting");
     hos_log_flush();
     if (again) relaunch();
+#ifdef _WIN32
+    /* (recompzel) The atexit handlers run (the memory trial's orderly end, the capture notes, the log), then the process ends
+       without the DLLs' DLL_PROCESS_DETACH: in ExitProcess NVIDIA's frame generation (nvngx_dlssg.dll, through Streamline's
+       sl.dlss_g.dll) tore down after the device and crashed reading 0x48 at every close of the window (2026-11-20, both the
+       normal build and the test one), so each session ended as a crash, before the game's own atexit handlers ran.
+       HOS_EXIT_DETACH=1: ExitProcess as before */
+    if (!getenv("HOS_EXIT_DETACH")) {
+        _cexit();
+        TerminateProcess(GetCurrentProcess(), 0);
+    }
+#endif
     ExitProcess(0);
 }

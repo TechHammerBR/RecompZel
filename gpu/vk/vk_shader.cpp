@@ -2230,11 +2230,13 @@ uint64_t compute_code_key(const NvnState& s) {
 bool prog_same(int kind, uint64_t serial, uint64_t stages, uint64_t bind, uint64_t reg, uint64_t ub, int nvattr,
                const uint32_t* vattr, const uint8_t* ct, int ckind, uint64_t cserial, uint64_t cstages, uint64_t cbind,
                uint64_t creg, uint64_t cub, int cnvattr, const uint32_t* cvattr, const uint8_t* cct) {
-    if (kind != ckind || serial != cserial || stages != cstages || bind != cbind || reg != creg || ub != cub ||
-        nvattr != cnvattr)
+    if (kind != ckind || serial != cserial || stages != cstages || bind != cbind || reg != creg || ub != cub)
         return false;
-    for (int i = 0; i < 16; i++)
-        if (vattr[i] != cvattr[i]) return false;
+    if (kind != 2 /*Mesh*/) {
+        if (nvattr != cnvattr) return false;
+        for (int i = 0; i < 16; i++)
+            if (vattr[i] != cvattr[i]) return false;
+    }
     for (int i = 0; i < 8; i++)
         if (ct[i] != cct[i]) return false;
     return true;
@@ -2282,6 +2284,7 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
     if (!s.has_prog) return nullptr;
     if (kind == ProgramKind::Mesh) return mesh_program_for(s, color_types);
     const bool compute = kind == ProgramKind::Compute;
+    const bool mesh = kind == ProgramKind::Mesh;
     static int64_t st_hit, st_none, st_differ, st_calls, st_by_tex;   // (logged now and then: how the cache does)
     if (++st_calls % 200000 == 0)
         logf("vk: program picks: %lld kept (%lld by the last picks' textures, a uniform buffer bound since), %lld new, %lld with other textures (of %lld)",
@@ -2308,7 +2311,10 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
             return st_hit++, f.p;
         }
     }
-    const uint64_t key = (compute ? 0x5EED : pick_inputs(s, color_types)) * 1099511628211ull ^ s.prog.serial;
+    uint64_t ct_bits = 0;
+    if (!compute) std::memcpy(&ct_bits, color_types, 8);
+    const uint64_t in_hash = compute ? 0x5EEDull : mesh ? (0x4E58ull * 1099511628211ull ^ ct_bits) : pick_inputs(s, color_types);
+    const uint64_t key = (in_hash * 1099511628211ull ^ stages) * 1099511628211ull ^ ((uint64_t)kind << 56 | s.prog.serial);
     Pick& pk = picks[key];
     auto keep = [&](const Program* p) {
         if (!p || !p->ready.load(std::memory_order_acquire) || p->failed) return p;
@@ -2335,7 +2341,7 @@ const Program* program_for(const NvnState& s, ProgramKind kind, const uint8_t co
     } else {
         st_none++;
     }
-    const Program* picked = program_pick(s, kind, color_types);
+    const Program* picked = mesh ? mesh_program_for(s, color_types) : program_pick(s, kind, color_types);
     if (picked && picked->ready.load(std::memory_order_acquire) && !picked->failed) {
         pk.p = picked;
         answer_handles(s, *picked, pk.handles);
