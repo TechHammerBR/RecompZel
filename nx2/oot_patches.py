@@ -587,6 +587,7 @@ def apply(gen, *, protect_hearts=False, required=False):
     step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
     whole_sites = 0   # (the counters of WHOLE_SITES with the whole frames: patch_whole_frames)
     heap_sites = [0, 0]   # (the GPU memory's sites, the CPU buffers': patch_heap_retry, the supported build only)
+    sound_jobs = solver_sites = 0   # (above 60 fps: patch_sound_job, patch_solver_steps; host/oot_high_fps.h)
     for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
@@ -670,12 +671,26 @@ def apply(gen, *, protect_hearts=False, required=False):
         if heap != out:
             print("oot_patches: heap-full retries of the OptimizeChangeBank allocations in", os.path.basename(path))
         out = heap
+        sound, found = patch_sound_job(out)
+        sound_jobs += found
+        if sound != out:
+            print("oot_patches: the sound job at 60 Hz above 60 fps in", os.path.basename(path))
+        out = sound
+        solver, found = patch_solver_steps(out)
+        solver_sites += found
+        if solver != out:
+            print("oot_patches: the solver steps rounded up above 60 fps in", os.path.basename(path))
+        out = solver
         out, whole = patch_whole_frames(out)
         whole_sites += out.count(WHOLE_MARK)   # (made now, or by an earlier run over this file)
         if whole:
             print("oot_patches: %d frame counter(s) with the step's whole frames in %s" % (whole, os.path.basename(path)))
         if out != s:
             whole_write.write_whole(path, out, newline="")
+    if sound_jobs != 1:   # (without it, above 60 fps sounds and then the music can stop after a few loading zones)
+        print("oot_patches: WARNING: the sound job was found %d times, not once" % sound_jobs)
+    if solver_sites != len(SOLVER_HEADS):   # (without them, above 60 fps moving platforms can drop Link)
+        print("oot_patches: WARNING: the solver steps were found %d times, not %d" % (solver_sites, len(SOLVER_HEADS)))
     if protect_hearts and heap_sites != [len(GPU_ALLOC_SITES), len(HEAP_ALLOC_SITES)]:   # (the supported build's functions)
         print("oot_patches: WARNING: the OptimizeChangeBank allocations were found %s times, not once each: a full heap is "
               "not tried again" % heap_sites)
