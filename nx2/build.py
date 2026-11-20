@@ -566,7 +566,7 @@ CPU = ["-march=" + MARCH, "-ffp-contract=off"]
 # the flags too (-DHOOKSHOT_NATIVE_CPU=<cpu>_<tune>_<features>): another CPU (a new one, the disk in another PC) compiles again
 # instead of linking objects made for instructions it may lack. If clang can't say, the default stays x86-64-v3, and an
 # RX_MARCH=native stops the build.
-_CLANG = toolchain.find("clang")
+_CLANG = toolchain.find("clang") if hasattr(toolchain, "find") else ""   # (a test's stand-in toolchain has none)
 _native = None
 if not os.environ.get("RX_MARCH") and MARCH == "x86-64-v3" and os.path.isfile(_CLANG):
     _native = native_cpu(_CLANG, target() + ["-march=native"] + CPU[1:])

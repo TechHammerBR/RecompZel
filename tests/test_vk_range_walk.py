@@ -143,7 +143,8 @@ def main():
     if "RangeWalk in_texr{texr}" not in make or "in_texr.in(" not in make or "upper_bound(texr" in make:
         raise SystemExit("capture_make: the staging's texture ranges are not walked with RangeWalk")
     take = block(source, "bool take_capture(")
-    if take.count("in_tex.in(") != 3 or "upper_bound" in take:
+    # (RecompZel: a fourth, the same-bytes pass; its imported map's own upper_bound is not the shadow's)
+    if take.count("in_tex.in(") < 3 or "upper_bound(tex_merged" in take or "tex_merged.begin()" in take:
         raise SystemExit("take_capture: the texture shadow's three page tests are not RangeWalk's")
     with tempfile.TemporaryDirectory(prefix="vk-range-walk-") as tmp:
         cpp = Path(tmp) / "fixture.cpp"

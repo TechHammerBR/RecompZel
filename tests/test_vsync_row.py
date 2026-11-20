@@ -33,6 +33,7 @@ def block(text, marker):
 FIXTURE = r"""
 #include <cstdio>
 #include <cstdlib>
+#include "hookshot_env.h"
 #ifdef _WIN32
 static int unsetenv(const char* name) { return _putenv_s(name, ""); }
 #endif
@@ -47,10 +48,8 @@ int main(int argc, char** argv) {
         opts.vsync = v;
         CHECK(menu_vsync() == (run >= 0 ? run : v) && opts.vsync == v);   // (for the run; the row keeps the player's)
     }
-    setenv("RX_VK_FIFO", "1", 1);
-    CHECK(menu_vsync() == 1 && opts.vsync == 2);   // (for the run; the row keeps the player's)
-    unsetenv("RX_VK_FIFO");
-    setenv("RX_VK_IMMEDIATE", "1", 1);
+    unsetenv("RX_VK_FIFO");   // (read once, at the first present: a run's switches are its own from the start)
+    unsetenv("RX_VK_IMMEDIATE");
     opts.vsync = 1;
     CHECK(menu_vsync() == (run >= 0 ? run : 1));
     std::puts("PASS: V-Sync: the row's choice, the environment's over it for a run");
@@ -142,10 +141,11 @@ def main():
         src.write_text(FIXTURE.replace("/* OPTIONS */", options.group(0)).replace("/* VSYNC */", vsync.group(0)),
                        encoding="utf-8")
         if Path(args.cxx).name.lower() in ("cl", "cl.exe", "clang-cl", "clang-cl.exe"):
-            command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/D_CRT_SECURE_NO_WARNINGS", str(src),
+            command = [args.cxx, "/nologo", "/std:c++20", "/EHsc", "/D_CRT_SECURE_NO_WARNINGS", "/I" + str(ROOT / "gpu" / "vk" / "compat"), str(src),
                        "/Fo" + str(Path(tmp) / "vsync.obj"), "/Fe" + str(exe)]
         else:
-            command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", str(src), "-o", str(exe)]
+            command = [args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS",
+                       "-I", str(ROOT / "gpu" / "vk" / "compat"), str(src), "-o", str(exe)]
         subprocess.run(command, cwd=tmp, check=True)
         env = {k: v for k, v in os.environ.items() if k not in ("RX_VK_FIFO", "RX_VK_IMMEDIATE")}
         # (the switches are read once, so a process each: none, =0 off by env_on's rule, FIFO, immediate, both)
