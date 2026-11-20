@@ -74,12 +74,6 @@ static int cmp_range_lo(const void *a, const void *b) {
     return x < y ? -1 : x > y;
 }
 static int64_t collect_in(const uint64_t (*ranges)[2], int nranges, uint32_t **pages) {
-    /* (HOS_COLLECT_WIDE=0: 32 marks a step at most, as before; the pages found are the same either way) */
-    static int wide = -1;
-    if (wide < 0) {
-        const char *e = getenv("HOS_COLLECT_WIDE");
-        wide = !(e && e[0] == '0');
-    }
     size_t n = 0, cap = 4096;
     uint32_t *out = malloc(cap * sizeof *out);
     /* two changes to the clean-span walk, both measured in Hyrule Field at play (Hyrule Field spin, i9-13900K,
