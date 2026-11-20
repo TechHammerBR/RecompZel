@@ -2682,10 +2682,11 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
     if (tex_same && !c->copied.empty() && c->map && tex_capture_on()) {
         std::lock_guard sk(shadow_mu);
         if (!tex_merged.empty() && shadow_n.load(std::memory_order_relaxed)) {
+            RangeWalk in_tex{tex_merged};   // (c->copied in address order)
             for (size_t i = 0; i < c->copied.size(); i++) {
                 const uint32_t p = c->copied[i];
                 if (!dropped.empty() && dropped[c->slots[i]]) continue;
-                if (!in_tex_merged((uint64_t)p << 12)) continue;
+                if (!in_tex.in((uint64_t)p << 12)) continue;
                 const auto s = shadow.find(p);
                 if (s == shadow.end() || !s->second.b) continue;
                 if (memcmp(s->second.b.get(), (const uint8_t*)c->map + (uint64_t)c->slots[i] * 4096, 4096) != 0) {

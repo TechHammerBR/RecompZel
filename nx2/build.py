@@ -579,6 +579,7 @@ if MARCH == "native" and not _native:
 if _native:
     print("build: the game is built for this PC's CPU (%s)" % _native, flush=True)
     CPU += ["-DHOOKSHOT_NATIVE_CPU=" + _native]
+OPT = "O1"   # (the lifted code's level: --opt's default)
 
 
 def flags(gen, rt64, opt, polls):
@@ -768,7 +769,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--jobs", type=int, default=1)
     p.add_argument("--only", default="")
-    p.add_argument("--opt", default="O1")
+    p.add_argument("--opt", default=OPT)
     p.add_argument("--no-polls", action="store_true")
     p.add_argument("--dll", action="store_true")
     p.add_argument("--lib", action="store_true")

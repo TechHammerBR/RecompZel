@@ -76,7 +76,7 @@ def main():
     pool = run[run.index("const unsigned quarter"):run.index("threads.emplace_back(worker)")]
     assert "background ? std::min(quarter, cpus) : prepare_cpus()" in pool, \
         "prepare_run sizes its pool before the game with prepare_cpus, in play with its quarter"
-    cache = (ROOT / "gpu/vk/vk_progcache.cpp").read_text(encoding="utf-8")
+    cache = draw   # (RecompZel: in vk_draw.cpp, beside prepare_run)
     body = cache[cache.index("unsigned prepare_cpus() {"):]
     body = body[:body.index("\n}\n")]
     assert "prepare_workers::count(half_cpus(), usable_cpus()" in body and "segment_heap()" in body

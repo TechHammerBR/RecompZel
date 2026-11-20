@@ -29,6 +29,9 @@
 
 #include "vk_paths.h"
 #include "vk_menu.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 #include "vk_menu_hit.h"
 #include "vk_fps.h"    // (the FPS counter's levels and numbers)
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
@@ -3111,7 +3114,8 @@ void menu_first_start_for_gpu(const VkPhysicalDeviceProperties& props, const VkP
              preset ? tx_preset(preset) : "default", small ? ", no made frames" : "");
 }
 
-int menu_vsync() { return getenv("RX_VK_FIFO") ? 1 : getenv("RX_VK_IMMEDIATE") ? 2 : opts.vsync; }
+// (the switches read once, at the first present: they are for the whole run, and each present asked twice)
+int menu_vsync() { static const int run = env_on("RX_VK_FIFO") ? 1 : env_on("RX_VK_IMMEDIATE") ? 2 : 0; return run ? run : opts.vsync; }
 bool resolution_auto() { return opts.resolution == 0; }
 int resolution_scale() {
     const float s = upscaler_rows::percent(opts.resolution) / 100.0f;

@@ -15,7 +15,8 @@ def host_march():
             if pf(40):
                 return "x86-64-v3"
             return "x86-64-v2" if pf(38) else "x86-64"
-        flags = open("/proc/cpuinfo").read().split("flags", 1)[1].split(chr(10), 1)[0].split()
+        with open("/proc/cpuinfo") as f:
+            flags = f.read().split("flags", 1)[1].split(chr(10), 1)[0].split()
         if all(f in flags for f in want):
             return "x86-64-v3"
         return "x86-64-v2" if all(f in flags for f in ("sse4_2", "popcnt", "ssse3")) else "x86-64"

@@ -7663,6 +7663,38 @@ bool warm_libraries(void (*progress)(size_t done, size_t total)) {
 /// background: in play, behind the game: a few workers at idle priority, translation only (the driver's part is left to first use:
 /// its compiler crashing in here would take the game with it)
 /// refresh_states: Builder preparation also imports state lists when the seed is already prepared
+// (upstream Hookshot #15: the preparation's worker count, gpu/vk/prepare_workers.h)
+unsigned usable_cpus() {
+    const unsigned all = std::max(1u, std::thread::hardware_concurrency());
+#ifdef _WIN32
+    DWORD_PTR proc = 0, sys = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) || !proc) return all;
+    unsigned n = 0;
+    for (uint64_t m = (uint64_t)proc; m; m &= m - 1) n++;
+    // (a mask covers one processor group, 64 CPUs at most: past that, Windows may run the process on every group)
+    return n < 64 ? std::clamp(n, 1u, all) : all;
+#else
+    return all;
+#endif
+}
+unsigned half_cpus() {
+    return std::max(1u, std::min(std::max(1u, std::thread::hardware_concurrency()) / 2, usable_cpus()));
+}
+bool segment_heap() {
+#ifdef _WIN32
+    return prepare_workers::segment_heap_signature(GetProcessHeap());
+#else
+    return false;
+#endif
+}
+unsigned prepare_cpus() {
+    uint64_t avail_mb = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX m{sizeof m};
+    if (GlobalMemoryStatusEx(&m)) avail_mb = m.ullAvailPhys >> 20;
+#endif
+    return prepare_workers::count(half_cpus(), usable_cpus(), avail_mb, segment_heap());
+}
 bool prepare_run(void (*progress)(size_t done, size_t total), bool background, bool refresh_states) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::string path = prepared_path();
@@ -7812,21 +7844,13 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
     // (upstream Hookshot #15, gpu/vk/prepare_workers.h) Before the game, half the CPUs on the NT heap; on the segment heap
-    // (nx2/win_manifest.py's heapType) every CPU as far as the free memory allows: the driver's compiles stop queueing on the
-    // heap's one lock (a Ryzen 5 5600's cold preparation 1,466 s -> 904 s)
-    unsigned prepare_n = std::clamp(cpus / 2, 1u, 32u);
-#ifdef _WIN32
-    if (!background) {
-        MEMORYSTATUSEX ms{};
-        ms.dwLength = sizeof ms;
-        const uint64_t avail_mb = GlobalMemoryStatusEx(&ms) ? ms.ullAvailPhys >> 20 : 0;
-        const bool segment = prepare_workers::segment_heap_signature(GetProcessHeap());
-        prepare_n = prepare_workers::count(prepare_n, cpus, avail_mb, segment);
-        logf("vk: preparation: %u workers for the shader programs (%u CPUs; %s)", prepare_n, cpus,
-             segment ? "the segment heap: as many as the free memory allows" : "half the CPUs");
-    }
-#endif
-    const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : prepare_n;
+    // (nx2/win_manifest.py's heapType) every usable CPU as far as the free memory allows: the driver's compiles stop queueing on
+    // the heap's one lock (a Ryzen 5 5600's cold preparation 1,466 s -> 904 s). In play: a quarter of the CPUs, two to four
+    const unsigned quarter = std::clamp(cpus / 4, 2u, 4u);
+    const unsigned workers = background ? std::min(quarter, cpus) : prepare_cpus();
+    if (!background)
+        logf("vk: preparation: %u workers for the shader programs (%u CPUs usable; %s)", workers, usable_cpus(),
+             segment_heap() ? "the segment heap: as many as the free memory allows" : "half the CPUs");
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
