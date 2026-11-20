@@ -1505,6 +1505,10 @@ std::map<uint64_t, std::pair<uint64_t, uint64_t>> tex_spans;   // lo -> (hi, the
 std::vector<std::pair<uint64_t, uint64_t>> tex_merged;          // (tex_spans merged; shadow_mu)
 bool tex_spans_changed = false;
 uint64_t tex_merged_bytes = 0;
+bool in_tex_merged(uint64_t guest) {   // (shadow_mu held; still read by the late-page and shadow-erase paths)
+    auto it = std::upper_bound(tex_merged.begin(), tex_merged.end(), std::make_pair(guest, ~uint64_t(0)));
+    return it != tex_merged.begin() && guest < std::prev(it)->second;
+}
 
 void shadow_erase(uint32_t page) {   // (shadow_mu held)
     if (!shadow.erase(page)) return;
