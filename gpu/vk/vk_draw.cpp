@@ -2936,8 +2936,10 @@ void desc_counts_unpack(uint64_t packed, size_t* nbuf, size_t* nimg, size_t* nvi
 }
 
 void build_descriptors(const NvnState& s, const Program& p) {
-    dw().reset();
-    dw().prog = &p;
+    // (hookshot) the thread's writer asked for once: each dw() is a thread-local lookup
+    DescWriter& out = dw();
+    out.reset();
+    out.prog = &p;
     desc_fp().clear(), desc_fp_dummy = false;   // (RX_VK_DESC_SLOTGEN: the samplers' generation is read before the first handle,
     desc_samp_seen = sampler_registrations_generation();   // (so one registered during the build still forces the next rebuild)
     desc_destroy_seen = texture_destroy_generation();      // (an eviction retires views behind the slots' backs: it bumps only this)
