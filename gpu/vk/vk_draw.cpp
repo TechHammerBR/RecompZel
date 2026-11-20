@@ -7,6 +7,7 @@
 //
 // Pipelines persist in a VkPipelineCache next to the executable (mkw_vk_pipelines.bin).
 #include <algorithm>
+#include "prepare_workers.h"
 #include <filesystem>
 #include <iterator>
 #include <tuple>
@@ -7750,7 +7751,22 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
     std::vector<std::thread> threads;
     const unsigned cpus = std::max(1u, std::thread::hardware_concurrency());
     // (in play: a quarter of the CPUs, two to four, the game's own threads before them)
-    const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : std::clamp(cpus / 2, 1u, 32u);
+    // (upstream Hookshot #15, gpu/vk/prepare_workers.h) Before the game, half the CPUs on the NT heap; on the segment heap
+    // (nx2/win_manifest.py's heapType) every CPU as far as the free memory allows: the driver's compiles stop queueing on the
+    // heap's one lock (a Ryzen 5 5600's cold preparation 1,466 s -> 904 s)
+    unsigned prepare_n = std::clamp(cpus / 2, 1u, 32u);
+#ifdef _WIN32
+    if (!background) {
+        MEMORYSTATUSEX ms{};
+        ms.dwLength = sizeof ms;
+        const uint64_t avail_mb = GlobalMemoryStatusEx(&ms) ? ms.ullAvailPhys >> 20 : 0;
+        const bool segment = prepare_workers::segment_heap_signature(GetProcessHeap());
+        prepare_n = prepare_workers::count(prepare_n, cpus, avail_mb, segment);
+        logf("vk: preparation: %u workers for the shader programs (%u CPUs; %s)", prepare_n, cpus,
+             segment ? "the segment heap: as many as the free memory allows" : "half the CPUs");
+    }
+#endif
+    const unsigned workers = background ? std::clamp(cpus / 4, 2u, 4u) : prepare_n;
     for (unsigned i = 0; i < workers; i++) threads.emplace_back(worker);
     while (done.load() < total && !prepare_stopped()) {
         if (progress) progress(done.load() / 3, programs);   // (in programs, as the log counts them, not programs times variants)
