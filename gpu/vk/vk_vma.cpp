@@ -26,34 +26,10 @@ namespace mkwvk {
 VmaAllocator vma;
 uint64_t test_card_ballast = 0;   // (RX_VK_TEST_CARD_MB, a lab tool: the VRAM taken so that the card plays a smaller one; vma_init)
 
-// (relink, issue 136) VMA gives an emptied block back to the driver with vkFreeMemory on the thread that emptied it, and
-// the image pool's defragmentation empties them on the render thread, one a pass: 5 to 7 ms a block on the bench's RTX
-// 3060 Ti, about 250 ms on a player's RTX 4080 SUPER (83 passes in a row: 5 frames a second at the Market for half a
-// minute). VMA is done with the handle when it calls, so the call goes to the reaper below, which already makes the
-// images' driver calls, in the order given: the images destroyed before it are gone before the block is.
-// RX_VK_FREE_LATER=0: on the caller's thread, as before
-void reap(std::function<void()> fn);
-thread_local bool on_reaper = false;
-VKAPI_ATTR void VKAPI_CALL free_memory_later(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* cb) {
-    static const bool later = !getenv("RX_VK_FREE_LATER") || atoi(getenv("RX_VK_FREE_LATER")) != 0;
-    const bool queued = later && !on_reaper;
-    const auto free_now = [device, memory, cb, queued] {
-        const auto t0 = std::chrono::steady_clock::now();
-        vkFreeMemory(device, memory, cb);
-        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        static std::atomic<int> logged{0};
-        if ((ms > 20.0 || logged.load() < 4) && logged++ < 24)
-            logf("vk: a memory block given back to the driver in %.2f ms%s", ms, queued ? ", off the thread that emptied it" : "");
-    };
-    if (!queued) return free_now();
-    reap(free_now);
-}
-
 bool vma_init(PFN_vkGetInstanceProcAddr gipa) {
     VmaVulkanFunctions f{};
     f.vkGetInstanceProcAddr = gipa;
     f.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
-    f.vkFreeMemory = free_memory_later;   // (the others are fetched: VMA keeps the pointers it is given)
     VmaAllocatorCreateInfo ci{};
     ci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT |
                (dev.memory_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0);
