@@ -6,6 +6,7 @@
    initializers) is created on first use. Mutexes are always recursive: relocking a non-recursive nn::os mutex
    would be a game bug on hardware anyway. */
 #include "hos.h"
+#include "../gpu/vk/compat/hookshot_env.h"   /* (env_on: HOS_CV_SIGNAL_ALWAYS) */
 #include <stdlib.h>
 #include <stddef.h>
 #include <string.h>
@@ -592,6 +593,7 @@ static int cv_signal_always(void) {
 HLE(_ZN2nn2os23SignalConditionVariableEPNS0_21ConditionVariableTypeE) {
     Obj *cv = obj(ARG(0), K_COND);
     if (watched_cv(ARG(0))) watch_log("signal", watch_mutex(), ARG(0), c, NULL);
+    if (!__atomic_load_n(&cv->cv_waiting, __ATOMIC_SEQ_CST) && !cv_signal_always()) return;
     AcquireSRWLockExclusive(&cv->lk);
     cv_reserve(cv);
     cv->gen++;
