@@ -3374,6 +3374,9 @@ struct Flush {
     void* map = nullptr;
     bool ok = false;
     bool ignore_cpu = false;   // (RX_VK_AUDIT_GPU_ONLY's marks are writes of this process: they do not keep the texels out)
+    bool only_untouched = false;   // (drawn_writeback.h: only into memory still all zero, or holding its own last write-back)
+    bool touched = false;          // (and it was neither, or a guest thread wrote it during the write: the CPU's, nothing written)
+    uint64_t written_hash = 0;     // (and when written: the hash of its memory as the write left it)
 };
 // (cached host memory, which the CPU reads: the sequential-write kind is write-combined, or VRAM behind the BAR, and every read
 // of it by the unswizzle goes over PCIe uncached. RX_VK_FLUSH_UNCACHED=1: as before)
