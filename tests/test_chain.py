@@ -3,7 +3,8 @@ host/hos_chain.c). A made-up recording of three threads, written in the recorder
 path's time where it was spent: the presenting thread's run after its wake-up, the main thread's run, the worker's run
 before its signal, and a wait for a virtual core inside an event wait kept on the waiting thread (with the thread that
 gave the core up).
-The recorder's record layout and kinds must match the script's.
+The recorder's record layout and kinds must match the script's, and a recording that names a thread with no name (the
+recorder writes `thread <n> ` for a thread the game never named) must load, the thread called `thread-<n>`.
 
 python -I -B tests/test_chain.py
 """
@@ -42,8 +43,19 @@ def write(path, names, recs):
             f.write(chain.REC.pack(t, key, lr, th, kind))
 
 
+def check_unnamed_thread():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "chain.bin")
+        write(path, ["Presentation", ""], [(0, chain.PRESENT, 0, 0, 0)])
+        assert Path(path).read_bytes().split(b"\n")[2] == b"thread 1 ", "the made-up header is not the recorder's"
+        names, loaded = chain.load(path)
+    assert names == {0: "Presentation", 1: "thread 1"}, names
+    assert len(loaded) == 1
+
+
 def main():
     check_layout()
+    check_unnamed_thread()
     P, M, W = 0, 1, 2
     Q, E, VC = 0x100, 0x200, chain.VCORE | 0x7000
     W_, K, S = chain.WAIT, chain.WOKE, chain.SIGNAL
