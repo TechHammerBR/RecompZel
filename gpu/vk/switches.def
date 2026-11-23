@@ -283,7 +283,7 @@ SW(HOS_VIDEO_ACQUIRE_TRIES, kill, bool, "off: the wait for a picture is ~100 ms 
 SW(HOS_VIDEO_INPUT_LIMIT, tune, int, "16", "How many submissions a video decoder holds before refusing the next; 0: no limit, as before.")
 SW(HOS_VIDEO_LOG, diag, bool, "off", "Logs video decoder submissions and acquisitions and the time between a movie's pictures.")
 SW(HOS_VIDEO_NO_CATCHUP, kill, bool, "off: pictures behind the sound are skipped", "A movie never skips pictures that are behind its sound.")
-SW(HOS_VIDEO_NO_HOLD, kill, bool, "off: a movie picture ahead of the movie's clock is held back above 60 fps", "=1 hands every picture out at once, as before.")
+SW(HOS_VIDEO_NO_HOLD, kill, bool, "off: a picture over 25 ms ahead of the movie's clock waits, the last shown again", "A movie's next picture is handed out whenever the game asks, even ahead of its clock.")
 SW(HOS_VIDEO_RGBA, kill, bool, "off: NV12/YUV420 frames are queued and converted to RGBA lazily", "Forces every decoded movie frame to be converted to RGBA at once, the older path.")
 SW(HOS_VI_DOUBLE, kill, bool, "off: an acquire waits only for the frame whose showing frees its texture", "The acquire waits one interval after the last present, the older two-texture behaviour.")
 SW(HOS_VOICE_OPTION_FOLLOW, kill, bool, "on: the Voice Language read from option.sav is applied", "=0: the Voice Language option is applied only when the game lists it as written, as shipped.")
