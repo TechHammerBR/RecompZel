@@ -488,8 +488,15 @@ void MeshEpilogue(EmitContext& ctx) {
         return;
     }
     Barrier(ctx);
-    const Id count{ctx.OpUMin(ctx.U32[1], ctx.OpLoad(ctx.U32[1], ctx.mesh_primitive_count),
-                              ctx.Const(mesh.max_primitives))};
+    Id count{ctx.OpUMin(ctx.U32[1], ctx.OpLoad(ctx.U32[1], ctx.mesh_primitive_count),
+                        ctx.Const(mesh.max_primitives))};
+    if (Sirit::ValidId(ctx.num_workgroups)) {
+        // (hookshot, #1285, as Lichii #1203) keep the NumWorkgroups load live through NIR's dead-code elimination into
+        // ac_nir_lower_ngg_ms so RADV < 26.2.5 reserves the mesh grid-size registers (NumWorkgroups.x > 0 for every
+        // launched mesh workgroup)
+        const Id grid_x{ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.num_workgroups), 0U)};
+        count = ctx.OpSelect(ctx.U32[1], ctx.OpINotEqual(ctx.U1, grid_x, ctx.u32_zero_value), count, ctx.u32_zero_value);
+    }
     const Id max_vertices{ctx.Const(mesh.max_vertices)};
     // Marker for OpSetMeshOutputsEXT max_vertices, count (PatchMeshInstructions).
     ctx.OpStore(max_vertices, count);
