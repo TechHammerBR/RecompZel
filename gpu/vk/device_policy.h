@@ -120,10 +120,11 @@ inline bool native_fadd_listed(VkDriverId driver, uint32_t device, uint32_t vers
 /// Intel's Windows driver needs 64 units on older/integrated families where depth and colour programs do not match to the
 /// last bit (issue 17, Arc B390). On discrete Battlemage (0xE2xx, e.g. Arc B570 / B580) the margin's LESS_OR_EQUAL lets
 /// alpha-tested Z-prepass cutouts (fallen leaves, Link's hair, distant tree cards) pass depth where the prepass
-/// discarded them, rendering opaque rectangles; keep it 0 there.
+/// discarded them, rendering opaque rectangles; keep it 0 there. Lunar Lake (0x64xx, Arc 140V, 101.8991) the
+/// same: the ivy, leaves and grass of Kokiri Forest drew their whole quads, and with the game's EQUAL the ground has no holes.
 inline float equal_depth_bias(VkDriverId driver, uint32_t device) {
     if (driver != VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS) return 0.0f;
-    if ((device & 0xFF00u) == 0xE200u) return 0.0f;
+    if ((device & 0xFF00u) == 0xE200u || (device & 0xFF00u) == 0x6400u) return 0.0f;
     return 64.0f;
 }
 
@@ -313,11 +314,12 @@ struct DevicePolicy {
     // pass the same position. By the vendor, so NVK goes without them as NVIDIA's own compiler does: whether Mesa's
     // compiler needs them wants a run on NVK. RX_VK_NO_INVARIANT turns them off. Read (vk_coopmat.cpp coopmat_init)
     bool position_invariant = false;
-    // Intel's Windows driver (except discrete Battlemage, 0xE2xx): a colour pass tests EQUAL against what another
+    // Intel's Windows driver (except Battlemage, 0xE2xx, and Lunar Lake, 0x64xx): a colour pass tests EQUAL against what another
     // program wrote, and its compiler does not give the two the same position to the last bit (holes in the ground,
     // issue 17, Arc B390); 64 units towards the camera. Not Mesa's (Iris Xe, Mesa 26.2.7: Kakariko, the Death Mountain
     // gate and trail without a hole) and not Battlemage (Arc B570, 101.9175: Castle Town Market and Hyrule Field without
-    // a hole), where the margin's LESS_OR_EQUAL passes discarded alpha-tested Z-prepass cutouts as opaque rectangles
+    // a hole) or Lunar Lake (Arc 140V, 101.8991: Kokiri Forest foliage cut out and ground without holes with the margin
+    // off), where the margin's LESS_OR_EQUAL passes discarded alpha-tested Z-prepass cutouts as opaque rectangles
     // or draws terrain in front of rocks. RX_VK_EQ_BIAS=<units>, 0 off. Read (vk_draw.cpp dynamic_state)
     float equal_depth_bias = 0;
     // AMD but RADV: task and mesh programs built without the driver's optimizer, which hung the GPU (RX 6600, issues 461

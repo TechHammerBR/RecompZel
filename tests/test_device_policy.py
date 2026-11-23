@@ -3,7 +3,7 @@
 device_policy() is compiled with the Vulkan headers and run on the facts of PCs players have: NVIDIA's driver on Linux
 and Windows (4, 6, 8 and 24 GB cards), NVK, AMD's Windows driver in its two compiler branches, on a Navi 22 card and on
 the graphics in a Ryzen 7000 desktop CPU, RADV on an RDNA 2 card, on a GCN card and on the Steam Deck, AMDVLK, Intel's
-Windows driver on an integrated GPU with 4 threads and on three Arc cards, ANV, llvmpipe. For each PC the check names
+Windows driver on an integrated GPU with 4 threads, on Lunar Lake's Arc 140V and on three Arc cards, ANV, llvmpipe. For each PC the check names
 every field of DevicePolicy: the yes/no fields that are on (every other one must be off) and every number. A rule that
 leaks to a PC it is not for, or a new field no PC here expects, fails by name.
 
@@ -203,6 +203,15 @@ PCS = [
             "split_before_draw allowance_at_count_rule ub_snapshot small_vram_textures astc_bc_all squeeze_damped "
             "auto_render_third native_zstd_keep_core",
          num=(64, 0, 0, 2, 0, 16, 2560, 2025, 616, 462, 512, -1, 256, 0, 32, 16, 90, 1, 2, 2, 2, 2, 2)),
+    # (Lunar Lake's Arc 140V, the facts its log gives. No margin on the colour passes' EQUAL: with the game's EQUAL the
+    # ground has no holes in Kokiri Forest, and the margin's LESS_OR_EQUAL drew the ivy's, leaves' and grass's whole quads)
+    dict(name="Arc 140V (Core Ultra 7 258V, Lunar Lake), Intel's Windows driver 101.8991",
+         facts=(0x8086, 0x64A0, "INTEL_PROPRIETARY_WINDOWS", INTEL | 8991, "INTEGRATED_GPU", "101.8991", "Intel(R) Arc(TM) 140V GPU (16GB)",
+                1, 0, 18409, 17641, 32297, 8, 8, 8, 1, 1, 1, 1, 0, 1, 1, 32, 32, 0xE0),
+         on="fetch_bounds networks_left_out gather_offset position_invariant intel_compile_gate compute_builds_serial "
+            "pcache_fetch_lock split_before_draw allowance_at_count_rule ub_snapshot native_float_add astc_bc_all "
+            "threaded_auto_render threaded_auto_recorder native_zstd_keep_core",
+         num=(0, 0, 0, 2, 0, 16, 4096, 3072, 768, 512, 512, -1, 256, 0, 64, 32, 90, 1, 2, 2, 4, 4, 2)),
     # (Battlemage from 101.9154: side by side, so no gate, and the float add; equal_depth_bias stays 0 so alpha-tested
     # Z-prepass cutouts do not render opaque. Compute builds stay one at a time though the gate is open, which the study
     # doubts and a B580 would have to say)
@@ -443,6 +452,7 @@ RULES = [
     # (equal_depth_bias: 0 on discrete Battlemage 0xE2xx and Mesa ANV; 64 on older/integrated Intel Windows families)
     ("(long long)policy_rule::equal_depth_bias(VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, 0xE20Cu)", 0),
     ("(long long)policy_rule::equal_depth_bias(VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, 0xE20Bu)", 0),
+    ("(long long)policy_rule::equal_depth_bias(VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, 0x64A0u)", 0),   # (Lunar Lake)
     ("(long long)policy_rule::equal_depth_bias(VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, 0x56A1u)", 64),
     ("(long long)policy_rule::equal_depth_bias(VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, 0x9A78u)", 64),
     ("(long long)policy_rule::equal_depth_bias(VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS, 0xB080u)", 64),

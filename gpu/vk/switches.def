@@ -488,7 +488,7 @@ SW(RX_VK_DUMP_W, diag, int, "320 pixels (16 to 4096)", "Width of the scaled pict
 GONE(RX_VK_DYN_PROG_KEY, "2026-11-16", "it does nothing: dynamic state is always keyed by the program's write-mask word")
 SW(RX_VK_EARLY_GPU, attempt, enum, "0: a big command buffer's work goes to the GPU after its dry pass and the replay thread's own segment", "1 submits each segment in order as it is done; 2 also cuts the first segment short (RX_VK_EARLY_GPU_FIRST).")
 SW(RX_VK_EARLY_GPU_FIRST, tune, int, "48 draws and dispatches (at least 8)", "With RX_VK_EARLY_GPU=2, how many draws and dispatches the first, early segment holds.")
-SW(RX_VK_EQ_BIAS, hw, float, "64 on Intel's Windows driver except discrete Battlemage (0xE2xx), 0 (off) there and elsewhere (Mesa's Intel driver too)", "Sets the margin that turns EQUAL depth tests into LESS_OR_EQUAL with a bias; 0 is as the game asks.")
+SW(RX_VK_EQ_BIAS, hw, float, "64 on Intel's Windows driver except discrete Battlemage (0xE2xx) and Lunar Lake (0x64xx), 0 (off) there and elsewhere (Mesa's Intel driver too)", "Sets the margin that turns EQUAL depth tests into LESS_OR_EQUAL with a bias; 0 is as the game asks.")
 GONE(RX_VK_EVENT_WAITS, "2026-11-16", "it does nothing: a queue's replay always stops at its event waits (except in a dump)")
 GONE(RX_VK_EVICT_EXCESS, "2026-11-16", "it does nothing: the 90% rule and the driver's limit always evict their excess only")
 SW(RX_VK_EVICT_MIN_UNUSED, tune, int, "60 frames (8 before)", "Sets how many frames a texture must go unused before an over-budget eviction may take it.")
