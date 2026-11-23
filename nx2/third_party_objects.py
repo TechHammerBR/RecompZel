@@ -45,7 +45,7 @@ MANIFEST = "manifest.json"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # (the sources whose objects the set holds, by folder under the tools' root)
 # (build.py marks the jobs it builds as third-party, at THIRD_PARTY_CPU and with the stamp in their keys, by ending their headers
-# with the stamp: a job is in the set when it is marked so and its source is under one of these. Not gpu/third_party/suyu: the
+# with the stamp: a job is in the set when it is marked so and its source is under one of these. Not gpu/vk/texdecode: the
 # Vulkan back end compiles its texture decoders as its own files, with its play profile, and the WebGPU renderer is built no more)
 SOURCES = ("third_party/opus/", "third_party/zstd/", "third_party/imgui/", "third_party/zbic/", "gpu/vk/eden/", "gpu/vk/sirit/")
 

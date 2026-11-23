@@ -2,8 +2,9 @@
 // Copyright (c) 2026 the totk-pc-recomp authors): the cache keyed by storage address plus descriptor, uploads on first
 // use and when page write generations show the storage written, the GPU-owned rule (an image the GPU wrote is the
 // content), every image in GENERAL layout, deferred destruction. The GPU ASTC decode is Eden's
-// (video_core/host_shaders/astc_decoder.comp and renderer_vulkan/vk_compute_pass.cpp ASTCDecoderPass, GPL), the CPU
-// unswizzle suyu's (video_core/textures/decoders.cpp, with the Switch 2 GOB swizzle).
+// (video_core/host_shaders/astc_decoder.comp and renderer_vulkan/vk_compute_pass.cpp ASTCDecoderPass, GPL). The CPU
+// block-linear (Switch 2 GOB) swizzle and unswizzle and the CPU ASTC decoder, which runs when the GPU one declines or with
+// RX_VK_ASTC_CPU=1, are texdecode's (gpu/vk/texdecode/: ported code, PROVENANCE.md there).
 //
 // Formats share images by class: an image is made in the format first asked for (sRGB as its UNORM twin), with
 // MUTABLE_FORMAT, so that a texture rendered as RGBA8 and sampled as RGBA8_SRGB, or written as R32UI and read as
@@ -56,8 +57,7 @@
 
 #include <span>
 
-#include "video_core/textures/astc.h"
-#include "video_core/textures/decoders.h"
+#include "texdecode/texdecode.h"
 
 #include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
 #include "host_shaders/astc_decoder_comp_spv.h"
@@ -2703,6 +2703,38 @@ bool upload_all_zero(Texture& tex, uint64_t total, const Ranges* dirty, bool wid
              tex.nvn_format, (unsigned long long)(total >> 20), ms, what);
     return true;
 }
+/// texdecode refused a call (an argument out of range, or a span shorter than the level needs: no caller here makes either, and
+/// nothing falls back to another decoder): said at most 5 times. What the caller does is in `then`
+void texdecode_refused(const char* what, const char* then) {
+    static std::atomic<int> told{0};
+    if (told.fetch_add(1) < 5) logf("vk: texdecode refused its arguments for the %s (%s)", what, then);
+}
+void unswizzle_upload(std::span<uint8_t> dest, std::span<const uint8_t> src, uint32_t bpb,
+                      uint32_t width, uint32_t height, uint32_t depth, uint32_t tile_h, uint32_t tile_d) {
+    if (depth == 1 && !tile_d && texture_tiles::unswizzle(dest, src, uint64_t(width) * bpb, height, tile_h)) return;
+    // level_geo counts GOB columns from width * bpb, including for odd-width RGB textures.
+    if (!texdecode::deswizzle(dest, src, bpb, width, height, depth, tile_h, tile_d)) {
+        std::memset(dest.data(), 0, dest.size());   // (never what the staging memory held before)
+        texdecode_refused("unswizzle", "the texels are zero");
+    }
+}
+/// The NVN ASTC formats' sRGB half (0x87 to 0x94, as view_format_of reads them): decoded in the specification's sRGB mode, which
+/// is what their R8G8B8A8_SRGB view samples
+bool astc_nvn_srgb(int nvn) {
+    return nvn >= 0x87 && nvn <= 0x94;
+}
+/// An ASTC texture's blocks the specification calls illegal (the decoder wrote transparent black for each, as main's decoder and the GPU shader do): its count, said once per
+/// texture and for the first 16 textures only. Counts only, never texel values
+void astc_error_blocks_told(const Texture& tex, uint64_t blocks) {
+    static std::mutex mu;
+    static std::vector<uint32_t> told;
+    std::lock_guard lk(mu);
+    if (told.size() >= 16 || std::find(told.begin(), told.end(), tex.id) != told.end()) return;
+    told.push_back(tex.id);
+    logf("vk: ASTC texture #%u %ux%u NVN %#x: %llu illegal blocks decoded as transparent black%s", tex.id, tex.width, tex.height,
+         tex.nvn_format, (unsigned long long)blocks, told.size() == 16 ? " (no more such lines)" : "");
+}
+
 /// An image no upload takes, whatever memory there is: its upload fails every time, and it is not tried again
 bool upload_never(const Texture& tex) {
     return !tex.gpu || tex.samples != VK_SAMPLE_COUNT_1_BIT || !tex.guest_size ||
@@ -2710,12 +2742,6 @@ bool upload_never(const Texture& tex) {
            // (depth-stencil: the depth aspect only; packed D24S8 storage is not copied into it as is: such targets are
            // rendered, not uploaded)
            tex.aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
-}
-void unswizzle_upload(std::span<uint8_t> dest, std::span<const uint8_t> src, uint32_t bpb,
-                      uint32_t width, uint32_t height, uint32_t depth, uint32_t tile_h, uint32_t tile_d) {
-    if (depth == 1 && !tile_d && texture_tiles::unswizzle(dest, src, uint64_t(width) * bpb, height, tile_h)) return;
-    // level_geo counts GOB columns from width * bpb, including for odd-width RGB textures.
-    Tegra::Texture::UnswizzleTexture(dest, src, bpb, width, height, depth, tile_h, tile_d, 0);
 }
 
 bool upload_inner(Texture& tex, const Ranges* dirty) {
@@ -2760,6 +2786,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
     std::vector<VkBufferImageCopy> copies;
     std::vector<uint8_t> scratch, lin;
     VkBuffer buffer = VK_NULL_HANDLE;
+    uint64_t astc_bad_blocks = 0;   // (illegal ASTC blocks decoded here, over every level and layer)
     for (uint32_t level = 0; level < tex.levels; level++) {
         const LevelGeo g = level_geo(tex, level);
         for (uint32_t layer = 0; layer < copy_layers; layer++) {
@@ -2820,8 +2847,8 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                     const uint8_t* src = guest_bytes(tex.gpu + src_off, (uint64_t)stride * (g.th - 1) + row, scratch);
                     for (uint32_t y = 0; y < g.th; y++) std::memcpy(blocks + y * row, src + (uint64_t)y * stride, row);
                 } else {
-                    // (suyu's unswizzle reads the whole swizzled span without bounds checks: a span the storage
-                    // ends in is read from a zero-padded copy)
+                    // (texdecode's deswizzle refuses a span that ends before the last GOB a texel is in, and reads only
+                    // the GOBs the texels are in: a span the storage ends in is read from a zero-padded copy)
                     const uint64_t from = src_off + (uint64_t)row0 * row_bytes;
                     const uint64_t need = runs.size() == 1 && row0 == 0 && nrow == nrows ? span : (uint64_t)nrow * row_bytes;
                     // (a big 2D level: its GOB-block rows unswizzled on several threads, each row on its own. The
@@ -2871,32 +2898,39 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
                                 }
                                 unswizzle_upload(
                                     std::span<uint8_t>(blocks + a * out_row, (uint64_t)g.tw * h * src_bpb),
-                                    std::span<const uint8_t>(rows, rows_n), (u32)src_bpb, g.tw, h, 1, g.tile_h, 0);
+                                    std::span<const uint8_t>(rows, rows_n), (uint32_t)src_bpb, g.tw, h, 1, g.tile_h, 0);
                             }
                         };
                         ::mkwvk::cxx_escape::fork_join("texture unswizzle", nthreads, part, helper_thread_start);
                         static const bool check = env_on("RX_VK_UNSWIZZLE_CHECK");   // (against one thread)
                         if (check && src) {
                             std::vector<uint8_t> ref(block_bytes);
-                            Tegra::Texture::UnswizzleTexture(std::span<uint8_t>(ref.data(), block_bytes),
-                                                             std::span<const uint8_t>(src, need), (u32)src_bpb, g.tw,
-                                                             th, g.td, g.tile_h, g.tile_d, 0);
-                            const bool same = !std::memcmp(ref.data(), blocks, block_bytes);
+                            const bool same =
+                                texdecode::deswizzle(std::span<uint8_t>(ref.data(), block_bytes), std::span<const uint8_t>(src, need),
+                                                     (uint32_t)src_bpb, g.tw, th, g.td, g.tile_h, g.tile_d) &&
+                                !std::memcmp(ref.data(), blocks, block_bytes);
                             logf("vk: unswizzle check %#llx level %u rows %u+%u: %s", (unsigned long long)tex.gpu,
                                  level, row0, nrow, same ? "same" : "DIFFERENT");
                         }
                     } else {
                         unswizzle_upload(std::span<uint8_t>(blocks, block_bytes), std::span<const uint8_t>(src, need),
-                                         (u32)src_bpb, g.tw, th, g.td, g.tile_h, g.tile_d);
+                                         (uint32_t)src_bpb, g.tw, th, g.td, g.tile_h, g.tile_d);
                     }
                     st_unswizzle_bytes += (int64_t)block_bytes;
                     st_unswizzle_ns +=
                         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - u0).count();
                 }
                 if (tex.astc) {
-                    Tegra::Texture::ASTC::DecompressSerial(std::span<const uint8_t>(blocks, block_bytes), g.w, px_h, g.d,
-                                                           (u32)tex.block_w, (u32)tex.block_h,
-                                                           std::span<uint8_t>(out, (size_t)g.w * px_h * g.d * 4));
+                    const int64_t bad = texdecode::astc_decode(std::span<const uint8_t>(blocks, block_bytes), g.w, px_h, g.d,
+                                                               (uint32_t)tex.block_w, (uint32_t)tex.block_h, astc_nvn_srgb(tex.nvn_format),
+                                                               std::span<uint8_t>(out, out_bytes),
+                                                               texdecode::Rgba8{0, 0, 0, 0});   // (as suyu's decoder and the GPU shader write an illegal block: an all-zero block is one, and storage the game has not written yet is decoded)
+                    if (bad < 0) {
+                        std::memset(out, 0, out_bytes);   // (never what the staging memory held before)
+                        texdecode_refused("ASTC decode", "the texels are zero");
+                    } else {
+                        astc_bad_blocks += (uint64_t)bad;
+                    }
                 } else if (widen_from) {
                     widen_rows(out, blocks, (size_t)g.tw * th * g.td, src_bpb, out_bpb, widen_alpha(src_vf));
                 }
@@ -2960,6 +2994,7 @@ bool upload_inner(Texture& tex, const Ranges* dirty) {
             }
         }
     }
+    if (astc_bad_blocks) astc_error_blocks_told(tex, astc_bad_blocks);
     if (!copies.empty()) {
         texture_resident_flush(&tex);
         checkpoint_mark(upload_cmd(), tex.gpu, 'u');
@@ -5315,9 +5350,15 @@ bool flush_finish(Flush& f, bool gpu_ok) {
             // (what is there: the padding between texels kept)
             if (f.only_untouched) std::memcpy(sw.data(), was.data() + (at - t.gpu), (size_t)span);
             else host->gpu_read(at, sw.data(), span);
-            Tegra::Texture::SwizzleTexture(std::span<uint8_t>(sw.data(), sw.size()),
-                                           std::span<const uint8_t>((const uint8_t*)map + p.at, p.n), (u32)t.bpb, p.g.tw,
-                                           p.g.th, p.g.td, p.g.tile_h, p.g.tile_d, 1);
+            // (a refusal writes nothing: this part is not written back, and `ok` says so; zeroing `sw` instead would overwrite the
+            // guest's bytes)
+            if (!texdecode::swizzle(std::span<uint8_t>(sw.data(), sw.size()),
+                                    std::span<const uint8_t>((const uint8_t*)map + p.at, p.n), (uint32_t)t.bpb, p.g.tw, p.g.th,
+                                    p.g.td, p.g.tile_h, p.g.tile_d)) {
+                texdecode_refused("swizzle", "this part is not written back");
+                ok = false;
+                continue;
+            }
             if (!write_back(at, sw.data(), span)) ok = false;   // (marks the pages written: textures over them upload)
         }
         publish();

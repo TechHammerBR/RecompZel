@@ -1,4 +1,5 @@
-"""Compare the CPU texture upload path to the reference decoder. Run with --cxx clang++ or g++."""
+"""Compare the CPU texture upload path to the reference deswizzle (texdecode's: gpu/vk/texdecode, itself checked against offsets
+worked out by hand in tests/test_texdecode_swizzle.py), and its refusal to a zeroed level. Run with --cxx clang++ or g++."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -13,23 +14,29 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 HARNESS = r"""
 #include "texture_tiles.h"
-#include "video_core/textures/decoders.h"
+#include "texdecode/texdecode.h"
 #include <cassert>
+#include <cstring>
 #include <random>
 #include <vector>
 namespace texture_tiles = mkwvk::texture_tiles;
 using texture_tiles::unswizzle;
-namespace Tegra::Texture {
+// (vk_texture.cpp's anonymous namespace sits inside mkwvk: the cut function names texdecode:: without it)
+namespace texdecode = mkwvk::texdecode;
+// (the deswizzle the upload falls back to when texture_tiles does not take a level, counted)
+namespace mkwvk::texdecode {
 unsigned fallback_calls;
-template<class... Args>
-void counted_unswizzle(Args... args) {
+bool counted_deswizzle(std::span<uint8_t> linear, std::span<const uint8_t> swizzled, uint32_t bpb, uint32_t width, uint32_t height,
+                       uint32_t depth, uint32_t tile_h, uint32_t tile_d) {
     ++fallback_calls;
-    UnswizzleTexture(args...);
+    return deswizzle(linear, swizzled, bpb, width, height, depth, tile_h, tile_d);
 }
 }
-#define UnswizzleTexture counted_unswizzle
+unsigned refusals;
+void texdecode_refused(const char*, const char*) { ++refusals; }   // (vk_texture.cpp's: a line in the log)
+#define deswizzle counted_deswizzle
 @UPLOAD@
-#undef UnswizzleTexture
+#undef deswizzle
 int main() {
     std::mt19937 random(817);
     for (unsigned bpb : {1u, 2u, 3u, 4u, 6u, 8u, 12u, 16u})
@@ -49,13 +56,14 @@ int main() {
                         const auto src = std::span(input).subspan(5);
                         std::vector<uint8_t> result(pitch*height*depth+32, 0x7f), ref=result;
                         auto output = std::span(result).subspan(7, pitch*height*depth);
-                        Tegra::Texture::UnswizzleTexture(std::span(ref).subspan(7,output.size()), src,
-                                                        bpb,width,height,depth,tile,tile_d,0);
-                        const unsigned before = Tegra::Texture::fallback_calls;
+                        assert(texdecode::deswizzle(std::span(ref).subspan(7,output.size()), src,
+                                                    bpb,width,height,depth,tile,tile_d));
+                        const unsigned before = texdecode::fallback_calls;
                         unswizzle_upload(output,src,bpb,width,height,depth,tile,tile_d);
                         assert(ref == result);
                         const bool complete = pitch % 64 == 0 && height % 8 == 0;
-                        assert(Tegra::Texture::fallback_calls == before + (depth != 1 || !complete));
+                        assert(texdecode::fallback_calls == before + (depth != 1 || !complete));
+                        assert(!refusals);
                         if (depth != 1) continue;
                         assert(unswizzle(output,src,pitch,height,tile) == complete);
                         if (complete) {
@@ -63,6 +71,15 @@ int main() {
                             assert(!unswizzle(output,src.first(src.size()-1),pitch,height,tile));
                         }
                     }
+    // (a refusal, which no caller makes: a source shorter than the level needs, here after the tiled path declined it. The destination
+    // is zero, not what the staging memory held, and it is said once per call)
+    {
+        std::vector<uint8_t> in(512, 0x55), out(64 * 8 * 2, 0x7f);   // (the level is 64 x 8 x 2 bytes: the destination fits it, only the source is short)
+        unswizzle_upload(out, std::span(in).first(100), 1, 64, 8, 2, 0, 1);
+        assert(refusals == 1);
+        for (uint8_t value : out) assert(value == 0);
+    }
+    assert(refusals == 1);
     uint8_t a[512]{};
     assert(!unswizzle(a,a,UINT64_MAX-63,8,0));
     assert(!unswizzle(a,a,64,8,32));
@@ -76,17 +93,13 @@ def main():
     parser.add_argument("--cxx", default="c++")
     args = parser.parse_args()
     gpu = ROOT / 'gpu'
-    suyu = gpu / 'third_party' / 'suyu'
     upload = block((gpu/'vk/vk_texture.cpp').read_text(), 'void unswizzle_upload(')
     with tempfile.TemporaryDirectory() as folder:
         cpp = Path(folder)/'tiles.cpp'
         exe = Path(folder)/'tiles.exe'
         cpp.write_text(HARNESS.replace('@UPLOAD@',upload))
-        # C++23 is needed for the vendor reference. Older Clang releases use its draft spelling.
-        flags = [args.cxx, '-std=c++2b', '-O2', '-I', gpu/'vk', '-isystem', suyu]
-        decoder = Path(folder)/'reference.o'
-        subprocess.run([*flags, '-c', suyu/'video_core/textures/decoders.cpp', '-o', decoder], check=True)
-        subprocess.run([*flags, '-Wall', '-Wextra', '-Werror', cpp, decoder, '-o', exe], check=True)
+        flags = [args.cxx, '-std=c++20', '-O2', '-I', gpu/'vk']
+        subprocess.run([*flags, '-Wall', '-Wextra', '-Werror', cpp, gpu/'vk/texdecode/block_linear.cpp', '-o', exe], check=True)
         subprocess.run([exe],check=True)
 
 if __name__ == '__main__':

@@ -665,15 +665,16 @@ def ngx_link(sdk, mingw):
 
 def vk_sources():
     """The Vulkan back end (hookshot_vk.dll, gpu/vk/vk_api.h): Eden's shader recompiler with its SPIR-V back end
-    (gpu/vk/eden), sirit with Eden's mesh shader patch (gpu/vk/sirit) and the back end itself (gpu/vk/*.cpp)"""
+    (gpu/vk/eden), sirit with Eden's mesh shader patch (gpu/vk/sirit) and the back end itself (gpu/vk/*.cpp, and the
+    CPU texture decoders, gpu/vk/texdecode/*.cpp: ported code, its PROVENANCE.md)"""
     vk = os.path.join(GPU, "vk")
     out = []
     for sub in ("eden", os.path.join("sirit", "src")):
         for d, _, files in os.walk(os.path.join(vk, sub)):
             out += [os.path.join(d, f) for f in files if f.endswith(".cpp")]
     out += [os.path.join(vk, f) for f in os.listdir(vk) if f.endswith(".cpp") and f != NGX_MSVC_RT]
-    vc = os.path.join(GPU, "third_party", "suyu", "video_core")
-    out += [os.path.join(vc, "textures", f) for f in ("decoders.cpp", "astc.cpp")]   # (suyu's unswizzle and ASTC decoder)
+    td = os.path.join(vk, "texdecode")   # (the CPU texture decoders, texdecode/texdecode.h)
+    out += [os.path.join(td, f) for f in os.listdir(td) if f.endswith(".cpp")] if os.path.isdir(td) else []
     return sorted(out)
 
 
@@ -2129,11 +2130,10 @@ def main():
         xess_flags = [] if LINUX else ["-DHOOKSHOT_XESS", "-I" + xess_headers]
         xess_deps = b"" if LINUX else tree_headers(os.path.join(xess_headers, "xess"))
         # (Eden's recompiler and sirit see only their own headers: a change to the back end's vk_*.h does not
-        # rebuild their ~500 files; the back end itself depends on everything, suyu's texture decoders included)
+        # rebuild their ~500 files; the back end itself depends on everything under gpu/vk, texdecode's header included)
         vk_lib_deps = tree_headers(os.path.join(vk, "eden"), os.path.join(vk, "sirit"), os.path.join(vk, "compat"),
                                    os.path.join(GPU, "compat"))
-        vdeps_roots = (vk, os.path.join(GPU, "render"), os.path.join(GPU, "compat"),
-                       os.path.join(GPU, "third_party", "suyu", "video_core", "textures"))
+        vdeps_roots = (vk, os.path.join(GPU, "render"), os.path.join(GPU, "compat"))
         vdeps = tree_headers(*vdeps_roots)
         output_device_deps = open(os.path.join(HOST, "audio_output_devices.h"), "rb").read()
         # (hookshot) Dear ImGui (third_party/imgui) draws the overlays over the window's image (gpu/vk/vk_imgui.cpp; vk_menu.cpp
