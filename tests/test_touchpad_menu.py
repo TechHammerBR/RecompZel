@@ -42,7 +42,7 @@ def main():
     buttons = m.group(0)
     # (the block that builds the polled buttons from SDL's, triggers aside)
     start = pad.index("            uint64_t sig = 0;\n            for (int k = BTN_A; k <= BTN_RIGHT; k++)")
-    end = pad.index("            if (hos_sdl_pad_axis(gc, AX_LT)", start)
+    end = pad.index("            /* (hookshot) A trigger presses once it has", start)
     block = pad[start:end]
     fixture = r'''#include "gpu/vk/vk_api.h"
 #include <stdint.h>

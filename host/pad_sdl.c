@@ -58,8 +58,13 @@ static struct {
     int motion, motion_on;
     int64_t motion_retry_ns, used_ns;
     uint64_t input_sig;
-    unsigned rested;   /* (hookshot) the sticks' axes seen at rest since it was opened, a bit each: only those steer */
+    unsigned rested;   /* (hookshot) the sticks' axes seen at rest since it was opened, a bit each (AX_LX ... AX_RY):
+                          only those steer; and its triggers seen let go (AX_LT, AX_RT): only those press */
     signed char held[4];   /* (the way each axis was last held, -1, 0 or 1: one held the other way has passed its rest) */
+    int64_t opened_ns;        /* (hookshot) when it was opened; since when each trigger has read held, and let go, */
+    int64_t trig_held_ns[2];  /* without a break (0: not now); what the log said of them, and how many of their */
+    int64_t trig_rest_ns[2];  /* changes it gave at debug (trigger_pull) */
+    uint8_t trig_said, trig_changes[2];
     uint32_t serial;
     float bias[3], bias_t;
     int has_bias;
@@ -429,6 +434,56 @@ static void four_poll(int i, int64_t now) {
     memcpy(pads[i].four, m, sizeof m), pads[i].four_ns = now;
 }
 
+/* (hookshot) Pad i's trigger t (0 left, 1 right) at its reading a (SDL's 0 to 32767): what it gives the game, a, or 0
+   until it counts. It counts once it has read let go (8000 or below) for a second without a break since the pad was
+   opened, as a stick steers once seen at rest. A device whose trigger reads held for good held ZL and ZR from every pad
+   (#2327: a ShanWan USB receiver, 2563:0575), kept the Controls page from listening for a binding (it waits for every
+   input to be let go) and, once the Insert menu closed, kept the player's own triggers from the game (nn_hid.c: an
+   input down at the close waits to be let go). One let-go reading was not enough: with that receiver plugged in,
+   "seen let go once" still let its triggers through (a let-go reading as it opens, or for a moment now and then). A
+   real trigger rests when its pad opens, so it counts after a second. The log says, once each: still not counting 3 s
+   after the pad opened, counting after that, and held 30 s without a break once it counts, with the pad's name and the
+   reading; and, at debug, its first reading and its first changes between let go and held, so a log shows how a
+   device's trigger reads. */
+#define TRIGGER_REST_NS 1000000000LL
+enum { TRIG_SAID_HELD = 1, TRIG_SAID_COUNTS = 4, TRIG_SAID_LONG = 16 };   /* (<< t: the left's bit, then the right's) */
+static int trigger_pull(int i, int t, int a, int64_t now) {
+    const char *side = t ? "right" : "left";
+    const int held = a > 8000;
+    if (!pads[i].trig_changes[t] || (held != (pads[i].trig_held_ns[t] != 0) && pads[i].trig_changes[t] < 9)) {
+        pads[i].trig_changes[t]++;
+        hos_log_at(HOS_LOG_DEBUG, "hid: \"%s\": its %s trigger reads %d of 32767 (%s), %.3f s after it was opened",
+                   hos_sdl_pad_name(pads[i].gc), side, a, held ? "held" : "let go",
+                   (double)(now - pads[i].opened_ns) / 1e9);
+    }
+    if (held) {
+        pads[i].trig_rest_ns[t] = 0;
+        if (!pads[i].trig_held_ns[t]) pads[i].trig_held_ns[t] = now;
+    } else {
+        pads[i].trig_held_ns[t] = 0;
+        if (!pads[i].trig_rest_ns[t]) pads[i].trig_rest_ns[t] = now;
+        if (now - pads[i].trig_rest_ns[t] >= TRIGGER_REST_NS) pads[i].rested |= 1u << (AX_LT + t);
+    }
+    const int counts = pads[i].rested >> (AX_LT + t) & 1;
+    if (!counts && now - pads[i].opened_ns >= 3000000000LL && !(pads[i].trig_said & TRIG_SAID_HELD << t)) {
+        pads[i].trig_said |= TRIG_SAID_HELD << t;
+        hos_log("hid: \"%s\": its %s trigger reads %d of 32767 and has not read let go for a second since it was "
+                "opened, so it does not count until it does", hos_sdl_pad_name(pads[i].gc), side, a);
+    }
+    if (counts && (pads[i].trig_said & TRIG_SAID_HELD << t) && !(pads[i].trig_said & TRIG_SAID_COUNTS << t)) {
+        pads[i].trig_said |= TRIG_SAID_COUNTS << t;
+        hos_log("hid: \"%s\": its %s trigger has read let go for a second (%d of 32767): it counts from now",
+                hos_sdl_pad_name(pads[i].gc), side, a);
+    }
+    if (counts && pads[i].trig_held_ns[t] && now - pads[i].trig_held_ns[t] >= 30000000000LL &&
+        !(pads[i].trig_said & TRIG_SAID_LONG << t)) {
+        pads[i].trig_said |= TRIG_SAID_LONG << t;
+        hos_log("hid: \"%s\": its %s trigger has read held (%d of 32767) for 30 s without a break",
+                hos_sdl_pad_name(pads[i].gc), side, a);
+    }
+    return counts ? a : 0;
+}
+
 /* one poll: controllers plugged in or gone (each second), then every open one's buttons, sticks and rumble */
 static void pads_poll(void) {
     static int64_t next_scan = 0;
@@ -475,6 +530,11 @@ static void pads_poll(void) {
                 pads[slot].used_ns = now, pads[slot].input_sig = 0;   /* (just connected: the one about to be used) */
                 pads[slot].rested = 0;
                 memset(pads[slot].held, 0, sizeof pads[slot].held);
+                pads[slot].opened_ns = now;
+                pads[slot].trig_held_ns[0] = pads[slot].trig_held_ns[1] = 0;
+                pads[slot].trig_rest_ns[0] = pads[slot].trig_rest_ns[1] = 0;
+                pads[slot].trig_said = 0;
+                pads[slot].trig_changes[0] = pads[slot].trig_changes[1] = 0;
                 pads[slot].serial = ++pads_opened;
                 pads[slot].has_bias = 0;
                 pads[slot].vendor = hos_sdl_pad_vendor(gc);
@@ -551,8 +611,13 @@ static void pads_poll(void) {
             /* (hookshot) a DualShock 4's or DualSense's touchpad click: a Controls row's input, or unbound it opens the
                Insert menu as F1 does (vk_menu.cpp). SDL numbers it 20, past the buttons above; an SDL without it answers 0 */
             if (hos_sdl_pad_button(gc, BTN_TOUCHPAD)) b |= 1ULL << HOS_PAD_TOUCHPAD;
-            if (hos_sdl_pad_axis(gc, AX_LT) > 8000) b |= 1ULL << HOS_PAD_LTRIGGER;
-            if (hos_sdl_pad_axis(gc, AX_RT) > 8000) b |= 1ULL << HOS_PAD_RTRIGGER;
+            /* (hookshot) A trigger presses once it has read let go for a second since the pad was opened (trigger_pull,
+               #2327). */
+            int pull[2];   /* (each trigger's axis, 0 until it counts) */
+            for (int t = 0; t < 2; t++) {
+                pull[t] = trigger_pull(i, t, hos_sdl_pad_axis(gc, AX_LT + t), now);
+                if (pull[t] > 8000) b |= 1ULL << (t ? HOS_PAD_RTRIGGER : HOS_PAD_LTRIGGER);
+            }
             const int inv_x = rx_option(16, 0);
             const int inv_y = rx_option(17, 0);
             const int z = rx_option(11, 0);   /* (the menu's Stick dead zone) */
