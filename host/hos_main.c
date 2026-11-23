@@ -815,6 +815,7 @@ static int oot_gamedata_bool(Ctx *c, uint32_t hash, int *value);
 static int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value);
 static uint64_t oot_gamedata_int_at(Ctx *c, uint32_t hash);
 #define OOT_RUPEES_HASH 0xa77921d7u   /* PlayerStatus.CurrentRupee (Int) */
+static const char *oot_gamedata_queue_bool(Ctx *c, uint32_t hash, int value);
 static int oot_gamedata_string(Ctx *c, uint32_t hash, char *buf, size_t size);
 static int oot_event_playing(Ctx *c);
 
@@ -931,11 +932,12 @@ static void oot_inventory_edit(Ctx *c, int action) {
     const uint32_t song = oot_song_flag(name);
     if (song) {
         if (op != 200 || have < 0) return;   /* songs have no editable quantity */
-        if (!oot_gamedata_set_bool(c, song, !have)) {
-            hos_log("cheats: song %s: learned flag unavailable", name);
+        const char *missing = oot_gamedata_queue_bool(c, song, !have);
+        if (missing) {
+            hos_log("cheats: song %s: %s not found", name, missing);
             return;
         }
-        hos_log("cheats: song %s %s (had %d, now %d)", name, have ? "relocked" : "unlocked", have, oot_item_count(c, name));
+        hos_log("cheats: song %s: %s queued", name, have ? "relock" : "unlock");
         return;
     }
     char alias[64];
@@ -1068,6 +1070,19 @@ static const OotDestination oot_destinations[] = {   /* (generated: work/oot-tel
 static uint64_t oot_singleton(Ctx *c, uint64_t slot) {
     const uint64_t holder = recomp_load64(c, slot);
     return holder ? recomp_load64(c, holder) : 0;
+}
+
+/* The game's Bool setter queues the live value and the copy written by the next save. */
+static const char *oot_gamedata_queue_bool(Ctx *c, uint32_t hash, int value) {
+    A64Fn set = a64_lookup(0x806a2b20ULL);
+    if (!set) return "the game's Bool setter";
+    const uint64_t mgr = oot_singleton(c, OOT_GAMEDATA_SLOT);
+    if (!mgr) return "the game data manager";
+    const Ctx saved = *c;
+    c->x[0] = mgr, c->x[1] = value != 0, c->x[2] = hash;
+    set(c);
+    *c = saved;
+    return NULL;
 }
 
 /* GameDataMgr getters by MurMur3 name hash: f_8022d9c0 (bool) and f_80cd0ea0 (String64). 1 when found. */
@@ -1255,16 +1270,12 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
        Writing only the live byte restores the HUD until the next load, but saves keep the old hidden value. */
     int hidden = 0;
     if (ok && result && oot_gamedata_bool(c, 0x9a4dd779u, &hidden) && hidden) {
-        A64Fn set_bool = a64_lookup(0x806a2b20ULL);
-        const uint64_t mgr = oot_singleton(c, OOT_GAMEDATA_SLOT);
-        if (set_bool && mgr) {
-            c->x[0] = mgr, c->x[1] = 0, c->x[2] = 0x9a4dd779u;   /* MapIconDeactivateByAreaActor */
-            set_bool(c);
-            *c = saved;
+        const char *missing = oot_gamedata_queue_bool(c, 0x9a4dd779u, 0);   /* MapIconDeactivateByAreaActor */
+        if (!missing) {
             hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): restore queued");
         } else {   /* (another game build: say so, a report's log then shows why the minimap stayed away) */
             hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): %s not found, left hidden",
-                    set_bool ? "the game data manager" : "the game's Bool setter");
+                    missing);
         }
     }
     if (carrier && ok && (result & 1)) {   /* (Sequence_ReservedNextBanc and _StartPosName: the game's String64 setter,
