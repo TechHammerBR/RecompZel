@@ -247,7 +247,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                                             opcode == 0x927 || opcode == 0xb9b || opcode == 0x59f || opcode == 0x983 ||
                                             opcode == 0x98e || opcode == 0xb6c || opcode == 0x9a8 || (renameable & (1U << f));
                 if (reg >= 255 || reg + 3 < reserved_base) continue;   // (a quad below may reach up)
-                if (register_field && reg >= reserved_base) any_high = true;
+                // A vector load can write reserved registers even when its first destination is below them.
+                const bool load_dest = f == 0 && (opcode == 0x381 || opcode == 0x981);
+                const u32 load_size = insn.Bits(73, 3);
+                const u32 width = load_dest && load_size == 6 ? 4U : load_dest && load_size == 5 ? 2U : 1U;
+                if (register_field && reg + width > reserved_base) any_high = true;
             }
             // (hookshot) An ALU instruction's immediate form (form 4) has a 32-bit immediate at bit 32, no register: its low
             // byte was marked as a high GPR. LOP3.LUT R231, R231, 0xfffffffe made it R254, a scratch register, and two of OoT's
