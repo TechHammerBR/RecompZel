@@ -85,17 +85,23 @@
     }
   ],
   "saves": [
-    "{local}/hookshot",
-    "{install}/Hookshot/user"
+    "{install}/Hookshot/user/save",
+    "{install}/Hookshot/user/mouse_sens.txt",
+    "{local}/hookshot/save",
+    "{local}/hookshot/mouse_sens.txt"
   ],
   "folders": {
     "saves": [
       {
-        "path": "{install}/Hookshot/user",
-        "if": "{install}/Hookshot/user"
+        "path": "{install}/Hookshot/user/save",
+        "if": "{install}/Hookshot/user/save"
       },
       {
-        "path": "{local}/hookshot"
+        "path": "{local}/hookshot/save",
+        "if": "{local}/hookshot/save"
+      },
+      {
+        "path": "{install}/Hookshot"
       }
     ],
     "game": [
