@@ -455,10 +455,12 @@ def output_lines(p, silence):
         yield line
 
 
-def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROOT, base=None, silence=None, allow=()):
+def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROOT, base=None, silence=None, allow=(),
+        again=None):
     """A step, its output printed as it comes. show: what of each line is printed (its None: nothing; on_line and a failure's
     reason still get the line itself). base: the environment it starts from (os.environ). silence: seconds without a line after
-    which the step is stopped; it returns None then (with check, the build fails). allow: exit statuses returned, not failed"""
+    which the step is stopped; it returns None then (with check, the build fails). allow: exit statuses returned, not failed.
+    again: asked before a step that failed fails the build; its True returns the status instead"""
     e = dict(os.environ if base is None else base, PYTHONIOENCODING="utf-8")
     e.update(env or {})
     p = subprocess.Popen(cmd, cwd=cwd, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
@@ -483,7 +485,7 @@ def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROO
         return None
     p.stdout.close()
     code = p.wait()
-    if code and check and code not in allow:
+    if code and check and code not in allow and not (again and again()):
         step = next((os.path.basename(c) for c in cmd[1:] if c.endswith(".py")), os.path.basename(cmd[-1]))   # (issue 154: not "-u")
         status = "signal %d" % -code if os.name == "posix" and code < 0 else "exit status %d" % code
         fail("%s stopped (%s): %s" % (step, status, killed_reason() if os.name == "posix" and -code in (9, 15) else failure_reason(lines)))
@@ -2319,6 +2321,36 @@ def forget_renderer_objects(work):
             os.remove(os.path.join(obj_dir, f))
 
 
+COMPILE_ERROR = re.compile(r".*\.[ch]:\d+:\d+: (?:fatal )?error: ")   # (clang's, at a place in a source; a compiler out of memory names none)
+
+
+def lifted_sums(gen):
+    """{name: the contents' SHA-1} of the lift's C and headers (<work>/sa/gen): ~0.8 s for the game's 1.5 GB"""
+    sums = {}
+    for f in sorted(os.listdir(gen)):
+        if f.endswith((".c", ".h")):
+            with open(os.path.join(gen, f), "rb") as h:
+                sums[f] = hashlib.sha1(h.read(), usedforsecurity=False).hexdigest()
+    return sums
+
+
+def refused_lift(gen, failed, errors):
+    """The compile failed in the lift's files alone (failed: build.py's "FAILED <name>" lines), with a compiler's error at a place in
+    a source in each final attempt (errors: one boolean per FAILED line). Not a compiler that ran out of memory, nor a source of the repository"""
+    return bool(failed) and len(errors) == len(failed) and all(errors) and all(os.path.isfile(os.path.join(gen, name)) for name in failed)
+
+
+def changed_lift(gen, translate):
+    """(translate(): the game translated again) The lift's files that came out different, and how many there are. The same inputs
+    give the same files, byte for byte, so the PC changed one of the two: a player's memory flips a bit in some of them in each
+    build ("uint65_t", issues 985, 990, 1414, 1441, 1762), which the compiler's error alone made look like the translator's"""
+    before = lifted_sums(gen)
+    translate()
+    after = lifted_sums(gen)
+    both = before.keys() & after.keys()   # (a lift whose C the last build's clean-up let go, keep_translation, had none to compare)
+    return sorted(f for f in both if before[f] != after[f]), len(both)
+
+
 def forget_failed_build(work, linked, failed=(), game_linked=False):
     """(hookshot) After a compile or link that failed. It forgets the lift: the next build translates the game again. A lifted file
     cut short (an antivirus, a full disk, a stopped run: "g_module_b" for g_module_base, issue 1197) or lifted C another builder
@@ -3225,6 +3257,10 @@ def main(a=None):
     failed = []   # (build.py's "FAILED <name> (...": a file that did not compile, alone either)
     game_linked = []   # (build.py's "linked <...>/hookshot[.exe]: N MB": the game linked, the renderer's link next)
 
+    errors = []   # (whether each final FAILED attempt has a compiler error at a place in a source)
+    in_failure = []   # (the diagnostics following a FAILED line, until build.py's next result)
+    changed = []   # (the game translated again came out different: which files, for the build's lines)
+
     def compile_line(line):
         if re.match(r"compiled in \d+s, 0 failed$", line):
             linking.append(line)
@@ -3233,19 +3269,61 @@ def main(a=None):
         m = re.match(r"FAILED (\S+) \(", line)
         if m:
             failed.append(m.group(1))
+            errors.append(False)
+            in_failure[:] = [True]
+        elif line.startswith("@@") or re.match(r"\s+\S+\s+\d+ MB\s+\d+s", line) or line.startswith("compiled in "):
+            in_failure.clear()
+        elif in_failure and COMPILE_ERROR.match(line):
+            errors[-1] = True
         compiled(line)
+
+    def translate_again():
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(os.path.join(gen_dir, LIFT_KEY))
+        say("stage", "lift", "Translating the game to PC code")
+        translate()
+
+    # (a compile that refuses translated files: they are made again, and compiled again when they come out different, changed_lift.
+    # The lift key as it was: another translator, edited since, or other settings make other files, and no PC is at fault then)
+    def lift_changed():
+        if not refused_lift(gen_dir, failed, errors) or lift_key(exefs, work, env) != key:
+            return False
+        print("the compiler refused translated files (%s): the game is translated again, to see whether they come out the same" %
+              ", ".join(sorted(failed)[:6]), flush=True)
+        names, of = changed_lift(gen_dir, translate_again)
+        if not names:
+            print("they came out the same", flush=True)
+            return False
+        changed.append("%d of %d files (%s%s)" % (len(names), of, ", ".join(names[:6]), ", ..." if len(names) > 6 else ""))
+        print("translating the game again gave other contents for %s: this PC's memory, processor or drive changes what the build "
+              "writes. They are compiled again. Turn off any overclock (XMP, EXPO) and test the memory: a game built with a changed file "
+              "can fail in any way" % changed[0], flush=True)
+        failed.clear()
+        errors.clear()
+        in_failure.clear()
+        return True
+
+    def changed_twice():
+        if refused_lift(gen_dir, failed, errors):
+            fail("The compiler refused translated files twice, and translating the game again gave other contents for %s: this PC's "
+                 "memory, its processor or the drive with %s changes what the build writes. Turn off any overclock (XMP, EXPO), test the "
+                 "memory, check the drive for errors, then build again." % (changed[0], work))
+        return False
+
     try:
         if run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)] + kept_lift, env, compile_line,
-               allow=(KEPT_STALE,) if kept_lift else ()) == KEPT_STALE:
+               allow=(KEPT_STALE,) if kept_lift else (), again=lift_changed) == KEPT_STALE:
             # (the translation kept from the last build no longer fits: an object of it gone, other flags or headers. Nothing was
             # compiled: the game is translated, then compiled, as when nothing was kept)
-            os.remove(os.path.join(gen_dir, LIFT_KEY))
-            say("stage", "lift", "Translating the game to PC code")
-            translate()
+            translate_again()
             say("stage", "compile", "Compiling")
             run_files.clear()
             done["n"] = 0.0
-            run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compile_line)
+            run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compile_line, again=lift_changed)
+        if changed:   # (what compiled is cached by its contents: only the files that came out different, and those refused, compile)
+            say("stage", "compile", "Compiling")
+            done["n"] = 0.0
+            run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compile_line, again=changed_twice)
     except SystemExit:
         forget_failed_build(work, bool(linking), failed, bool(game_linked))
         raise
