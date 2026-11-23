@@ -1054,6 +1054,7 @@ SW(RX_VK_WB_OBSERVE, diag, bool, "off", "Measures and logs actual mirror/shadow 
 SW(RX_VK_WB_PROBATION, tune, int, "8 submissions (wb_learn.h's table default)", "How many submissions write a large binding back whole before it may be left out of the write-back.")
 GONE(RX_VK_WB_REPORTS, "2026-11-16", "it does nothing: CPU-owned report words are always left out of the write-back")
 SW(RX_VK_WB_SHADOW_MB, hw, int, "1/8 of the allowed VRAM (512 MB if unknown); at most 512 MB on an integrated GPU", "The most VRAM the write-back diff's shadows may take, in MB.")
+SW(RX_VK_WB_SPANS, kill, bool, "on", "=0 has a CPU read of GPU results wait for every write-back over its 4 KB pages again, not only those over its own bytes.")
 SW(RX_VK_WORKERS, hw, int, "6 with 16 hardware threads or more, else a third of them clamped to 2-4", "Number of background workers for shader translation and pipeline builds (1 to 16).")
 SW(RX_VK_WORK_LOCAL, attempt, bool, "off: the work counts are bumped at every command inside parallel segments", "=1 leaves them alone where nothing reads them.")
 SW(RX_VK_WRITE_LIVE, kill, bool, "on: left-out write-backs go through the host's checked write (hos_gpu_write_live)", "=0 writes them unchecked, as before (the Linux exe had no export of it).")
