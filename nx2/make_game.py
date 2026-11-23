@@ -2217,6 +2217,30 @@ def lifted_cut_short(gen):
     return bad
 
 
+def lifted_zero_bytes(gen):
+    """The lifted C files (code_*.c) with a zero byte in them. The lift never writes one: the PC's memory or the drive changed the
+    file after it was written, its size and end as they were (17 of a player's files in one build, issue 2296). The compile refuses
+    such a file (nx2/build.py compile_one), but by then the build can only stop. Each is read whole (0.2-0.6 s for the game's 1.5 GB just
+    written), so translate() asks only for a translation without a record of a successful check"""
+    bad = []
+    if not os.path.isdir(gen):
+        return bad
+    for f in sorted(os.listdir(gen)):
+        if f.startswith("code_") and f.endswith(".c"):
+            try:
+                with open(os.path.join(gen, f), "rb") as h:
+                    if b"\0" in h.read():
+                        bad.append(f)
+            except OSError:
+                pass   # (lifted_cut_short names a file it cannot read)
+    return bad
+
+
+def lifted_damaged(gen):
+    """The lifted C files that are not as the lift writes them: cut short, or with a zero byte in them"""
+    return sorted(set(lifted_cut_short(gen)) | set(lifted_zero_bytes(gen)))
+
+
 def lifted_before(work, key):
     """The lift (and split_hot) in <work>/sa finished before with this key, its C is as that lift left it, and what the later
     steps read of it is there"""
@@ -2226,7 +2250,8 @@ def lifted_before(work, key):
             lines = f.read().split()
     except OSError:
         return False
-    if len(lines) != 2 or lines[0] != key or lines[1] != gen_print(gen):
+    if (len(lines) not in (2, 3) or (len(lines) == 3 and lines[2] != "zero-checked")
+            or lines[0] != key or lines[1] != gen_print(gen)):
         return False
     return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c"))
 
@@ -3112,15 +3137,21 @@ def main(a=None):
     key = lift_key(exefs, work, env)
     gen_dir = os.path.join(work, "sa", "gen")
     # (issue 1197: a lifted file cut short, "g_module_b" where g_module_base was, stopped the compile at every try. Before the compile
-    # every one must end as a function does: one that does not is translated again, once; a second time says what to check)
+    # every one must end as a function does, with no zero byte: one that does not is translated again, once; a second time says what
+    # to check)
     kept_lift = []   # (build.py's --kept-lift: the lift skipped, its objects by the kept list)
 
     def translate():
         nonlocal key
         for _ in range(2):
+            checked = False
+            compiled_kept = False
             if lifted_before(work, key):   # (never on the second pass: its key was taken away below)
+                with open(os.path.join(gen_dir, LIFT_KEY)) as f:
+                    checked = f.read().split()[-1] == "zero-checked"
                 print("the game was translated with these tools before: translating it again is skipped", flush=True)
             elif kept_before(work, key):   # (a player's update with the same tools: keep_translation, below)
+                compiled_kept = True
                 print("the game was translated with these tools before (its compiled code kept): translating it again is skipped",
                       flush=True)
                 kept_lift[:] = ["--kept-lift", os.path.join(gen_dir, KEPT_LIST)]
@@ -3150,7 +3181,7 @@ def main(a=None):
                 # boundaries and hot pieces too, so its key is taken again after it)
                 lifts = _lift_store.root()
                 share = lift_share_key(exefs, work, out, env) if lifts else None
-                if share and _lift_store.restore(lifts, share, work, bad=lambda: lifted_cut_short(gen_dir)):
+                if share and _lift_store.restore(lifts, share, work, bad=lambda: lifted_damaged(gen_dir)):
                     print("the game was translated with these tools in another work folder: its translation is copied (%s)" %
                           os.path.join(lifts, share), flush=True)
                     key = lift_key(exefs, work, env)
@@ -3171,17 +3202,31 @@ def main(a=None):
                     after = lift_key(exefs, work, env)
                     if lift_key(exefs, work, env, planning=False) == inputs:
                         key = after
-                        if share and not lifted_cut_short(gen_dir):   # (for other work folders: nx2/lift_store.py)
+                        if share and not lifted_damaged(gen_dir):   # (for other work folders: nx2/lift_store.py)
                             _lift_store.save(lifts, share, work)
                     write_lift_key(work, key)
-            cut = lifted_cut_short(gen_dir)
-            if not cut:
+            cut, zero = lifted_cut_short(gen_dir), [] if checked or compiled_kept else lifted_zero_bytes(gen_dir)
+            if not cut and not zero:
+                if not checked and not compiled_kept:
+                    # The key and its file fingerprint now vouch for this check, including on the next build.
+                    with open(os.path.join(gen_dir, LIFT_KEY), "a") as f:
+                        f.write("zero-checked\n")
                 break
             key_file = os.path.join(gen_dir, LIFT_KEY)
             if os.path.exists(key_file):
                 os.remove(key_file)
-            print("translated files cut short (%s): the game is translated again" % ", ".join(cut[:6]), flush=True)
+            if zero:
+                print("translated files with a zero byte, which the translation never writes (%s): the game is translated again" %
+                      ", ".join(zero[:6]), flush=True)
+            else:
+                print("translated files cut short (%s): the game is translated again" % ", ".join(cut[:6]), flush=True)
         else:
+            if zero:
+                files = [f for f in os.listdir(gen_dir) if f.startswith("code_") and f.endswith(".c")]
+                fail("The translated game came out damaged twice: %d of %d files have a zero byte (%s), which the translation never "
+                     "writes, so this PC's memory or the drive with %s changes what is written. Turn off any memory overclock (XMP, "
+                     "EXPO), test the memory, check the drive for errors, then build again." %
+                     (len(zero), len(files), ", ".join(zero[:6]), work))
             fail("The translated game came out cut short twice (%s). Check that the drive with %s has free space, and that no antivirus "
                  "and no second Hookshot Builder is working in that folder, then update again." % (", ".join(cut[:6]), work))
 
