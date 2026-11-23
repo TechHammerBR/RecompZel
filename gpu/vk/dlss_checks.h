@@ -68,6 +68,46 @@ struct PresetSettle {
     }
 };
 
+/// A feature creation refused for want of video memory is often temporary: a menu switch's old feature and its memory
+/// may still be waiting to be let go (vk_dlss.cpp prepare). NGX's out-of-video-memory result is tried again after
+/// kRetryFrames, at most kMaxTries creations; any other result is kept until a DLSS setting changes (dlss_retry) or the
+/// engine is let go (release). The key is the output size, quality mode, preset and HDR the feature was refused for:
+/// another key is tried at once. (Same shape as frame generation's three failed creations, vk_dlss.cpp kFgRefusalsOff.)
+namespace retry {
+constexpr uint64_t kRetryFrames = 600;   // (10 s at 60 fps: NGX's old feature and its memory are let go within seconds)
+constexpr unsigned kMaxTries = 3;        // (creations that may fail for one key, the first included)
+struct Refusal {
+    uint64_t key = 0;        // (0: none refused)
+    uint64_t retry_at = 0;   // (the frame the next try is due)
+    unsigned tries = 0;      // (creations that failed for this key)
+    bool ended = false;      // (no more tries: another result, or kMaxTries of them)
+};
+enum class Verdict { None, Wait, Try, Ended };
+/// What prepare does with a refusal for `key` at frame `frame`: None (make it), Wait (still refused), Try (retry now),
+/// or Ended (refused for good until a setting changes)
+inline Verdict verdict(const Refusal& r, uint64_t key, uint64_t frame) {
+    if (!r.key || r.key != key) return Verdict::None;
+    if (r.ended) return Verdict::Ended;
+    return frame >= r.retry_at ? Verdict::Try : Verdict::Wait;
+}
+/// Record a failed creation for `key`; answers whether the refusal is now final. Out of video memory sets the next
+/// try kRetryFrames later until kMaxTries creations have failed; any other result is final at once. A different key
+/// starts its own count.
+inline bool failed(Refusal& r, uint64_t key, bool out_of_memory, uint64_t frame) {
+    if (r.key != key) r = {};
+    r.key = key;
+    r.tries++;
+    if (!out_of_memory || r.tries >= kMaxTries) {
+        r.ended = true;
+        return true;
+    }
+    r.retry_at = frame + kRetryFrames;
+    return false;
+}
+/// A feature was made: the next failure starts its count again
+inline void made(Refusal& r) { r = {}; }
+} // namespace retry
+
 /// Whether s is all ASCII: NGX's Linux library takes only such paths (vk_dlss.cpp wide())
 inline bool ascii(std::string_view s) {
     for (const char c : s)

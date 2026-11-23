@@ -434,6 +434,7 @@ SW(RX_VK_DLSS_DEBUG, diag, enum, "unset: no debug view", "motion shows the motio
 SW(RX_VK_DLSS_DIR, player, string, "the game folder's ngx, then the user's Hookshot/ngx data folder", "Names another folder NGX looks in first for the DLSS and frame generation runtimes.")
 SW(RX_VK_DLSS_FADED, kill, bool, "on: the depth draws of a skinned mesh that had colour and has had none for 3 frames are left out (the camera inside Link)", "=0 draws them: the temporal upscalers and frame generation then follow the hidden body again.")
 SW(RX_VK_DLSS_FADED_LOG, diag, bool, "off: a line at the start and one for each stretch of frames with such draws left out", "=1 also logs a frame's counts at the first frames and why a hidden mesh's draws were drawn (vk: upscaler: faded:).")
+SW(RX_VK_DLSS_FAIL_CREATE, diag, string, "off: NGX's own result", "Makes the next <n> DLSS feature creations return NGX result <result> (e.g. 0xBAD0000D:1), so the out-of-video-memory retry can be run on any GPU; 0xBAD0000D is NVSDK_NGX_Result_FAIL_OutOfGPUMemory.")
 SW(RX_VK_DLSS_FG, player, enum, "the Insert menu's Frame generation by row", "0 rules DLSS frame generation out for the run, 1 forces it, over the Frame generation by row.")
 SW(RX_VK_DLSS_FG_INVALID, attempt, bool, "FLT_MAX is the 'no motion here' value", "0 makes zero the invalid motion vector value given to DLSS-G, as the Streamline path has it.")
 SW(RX_VK_DLSS_FG_MOST, diag, int, "as many generated frames as the runtime offers", "Caps the number of frames DLSS-G may make per game frame, to imitate an older runtime in checks.")

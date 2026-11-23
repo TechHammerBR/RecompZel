@@ -23,6 +23,13 @@ def main():
     end = source.index("\nbool start()", begin)
     fixture = (ROOT / "tests/dlss_feature_size_test.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("/* PREPARE */", source[begin:end])
+    # (the reset paths: release(), and dlss_retry() for a DLSS setting change)
+    rel_begin = source.index("void release() {")
+    rel_end = source.index("\nuint64_t memory()", rel_begin)
+    fixture = fixture.replace("/* RELEASE */", source[rel_begin:rel_end])
+    retry_begin = source.index("void dlss_retry() { st().refusal")
+    retry_end = source.index("\n", retry_begin) + 1
+    fixture = fixture.replace("/* RETRY */", source[retry_begin:retry_end])
     with tempfile.TemporaryDirectory(prefix="dlss-feature-size-") as tmp:
         cpp = Path(tmp) / "test.cpp"
         exe = Path(tmp) / "test"

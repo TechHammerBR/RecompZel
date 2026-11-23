@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include "dlss_checks.h"
 #include "upscaler_rows.h"
@@ -30,6 +31,9 @@ constexpr const char* NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality =
 struct NVSDK_NGX_Handle {};
 using NVSDK_NGX_Result = unsigned;
 #define NVSDK_NGX_FAILED(result) ((result) != 0)
+// (NGX's result for a creation refused for want of video memory: the one failure prepare may retry by time. Its real value
+// is NVSDK_NGX_Result_Fail | 13; the stand-in only has to be this fixture's distinct failure)
+constexpr NVSDK_NGX_Result NVSDK_NGX_Result_FAIL_OutOfGPUMemory = 13;
 struct NVSDK_NGX_DLSS_Create_Params {
     struct {
         unsigned InWidth = 0, InHeight = 0, InTargetWidth = 0, InTargetHeight = 0;
@@ -43,7 +47,8 @@ struct State {
     unsigned feature_ow = 0, feature_oh = 0, feature_rw = 0, feature_rh = 0, min_rw = 0, min_rh = 0;
     unsigned feature_preset = 0;
     bool feature_hdr = false, feature_aa = false;
-    uint64_t features_made = 0, refused = 0;
+    uint64_t features_made = 0;
+    dlss_checks::retry::Refusal refusal;
     void* caps = nullptr;
     void* params = nullptr;
 };
@@ -65,7 +70,7 @@ namespace mkwvk::rec { enum { B_DIRECT }; void boundary(int) {} }
 struct Settings { unsigned w, h, min_w, min_h, max_w, max_h; bool fails = false; };
 Settings settings[6];
 unsigned queries = 0, creations = 0;
-bool fail_create = false;
+NVSDK_NGX_Result create_result = 0;   // (0: made; else the result NGX's creation returns)
 NVSDK_NGX_DLSS_Create_Params captured;
 NVSDK_NGX_Result NGX_DLSS_GET_OPTIMAL_SETTINGS(void*, unsigned, unsigned, NVSDK_NGX_PerfQuality_Value mode,
     unsigned* w, unsigned* h, unsigned* max_w, unsigned* max_h, unsigned* min_w, unsigned* min_h, float*) {
@@ -79,16 +84,22 @@ NVSDK_NGX_Result NGX_VULKAN_CREATE_DLSS_EXT(int, int, int, NVSDK_NGX_Handle** ha
     static NVSDK_NGX_Handle feature;
     captured = *params;
     creations++;
-    *handle = fail_create ? nullptr : &feature;
-    return fail_create ? 1 : 0;
+    *handle = create_result ? nullptr : &feature;
+    return create_result;
 }
-const char* test_getenv(const char*) { return nullptr; }
+const char* fail_create_env = nullptr;
+const char* test_getenv(const char* name) {
+    return !std::strcmp(name, "RX_VK_DLSS_FAIL_CREATE") ? fail_create_env : nullptr;
+}
 #define getenv test_getenv
 /* PREPARE */
 #undef getenv
+/* RELEASE */
+/* RETRY */
 
 void reset() {
-    state = {}; frame = 0; queries = creations = 0; fail_create = false;
+    state = {}; frame = 0; queries = creations = 0; create_result = 0;
+    fail_create_env = nullptr;
     settings[2] = {2293, 960, 1720, 720, 3440, 1440};
     settings[5] = {3440, 1440, 3440, 1440, 3440, 1440};
     settings[1] = {2007, 840, 1720, 720, 3440, 1440};
@@ -130,10 +141,67 @@ int main() {
     assert(call(1147, 480, iw, ih) == 2);
     assert(captured.Feature.InWidth == 1146 && captured.Feature.InHeight == 480);
     assert(iw == 1147 && ih == 480);  // Rounded render size still receives sufficient backing storage.
-    reset(); fail_create = true;
+    // (a failure that is not out of video memory stays refused: not tried again each frame, nor after a retry interval,
+    // only at once for another key)
+    reset(); create_result = 1;
     assert(call(2294, 960, iw, ih) == 0 && creations == 1);
+    assert(call(2294, 960, iw, ih) == 0 && creations == 1);
+    frame = 100000;
     assert(call(2294, 960, iw, ih) == 0 && creations == 1);
     preset = 12;
     assert(call(2294, 960, iw, ih) == 0 && creations == 2);
-    std::puts("DLSS recommended feature sizes, dynamic ranges, native AA and failure handling pass");
+    // (out of video memory is often temporary: tried again once the interval has passed, at most three attempts, then the
+    // refusal stays. A different key is tried at once)
+    reset(); preset = 11; create_result = NVSDK_NGX_Result_FAIL_OutOfGPUMemory;
+    frame = 0;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 1);
+    frame = 599;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 1);
+    frame = 600;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 2);
+    frame = 1199;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 2);
+    frame = 1200;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 3);
+    frame = 1800;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 3);
+    frame = 100000;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 3);
+    preset = 12;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 4);
+    // (a final refusal is cleared by a DLSS setting change: dlss_retry clears it and the next call creates at once)
+    reset(); preset = 11; create_result = NVSDK_NGX_Result_FAIL_OutOfGPUMemory;
+    frame = 0;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 1);
+    frame = 600;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 2);
+    frame = 1200;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 3);
+    assert(state.refusal.ended && state.refusal.tries == 3);
+    dlss_retry();
+    assert(state.refusal.key == 0 && state.refusal.tries == 0 && !state.refusal.ended);
+    create_result = 0; frame = 1201;
+    assert(call(2294, 960, iw, ih) == 2 && creations == 4);
+    // (and by release(), another engine chosen or the chain idle: the feature and the refusal go together)
+    reset(); preset = 11; create_result = NVSDK_NGX_Result_FAIL_OutOfGPUMemory;
+    frame = 0;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 1);
+    frame = 600;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 2);
+    frame = 1200;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 3);
+    static NVSDK_NGX_Handle kept;
+    state.feature = &kept;
+    release();
+    assert(state.refusal.key == 0 && state.refusal.tries == 0 && !state.refusal.ended && state.feature == nullptr);
+    create_result = 0; frame = 1201;
+    assert(call(2294, 960, iw, ih) == 2 && creations == 4);
+    // (the test hook: the next creation returns the chosen result, then the real one)
+    reset(); preset = 11; fail_create_env = "13:1";
+    frame = 0;
+    assert(call(2294, 960, iw, ih) == 0 && creations == 1);
+    frame = 600;
+    assert(call(2294, 960, iw, ih) == 2 && creations == 2);
+    fail_create_env = nullptr;
+    std::puts("DLSS recommended feature sizes, dynamic ranges, native AA, failure handling and the failure hook pass");
 }

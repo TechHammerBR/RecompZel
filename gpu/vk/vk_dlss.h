@@ -20,9 +20,9 @@ DlssWhy dlss_why();
 /// Asks NGX once whether DLSS runs on this device, so dlss_why knows before the first upscale (the menu, when it opens).
 /// Nothing off an NVIDIA device with NGX's extensions, or in a build without DLSS
 void dlss_probe();
-/// A feature that was not made is asked for again at the next upscale (vk_dlss.cpp prepare's `refused`): the player
-/// changed a row the feature is made from (vk_temporal.cpp temporal_reset_failure, with the chain's lock held, as prepare
-/// has it)
+/// A feature that was not made is asked for again at the next upscale (vk_dlss.cpp prepare's refusal): the player changed
+/// a row the feature is made from (vk_temporal.cpp temporal_reset_failure, with the chain's lock held, as prepare has it).
+/// A refusal for want of video memory is also retried after a bounded interval without this.
 void dlss_retry();
 /// (hookshot, RX_VK_DLSS_PREWARM) Whether NGX has started, without waiting for it: 1 started, 0 it will not start here, -1
 /// not asked yet or being asked now (dlss_probe's thread holds its lock: the replay does not wait for its ~450 ms)

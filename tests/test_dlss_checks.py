@@ -44,8 +44,21 @@ def check_sources():
     # setting is on, it would turn DLSS off until a restart. It is the game's upscale until the preset, output or HDR
     # changes, then made again)
     assert '"its feature was not made", -1' not in prepare, "prepare: a failed creation turns DLSS off for the run"
-    assert "s.refused = key;" in prepare and "if (s.refused == key)" in prepare, \
-        "prepare: a failed creation tried again once a DLSS setting changes"
+    # (a creation refused for want of video memory is retried after a bounded interval; another result, and the last
+    # try, stay until a DLSS setting changes. dlss_retry() and release() clear it)
+    assert "dlss_checks::retry::verdict(s.refusal, key, texture_frame_no())" in prepare, \
+        "prepare: a refusal is checked by dlss_checks::retry"
+    assert "dlss_checks::retry::failed(s.refusal, key, out_of_memory, texture_frame_no())" in prepare and \
+        "NVSDK_NGX_Result_FAIL_OutOfGPUMemory" in prepare, \
+        "prepare: an out-of-video-memory creation is recorded for a retry"
+    assert "dlss_checks::retry::made(s.refusal)" in prepare, "prepare: a made feature clears the refusal"
+    # (the two reset paths separately: a check that accepts either one would pass with the other's reset removed)
+    rel_start = dlss.index("void release() {")
+    release = dlss[rel_start:dlss.index("\nuint64_t memory()", rel_start)]
+    retry_start = dlss.index("void dlss_retry() { st().refusal")
+    retry = dlss[retry_start:dlss.index("}", retry_start) + 1]
+    assert "s.refusal = {}" in release, "release() clears the refusal"
+    assert "st().refusal = {}" in retry, "dlss_retry() clears the refusal"
     # (issue 17: the DLSS model row stepped K, M, L made a feature for M too, and NGX kept both in video memory for
     # seconds. The preset comes through PresetSettle, before anything compares it with the feature's)
     assert re.search(r"const unsigned preset = s\.settle\.pick\(wanted_preset\(\), s\.feature_preset, s\.feature != nullptr,"

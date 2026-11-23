@@ -141,6 +141,25 @@ int main() {
         CHECK("default stepped to", p.pick(0, M, true, 500, 30) == M);
         CHECK("default held", p.pick(0, M, true, 530, 30) == 0);
     }
+    // ---- a feature refused for want of video memory: a bounded retry (vk_dlss.cpp prepare) ----
+    {
+        namespace rt = mkwvk::dlss_checks::retry;
+        rt::Refusal r;
+        CHECK("nothing refused", rt::verdict(r, 7, 0) == rt::Verdict::None);
+        CHECK("out of video memory waits", !rt::failed(r, 7, true, 100));
+        CHECK("before the interval", rt::verdict(r, 7, 699) == rt::Verdict::Wait);
+        CHECK("at the interval", rt::verdict(r, 7, 700) == rt::Verdict::Try);
+        CHECK("another key at once", rt::verdict(r, 8, 700) == rt::Verdict::None);
+        CHECK("second failure", !rt::failed(r, 7, true, 700));
+        CHECK("second wait", rt::verdict(r, 7, 1299) == rt::Verdict::Wait);
+        CHECK("third failure is final", rt::failed(r, 7, true, 1300));
+        CHECK("ended", rt::verdict(r, 7, 100000) == rt::Verdict::Ended);
+        rt::made(r);
+        CHECK("made clears", rt::verdict(r, 7, 2000) == rt::Verdict::None && r.tries == 0);
+        CHECK("another result is final", rt::failed(r, 9, false, 2000) && rt::verdict(r, 9, 100000) == rt::Verdict::Ended);
+        rt::made(r);
+        CHECK("a different key starts its count", !rt::failed(r, 10, true, 3000) && r.tries == 1);
+    }
     std::puts("dlss checks: ok");
     return 0;
 }
