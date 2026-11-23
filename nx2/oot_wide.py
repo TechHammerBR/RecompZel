@@ -3,7 +3,7 @@
 The game draws a 2560x1440 picture whatever the screen and renders its scene at 1920x1080; its cameras use a 16:9 ratio.
 With these patches the picture takes the window's shape (the height stays the game's, the width grows on an ultrawide
 screen and shrinks on a 16:10 or 4:3 one), the 16:9 cameras take the picture's ratio, the HUD and menus keep their 16:9
-shape in the middle of a wider picture (a narrower one: its whole width), pre-rendered movies play in that middle 16:9,
+shape in the middle of a wider picture (a narrower one: its whole width), pre-rendered movies keep their 16:9 shape,
 and the picture a save keeps shows that middle 16:9 (a narrower picture: its middle band, at the texture's shape). Every patch reads host globals
 (host/hos_wide.c) that stay 0 for a 16:9 window, so the game runs as shipped then.
 
@@ -87,11 +87,19 @@ BUBBLE = ("{ extern volatile float hos_ui_qx, hos_ui_qy; const float _qx = hos_u
           "_x /= _qx; _y /= _qy; memcpy(c->vreg[0], &_x, 4); memcpy(c->vreg[1], &_y, 4); } }"
           "   /* (nx2/oot_wide.py: the speech bubble over its speaker) */")
 
+# Keep the movie at 16:9. Inset its left and right bounds on wider pictures, or its top and bottom bounds on
+# narrower pictures. The viewport is at x29 - 40, with float bounds in left, top, right, bottom order.
 MOVIE = ("{ extern volatile float hos_wide_margin; const float _m = hos_wide_margin; if (_m > 0.0f) { "
          "const uint64_t _vp = c->x[29] - 40; uint32_t _ua = (uint32_t)recomp_load32(c, _vp + 8), _ub = (uint32_t)recomp_load32(c, _vp + 16); "
          "float _a, _b; memcpy(&_a, &_ua, 4); memcpy(&_b, &_ub, 4); const float _in = (_b - _a) * _m; _a += _in; _b -= _in; "
-         "memcpy(&_ua, &_a, 4); memcpy(&_ub, &_b, 4); recomp_store32(c, _vp + 8, _ua); recomp_store32(c, _vp + 16, _ub); } }"
-         "   /* (nx2/oot_wide.py: movies in the middle 16:9) */")
+         "memcpy(&_ua, &_a, 4); memcpy(&_ub, &_b, 4); recomp_store32(c, _vp + 8, _ua); recomp_store32(c, _vp + 16, _ub); } "
+         "else { extern volatile float hos_wide_ratio; const float _r = hos_wide_ratio; const float _game = 16.0f / 9.0f; "
+         "if (_r > 0.0f && _r < _game * 0.99f) { const uint64_t _vp = c->x[29] - 40; "
+         "uint32_t _ua = (uint32_t)recomp_load32(c, _vp + 12), _ub = (uint32_t)recomp_load32(c, _vp + 20); "
+         "float _a, _b; memcpy(&_a, &_ua, 4); memcpy(&_b, &_ub, 4); const float _in = (_b - _a) * (1.0f - _r / _game) / 2.0f; "
+         "_a += _in; _b -= _in; memcpy(&_ua, &_a, 4); memcpy(&_ub, &_b, 4); "
+         "recomp_store32(c, _vp + 12, _ua); recomp_store32(c, _vp + 20, _ub); } } }"
+         "   /* (nx2/oot_wide.py: movies at 16:9, with side bars on wider pictures or top and bottom bars on narrower ones) */")
 
 # The save's picture (issue 952): the pause menu draws the whole picture into a 543 x 306 texture, the save's JPEG, through the
 # game's viewport-and-scissor helper (f_802a46e0: SetScissor, then SetViewport(x, y, w, h) in w1-w4 from [x8], called by blr x8).
