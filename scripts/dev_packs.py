@@ -414,14 +414,25 @@ def prepare(game, b, required=True):
     if b.get("romfs_in_place") and not os.path.isdir(os.path.join(game, "romfs")):   # (a --romfs-in-place base and its runtimes)
         cmd += ["--romfs", b["romfs"]]
     print("+ %s%s" % (" ".join([GAME] + cmd[1:]), " (RX_VK_PREDICT_S=%d)" % b["predict_s"] if b.get("predict_s") else ""), flush=True)
+    # (supervised, as make_game.py's own: a run that dies or hangs inside one shader's compile is started again without that
+    # shader, nx2/prepare_supervisor.py; a tree from before it runs the game once, as before)
+    supervisor = getattr(mg, "prepare_supervisor", None)
+    decision = None
+    env = dict(mg.game_env(), **base_env(b.get("predict_s", 0)))
     try:
-        code = subprocess.run(cmd, cwd=game, check=required, env=dict(mg.game_env(), **base_env(b.get("predict_s", 0)))).returncode
+        if supervisor:
+            code, decision = supervisor.supervise(
+                lambda extra: subprocess.run(cmd + extra, cwd=game, check=False, env=env).returncode, os.path.join(game, "cache"))
+        else:
+            code = subprocess.run(cmd, cwd=game, check=False, env=env).returncode
     except OSError as e:   # (the game could not start: a missing DLL, launch denied)
         if required:
             raise
         code, why = None, str(e)
+    if code and required:   # (a runtime: a failed preparation stops, as subprocess.run's check did)
+        raise subprocess.CalledProcessError(code, cmd)
     if code:
-        why = PREPARE_FAILED.get(code, "the game stopped with exit status %d" % code)
+        why = (decision and decision.why) or PREPARE_FAILED.get(code, "the game stopped with exit status %d" % code)
     if code != 0:
         print("the shaders were not prepared now (%s): the game prepares them at its first start" % why, flush=True)
         return why

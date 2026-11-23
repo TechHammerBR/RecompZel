@@ -760,6 +760,11 @@ int driver_faults();   // (hookshot, vk_draw.cpp) the driver faults the pipeline
 /// (hookshot, vk_draw.cpp) the pipelines the driver refused for want of memory so far (VK_ERROR_OUT_OF_DEVICE_MEMORY or
 /// _HOST_MEMORY): texture_frame gives textures up when it grows
 extern std::atomic<int64_t> st_driver_out_of_memory;
+/// (hookshot, vk_draw.cpp) The --prepare-shaders run's journal (prepare_journal.h): an entry has been inside the driver for
+/// longer than one gets, and its line is written: the run ends with prepare_journal::kExitEntryLimit (vk_main.cpp)
+bool prepare_journal_overdue();
+/// (hookshot, vk_draw.cpp) A run the supervisor started again (--prepare-from): the run before is taken off the crash markers
+void prepare_restart_forgive();
 void prepare_left_workers_note();   // (hookshot, vk_draw.cpp) predict_run or precompile_run left workers inside the driver
 bool prepare_left_workers();
 void fill_replay_table(MkwVkRenderer& t);     // vk_replay.cpp

@@ -61,6 +61,7 @@ import lift_store as _lift_store
 import build_jobs as _build_jobs
 import game_title
 import log_redact as _log_redact
+import prepare_supervisor   # (the shaders' preparation restarted past a shader the driver dies or hangs in; dev_packs.py's too)
 # (hookshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (HOOKSHOT_MINGW, or llvm-mingw
 # beside the builder), to run under Proton or copy to a Windows PC
 LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt"
@@ -1625,16 +1626,29 @@ def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
     """The shaders prepared now, under the builder's progress bar, not at the game's first start behind a black window (minutes on
     some GPUs, issue 711): hookshot --prepare-shaders (host/hos_main.c, gpu/vk/vk_main.cpp), the same work as that first start, in
     the game's folder and environment, as the builders' Play starts it. A PC whose Vulkan can't (exit 3), a run silent for `silence` seconds (then stopped), or
-    any other failure leaves the work to the first start, as before: never a failed build. Returns its exit code (None: stopped)"""
+    any other failure leaves the work to the first start, as before: never a failed build. Returns its exit code (None: stopped).
+
+    The run is supervised (nx2/prepare_supervisor.py, docs/shader-preparation.md): it keeps a journal of its calls
+    into the driver's compiler, and one that dies or hangs inside a call is started again without that shader, which goes into
+    the game's list of programs that driver is not asked for (cache/hookshot_driver_faults.txt). A run that ends with nothing
+    inside the driver is started once more; past the supervisor's bounds the work is left to the first start, as any failure"""
+    where = folder or os.path.dirname(cmd[0]) or None
+
+    def start(extra):
+        return run(cmd + extra, check=False, show=show_prepared, cwd=where, base=game_env(), silence=silence)
+
     try:
         # (a count asked for: the game started on that many CPUs, which its preparation's pools follow; nx2/build_jobs.py)
         with _build_jobs.children_on_cpus(_build_jobs.asked()):
-            code = run(cmd, check=False, show=show_prepared, cwd=folder or os.path.dirname(cmd[0]) or None,
-                       base=game_env(), silence=silence)
+            code, decision = prepare_supervisor.supervise(start, os.path.join(where or os.getcwd(), "cache"))
     except OSError as e:
         not_prepared(str(e))
         return 1
-    if code is None:
+    if decision.action == "done":
+        return code
+    if decision.why:   # (the supervisor's own reasons: its bounds, a shader of the renderer's own)
+        not_prepared(decision.why)
+    elif code is None:
         not_prepared("the game printed nothing for %s and was stopped" % span(silence))
     elif code == 3:
         not_prepared("no usable Vulkan here")

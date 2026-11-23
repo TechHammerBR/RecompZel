@@ -20,6 +20,7 @@
 #include "oot_heart_containers.h"   /* (the Discord status's pieces of heart) */
 #include "game_layout.h"
 #include "options_path.h"
+#include "prepare_args.h"   /* (the supervised --prepare-shaders run's arguments) */
 #include "hos_wide_size.h"   /* (the widescreen picture's size, shared with the Insert menu) */
 #include "ws_floor.h"        /* (the game's memory kept in RAM: HOS_WS_FLOOR_MB) */
 #include "../gpu/vk/vk_api.h"
@@ -2445,9 +2446,11 @@ static int game_main(int argc, char **argv) {
             setenv("RX_VK_COMPILE_SHADERS", argv[i + 1], 1);
 #endif
         }
+    hos_prepare_args_env(argc, argv);   /* (hookshot) a supervised preparation's journal, skips and limit: prepare_args.h */
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
         else if (!strcmp(argv[i], "--compile-shaders") && i + 1 < argc) i++;   /* (taken above) */
+        else if (hos_prepare_arg_switch(argv[i]) && i + 1 < argc) i++;         /* (taken above) */
         else if (!strcmp(argv[i], "--user") && i + 1 < argc) hos_user_dir = argv[++i];
         else if (!strcmp(argv[i], "--trace")) hos_trace = 1;
         else if (!strcmp(argv[i], "--prepare-shaders")) {   /* (hookshot) a build's last step: no game */

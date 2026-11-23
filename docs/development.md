@@ -91,6 +91,8 @@ covers only the headers reached by its small C fixture.
 
 The built game's own arguments (`image.bin`, `--romfs`, `--user`, `--trace`, `--prepare-shaders`) are in the README's
 [Running the game from the command line](../readme.md#running-the-game-from-the-command-line).
+How a build's `--prepare-shaders` run is supervised, so one shader that crashes or hangs the GPU driver is left out
+rather than losing the run, is in [The shader preparation at a build](shader-preparation.md).
 
 Scripted test input (`HOS_INPUT_SCRIPT` and `HOS_INPUT_LIVE`) is applied before the window-focus check. A log saying
 the game window is not in front does not mean those presses were discarded. `HOS_HEADLESS` and

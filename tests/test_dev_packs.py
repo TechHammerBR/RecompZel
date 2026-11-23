@@ -415,7 +415,8 @@ def test_romfs_in_place(d):
     check("the base's build reads the romfs in place (%s)" % got, got.get("HOOKSHOT_ROMFS_IN_PLACE") == "1")
     check("base.json says so", b.get("romfs_in_place") is True)
     check("its preparation names the romfs (%s)" % calls,
-          len(calls) == 1 and calls[0][-2:] == ["--romfs", os.path.abspath(d / "dump" / "romfs")])
+          # (--romfs and its folder, as a pair: the preparation's journal flags come after it)
+          len(calls) == 1 and any(calls[0][i:i + 2] == ["--romfs", os.path.abspath(d / "dump" / "romfs")] for i in range(len(calls[0]))))
     rt = d / "rt"
     out = io.StringIO()
     with contextlib.redirect_stdout(out):

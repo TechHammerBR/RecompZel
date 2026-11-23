@@ -47,6 +47,7 @@ static_assert(mkwvk::kQueueGraphics == VK_QUEUE_GRAPHICS_BIT && mkwvk::kQueueCom
 #include "vk_programs.h"
 #include "mesh_mode.h"
 #include "crash_markers.h"   // (mkwvk_close_asked: a close is not a crash)
+#include "prepare_journal.h"   // (kExitEntryLimit: the journalled preparation's exit status for one entry past its limit)
 #include "memory_priority.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
@@ -1795,6 +1796,31 @@ void prepare_watchdog() {
         }
     }).detach();
 }
+// (hookshot) The journalled run's own limit, per entry (prepare_journal.h, --prepare-entry-limit <s>): the watchdog above
+// stops a run in which nothing moves and cannot say which shader the driver is stuck in, so the whole preparation was given
+// up for one shader. With a journal, an entry that has been inside the driver for longer than one gets is named in the
+// journal and the run ends at once with exit status 6 (prepare_journal::kExitEntryLimit), through prepare_end as the
+// watchdog's stop: the supervisor (nx2/prepare_supervisor.py) starts it again without that program. Looked at once a
+// second, on a thread of its own: the watchdog's is compiled alone by its check. No journal, or no limit: nothing to do
+void prepare_entry_watch() {
+    const char* limit = getenv("HOOKSHOT_PREPARE_ENTRY_S");
+    const char* journal = getenv("HOOKSHOT_PREPARE_JOURNAL");
+    if (!limit || atoi(limit) <= 0 || !journal || !*journal) return;
+    std::thread([] {
+        for (;;) {
+            Sleep(1000);
+            if (prepare_journal_overdue()) prepare_end(prepare_journal::kExitEntryLimit);
+        }
+    }).detach();
+}
+/// Before the parts of a --prepare-shaders run: what one the supervisor started needs. The entry watch; and, started again
+/// past a shader the run before died or hung in (--prepare-from), that run taken off the steps' crash markers before the
+/// steps read them (vk_draw.cpp prepare_restart_forgive). Nothing in a game run
+void prepare_supervised() {
+    if (!prepare_only()) return;
+    prepare_entry_watch();
+    prepare_restart_forgive();
+}
 // (hookshot) The first start after an update prepares every shader (prepare_run) and the pipelines the last sessions noted
 // (precompile_run): a minute and more, before the game's first frame. They run on a thread of their own while this one, the
 // renderer's start, shows the window at once with what they are doing on it, and keeps it shown and sized; on Windows it is also
@@ -1978,6 +2004,7 @@ bool started_up() {
         fflush(stdout);
         return true;
     }
+    prepare_supervised();   // (a --prepare-shaders run the Builder's supervisor started: its entry watch, the run before forgiven)
     if (prepare_only()) {
         // (three parts: the programs, the pipelines the notes predict, then those they name, on one bar whose total has all three
         // from the start: PrepareBar. The fixed shares it had (70%, 20%, 10%) kept the predicted pipelines' minutes in a fifth)
