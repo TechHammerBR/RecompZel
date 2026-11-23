@@ -731,7 +731,25 @@ def test_busy_folders_above_hidden(d):
     check("a folder inside is still made", (base / "new").is_dir())
 
 
+def test_upscaler_args():
+    """(the Test Farm's upscaler builds) make_game.py's options from the environment: FSR 4 by HOOKSHOT_FSR, the AMD and Intel
+    runtimes from folders already fetched, DLSS by HOOKSHOT_NGX_SDK alone (make_game.py reads it)"""
+    a = packs.upscaler_args
+    check("nothing asked: no option", a({}) == [])
+    check("HOOKSHOT_FSR=0 is off", a({"HOOKSHOT_FSR": "0"}) == [])
+    check("FSR 4", a({"HOOKSHOT_FSR": "1"}) == ["--fsr"])
+    check("FSR 4 with AMD's fetched runtime", a({"HOOKSHOT_FSR": "1", "HOOKSHOT_FFX_SDK": "/sdk/ffx"})
+          == ["--fsr", "--fetch-fsr-runtime", "--accept-amd-license"])
+    check("AMD's runtime without FSR 4: no option", a({"HOOKSHOT_FFX_SDK": "/sdk/ffx"}) == [])
+    check("Intel's XeSS library", a({"HOOKSHOT_XESS_SDK": "/sdk/xess"}) == ["--fetch-xess-runtime", "--accept-intel-license"])
+    check("DLSS: no option, make_game.py reads HOOKSHOT_NGX_SDK", a({"HOOKSHOT_NGX_SDK": "/sdk/ngx"}) == [])
+    names = {o for o in a({"HOOKSHOT_FSR": "1", "HOOKSHOT_FFX_SDK": "f", "HOOKSHOT_XESS_SDK": "x"})}
+    source = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
+    check("every option is make_game.py's", all('"%s"' % o in source for o in names))
+
+
 def main():
+    test_upscaler_args()
     test_route()
     test_renderer_files_the_game_reads()
     test_stamped_objects_match_build()

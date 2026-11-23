@@ -467,9 +467,30 @@ def clone_or_copy(src, dst):
     return shutil.copy2(src, dst)
 
 
+def upscaler_args(environ):
+    """make_game.py's upscaler options for a base's or a pack's build, from the environment, which make_game.py does not
+    take them from itself:
+    - HOOKSHOT_FSR=1: AMD FSR 4 (--fsr: make_game.py clears the variable otherwise, and build.py reads it). A renderer-only
+      pack builds with build.py, which reads it as it is.
+    - HOOKSHOT_FFX_SDK with HOOKSHOT_FSR=1, HOOKSHOT_XESS_SDK: AMD's FSR runtime and Intel's XeSS library, fetched into those
+      folders by an earlier --fetch-*-runtime build under the vendor's license, accepted then, go into the game folder (each
+      file is there and checked, so nothing is downloaded).
+    NVIDIA DLSS needs nothing here: make_game.py and build.py read HOOKSHOT_NGX_SDK, which run() passes on"""
+    args = []
+    if environ.get("HOOKSHOT_FSR", "0") not in ("", "0"):
+        args.append("--fsr")
+        if environ.get("HOOKSHOT_FFX_SDK"):
+            args += ["--fetch-fsr-runtime", "--accept-amd-license"]
+    if environ.get("HOOKSHOT_XESS_SDK"):
+        args += ["--fetch-xess-runtime", "--accept-intel-license"]
+    return args
+
+
 def make_game(tree, b, work, game, env):
+    """(a base and its packs build with the upscalers the environment names, the same for both: upscaler_args)"""
     run([sys.executable, "-I", "nx2/make_game.py", "--romfs", b["romfs"], "--exefs", b["exefs"], "--work", work, "--out", game,
-         "--language", b.get("language", "en-US")], tree, dict(env, HOOKSHOT_KEEP_BUILD_FILES="1"))
+         "--language", b.get("language", "en-US")] + upscaler_args(dict(os.environ, **env)), tree,
+        dict(env, HOOKSHOT_KEEP_BUILD_FILES="1"))
 
 
 def read_base(d):
