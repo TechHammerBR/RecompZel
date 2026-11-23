@@ -815,6 +815,23 @@ static int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value);
 static uint64_t oot_gamedata_int_at(Ctx *c, uint32_t hash);
 #define OOT_RUPEES_HASH 0xa77921d7u   /* PlayerStatus.CurrentRupee (Int) */
 static int oot_gamedata_string(Ctx *c, uint32_t hash, char *buf, size_t size);
+static int oot_event_playing(Ctx *c);
+
+/* The first adult night's time lock (Longshot #1064): f_8347c020 holds the clock at 20:00 while the saved Bool
+   HrlField_isFirstNightTime_Adult (0x8592aa82) is 1 and quest 0x4dbca27f is not Ready. The flag belongs to Hyrule
+   Field's first night only. A save in any other map that still holds it cannot leave night: clear it there with the
+   game's own Bool, once, and say so, never while an event (the escape's cutscene) is running. HOS_OOT_FIRST_NIGHT_FIX=0
+   turns the repair off for a run. Returns 1 when it cleared the flag. */
+static int oot_first_night_fix(Ctx *c, const char *map) {
+    static int on = -1;
+    if (on < 0) on = env_on_or("HOS_OOT_FIRST_NIGHT_FIX", 1);
+    if (!on || !map[0] || !strncmp(map, "HyruleField", 11) || oot_event_playing(c)) return 0;
+    int set = 0;
+    if (!oot_gamedata_bool(c, 0x8592aa82u, &set) || !set) return 0;
+    if (!oot_gamedata_set_bool(c, 0x8592aa82u, 0)) return 0;
+    hos_log("oot: cleared the first adult night's time lock (the save was in %s, outside Hyrule Field)", map);
+    return 1;
+}
 
 static void oot_inventory_refresh(Ctx *c, int64_t now) {
     void rx_option_set(int id, int value);
@@ -845,6 +862,7 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
             snprintf(line, sizeof line, "%s (%s)", map,
                      oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? "child" : "adult") : "age not known");
             if (strcmp(line, logged)) hos_log("map: %s", line), snprintf(logged, sizeof logged, "%s", line);
+            oot_first_night_fix(c, map);
         }
     }
     if (!probed && oot_pouch_count(c, "Item_DekuSeed") >= 0) {

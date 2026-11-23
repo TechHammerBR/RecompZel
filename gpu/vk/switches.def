@@ -177,6 +177,7 @@ SW(HOS_OCB_HOLD_MS, tune, string, "2000: a new neighbouring map to preload is ta
 SW(HOS_OCB_NORMAL, kill, bool, "OoT's OptimizeChange background thread runs at lowered host priority", "=1 leaves the OptimizeChange thread at normal priority, as before.")
 SW(HOS_OOT_BARRIER_WAIT, kill, bool, "on: three of OoT's parallel-for jobs (f_800998a0, f_800738e0, f_8007e200) wait until a mask word their barrier polls moves, woken by the thread that ORs it (at most 1 ms)", "=0: the game's job barriers sleep 20 us and look again, as before; HOS_AB may flip it.")
 SW(HOS_OOT_CHEATS, player, bool, "the Debug tab's tools row (off)", "=1 turns the Debug tab's tools (flight, free camera, teleport, inventory) on whatever the menu's row says.")
+SW(HOS_OOT_FIRST_NIGHT_FIX, kill, bool, "on: a save outside Hyrule Field that still holds HrlField_isFirstNightTime_Adult (0x8592aa82) has the flag cleared by the map refresh, so the clock runs (Longshot #1064)", "=0 leaves the flag as the save has it; the repair never touches Hyrule Field.")
 SW(HOS_OOT_PROTECT_HEARTS, attempt, bool, "off", "=1 turns heart protection on at start (the host's own, and the menu's when HOS_OOT_CHEATS=1).")
 SW(HOS_OOT_TELEPORT_EVENT, diag, string, "Dm_SY_BancChangeGo", "Names the game event the Debug tab's teleport runs, in place of Dm_SY_BancChangeGo.")
 SW(HOS_OOT_TELEPORT_STARTER, kill, bool, "the teleport's event is run with its starter", "=0 runs the Debug tab's teleport event without the starter.")
