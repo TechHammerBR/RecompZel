@@ -6369,6 +6369,19 @@ void dead_targets_sweep(uint64_t completed) {
 }
 
 /// (hookshot) the images that served a new texture's blocks (astc_reuse.h): gone, unless their own texture was used since
+/// (hookshot) A finalized texture the GPU drew whose storage the game has since written over (the CPU wrote three quarters of it or more
+/// since it was finalized): its image holds nothing that memory holds on the console, and a draw that sampled it would take the
+/// memory's contents over its texels (texture_touch). Only a texture of 32 KB or more: a small one shares its pages with what the game
+/// keeps beside it, and a write there says nothing of it. The eviction pass lets such a texture go whatever the budget says
+bool finalized_obsolete(const Texture& t) {
+    if (!t.released || !t.gpu_written || t.gpu >= (1ull << 40) || t.guest_size < (32ull << 10)) return false;
+    static thread_local Ranges written;
+    written.clear();
+    memory_written_runs(t.guest, t.guest_size, t.release_gen, written);
+    uint64_t sum = 0;
+    for (const auto& r : written) sum += r.second - r.first;
+    return sum * 4 >= t.guest_size * 3;
+}
 void reuse_retire_frame() {
     std::vector<Texture*> went;
     {
@@ -6979,7 +6992,7 @@ void texture_frame(uint64_t completed) {
         (uint64_t)(getenv("RX_VK_KEEP_FINALIZED_MB") ? std::max(0, atoi(getenv("RX_VK_KEEP_FINALIZED_MB"))) : 128) << 20;
     const auto keep_finalized = [&](const Texture* tex) {
         if (!keep_finalized_max || !tex->gpu_written || !tex->released || !tex->first_written ||
-            tex->first_written != tex->last_written || tex->bytes > (4ull << 20))
+            tex->first_written != tex->last_written || tex->bytes > (4ull << 20) || finalized_obsolete(*tex))
             return false;
         const auto g = gpu_owned.find(tex->gpu);   // (its storage's range still the one the GPU drew it in)
         if (g == gpu_owned.end() || g->second.first != tex->gpu + std::max<uint64_t>(tex->guest_size, 1)) return false;
@@ -7047,11 +7060,16 @@ void texture_frame(uint64_t completed) {
         // (hookshot, RX_VK_COMPACT: the hold's pass, above. A live texture stays once the excess over its line is covered: the
         // reserve's line for one long unused, the hold's own for one unused ten seconds, and what the other rules ask (the 90%
         // rule, the budget's size, the driver's limit) for one unused as long as an eviction asks with the compaction off)
-        if (by_hold && !overwritten) {
+        // (hookshot) a finalized texture whose storage the game has written over since goes, whatever the budget says: what its image
+        // held is gone from that memory on the console too, and a draw that sampled it would take the memory's contents over its
+        // texels (texture_touch). Within the budget the pass is a sweep that lets go of nothing the GPU did not draw over, and these
+        // were never drawn over by a target: the game's own writes to the memory they stood in would keep every one for good
+        const bool obsolete = !overwritten && finalized_obsolete(*tex);
+        if (by_hold && !overwritten && !obsolete) {
             const uint64_t to = vram_compact::hold_target(frame_no - last, need_unused, rule_to, hold_to, evict_to);
             if (to == UINT64_MAX || vram_compact::hold_met(total_bytes, hold_live, hold_dead, to)) continue;
         }
-        if (finalized_kept && keep_finalized(tex)) {   // (above. Oldest first: beyond the cap the least recently used go)
+        if (!obsolete && finalized_kept && keep_finalized(tex)) {   // (above. Oldest first: beyond the cap the least recently used go)
             if (finalized_kept <= keep_finalized_max) continue;
             finalized_kept -= tex->bytes;
             static int logged;
@@ -7061,7 +7079,7 @@ void texture_frame(uint64_t completed) {
                      tex->height, tex->nvn_format, (unsigned long long)(frame_no - last));
         }
         if (!overwritten && tex->gpu_written && !tex->released && frame_no - last < keep_rendered) continue;
-        if (sweep && !overwritten) continue;
+        if (sweep && !overwritten && !obsolete) continue;
         // (hookshot) nor a live texture the GPU drew whose texels cannot be written back into its memory (ASTC kept as BC3, sparse,
         // past the write-back's size, ...): its image is the only copy, and one made again over that storage is not uploaded (the
         // memory counts as the GPU's), so it showed whatever its new memory held: the rainbow/garbled textures that spread over play
