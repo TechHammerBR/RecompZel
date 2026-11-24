@@ -7014,7 +7014,9 @@ void release_uncovered(uint64_t lo, uint64_t hi) {   // (pools_mu held)
     };
     for (auto it = imported.lower_bound(hi); it != imported.begin();) {   // (the pools starting below hi, the last ones first)
         --it;
-        if (it->second.hi + (1ull << 30) < lo) break;   // (imports are at most 1 GB: none further down reaches lo)
+        // (none further down reaches lo: import_reach.h. Not a 1 GB stop: an import above 1 GB further down stands over lo too,
+        // and its pages given back would be the GPU's)
+        if (import_reach::beyond(live_reach, it->second.lo, lo)) break;
         note(it->second.lo, it->second.hi);
     }
     {
