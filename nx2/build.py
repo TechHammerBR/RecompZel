@@ -2363,7 +2363,7 @@ def main():
         # client's C API is exported for the back end's module)
         r = run_link([toolchain.need(toolchain.find("clang++")) if TRACY else cc] + target() + ["-fuse-ld=lld", "-o", exe] +
                      linker("-Map=" + exe + ".map") +
-                     ["-Wl,--gc-sections"] + ["-Wl,--export-dynamic-symbol=" + s for s in HOST_EXPORTS] + ["@" + rsp] + HOT_ORDER() +
+                     ["-Wl,--gc-sections"] + linker(*("--export-dynamic-symbol=" + s for s in HOST_EXPORTS)) + ["@" + rsp] + HOT_ORDER() +
                      (["-Wl,--export-dynamic-symbol=___tracy_*", "-static-libstdc++", "-static-libgcc"] if TRACY else []) +
                      (FFMPEG_LX[1] if FFMPEG_LX else []) + HOST_LIBS +
                      (["-l:libstdc++.a"] if SYSROOT else ["-lstdc++"]), exe)   # (native/'s C++: static with the AppImage's sysroot)

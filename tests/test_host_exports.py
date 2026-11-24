@@ -86,7 +86,8 @@ def main():
     build = (ROOT / "nx2/build.py").read_text(encoding="utf-8")
     link = build[build.index("exe = os.path.join(out, EXE)   # (+ hookshot.map"):]
     link = link[:link.index("capture_output=True")]
-    if '"-Wl,--export-dynamic-symbol=" + s for s in HOST_EXPORTS' not in link:
+    # (each export its own -Xlinker argument, through build.py's linker(): -Wl, would split a value at its commas)
+    if 'linker(*("--export-dynamic-symbol=" + s for s in HOST_EXPORTS))' not in link:
         raise SystemExit("the Linux exe's link does not export HOST_EXPORTS")
     print("%d names looked up in the exe, all in HOST_EXPORTS" % len(names))
     if os.name == "nt":
@@ -97,7 +98,7 @@ def main():
         print("skipped the link: no C compiler")
         return
     lld = ["-fuse-ld=lld"] if shutil.which("ld.lld") else []
-    flags = ["-Wl,--export-dynamic-symbol=" + e for e in exports]
+    flags = [arg for e in exports for arg in ("-Xlinker", "--export-dynamic-symbol=" + e)]   # (as build.py's linker() passes them)
     defs = "\n".join('__attribute__((visibility("default"))) int %s(void) { return %d; }' % (n, i + 1)
                      for i, n in enumerate(sorted(names)))
     src = EXE.replace("DEFINITIONS", defs).replace("NAMES", ", ".join('"%s"' % n for n in sorted(names)))
