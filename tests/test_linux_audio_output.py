@@ -76,6 +76,8 @@ def main():
         sound = between(sdl, '/* ---- sound ---- */', '/* ---- (hookshot) microphones:')
         posix = (args.source/'host/posix/win32_posix.c').read_text(encoding='utf-8')
         wave = posix[posix.index('/* ---- waveOut on SDL\'s audio'):]
+        # (the section ends at the next one's header: the performance overlay's timer calls follow it now)
+        wave = wave[:wave.index('\n/* ---- ', 1) + 1] if '\n/* ---- ' in wave[1:] else wave
         # The real files are separate translation units. Keep weak declarations before definitions in this combined fixture.
         split = wave.index('typedef struct {')
         sound = wave[:split] + sound
@@ -85,7 +87,7 @@ def main():
         wave = ('#if defined(__GNUC__) && !defined(__clang__)\n'
                 '#pragma GCC diagnostic push\n#pragma GCC diagnostic ignored "-Waddress"\n#endif\n' + wave +
                 '\n#if defined(__GNUC__) && !defined(__clang__)\n#pragma GCC diagnostic pop\n#endif\n')
-        # waveOut is the final section; any later source addition must explicitly delimit this fixture.
+        # waveOut is delimited by the next section's header above; code after it is not part of this fixture.
         fake = (ROOT/'tests/linux_audio_output_test.c').read_text(encoding='utf-8')
         assert fake.count('/* PRODUCTION_SOUND */') == 1
         assert fake.count('/* PRODUCTION_WAVE */') == 1

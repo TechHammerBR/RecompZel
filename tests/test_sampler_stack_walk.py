@@ -43,10 +43,13 @@ def sources():
     # (each walk steps through it, on the right stack)
     walks = (("static LONG WINAPI report_crash(", "const StackRange stack = own_stack();", "unwind_step(&ctx, stack)"),
              ("static DWORD WINAPI sample_thread(void *p)", "thread_stack(th)", "unwind_step(&ctx, stack)"),
-             ("static DWORD WINAPI sample_all_thread(void *p)", "thread_stack(th[i])", "unwind_step(&ctx, stack)"))
+             # (the all-thread sampler walks in sample_walk, under a guard that ends a sample's stack at a fault)
+             ("static DWORD WINAPI sample_all_thread(void *p)", "thread_stack(th[i])", "sample_walk(&ctx, stack, "))
     for marker, stack_of, call in walks:
         body = block(src, marker)
         need(stack_of in body and call in body, "%s does not walk through unwind_step on its thread's stack" % marker)
+    need("unwind_step(ctx, stack)" in block(src, "static void sample_walk(CONTEXT *ctx, StackRange stack, char *line, int cap)"),
+         "sample_walk does not step through unwind_step on the stack it is given")
     return src
 
 

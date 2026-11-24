@@ -40,6 +40,7 @@ extern "C" __declspec(dllimport) int __stdcall GetThreadTimes(void*, void*, void
 
 namespace mkwvk {
 std::atomic<uint64_t> work_epoch{0};
+std::atomic<uint64_t> foreign_work{0};   // (vk_work.h's note_work counts into it, as vk_texture.cpp defines it)
 std::atomic<bool> par_active{false};
 void logf(const char* fmt, ...) {   // (the renderer's log: printed, for test_recorder_sync.py to count)
     char b[1024];

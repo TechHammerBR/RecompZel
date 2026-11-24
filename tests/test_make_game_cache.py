@@ -53,6 +53,8 @@ def game_files(romfs, heapdef=HEAPDEF):
     (romfs / "Pack").mkdir(parents=True, exist_ok=True)
     (romfs / "Pack" / "ZsDic.pack.zs").write_bytes(b"\x28\xb5\x2f\xfd" + b"authored dictionary stand-in")
     (romfs / "System" / "Resource").mkdir(parents=True, exist_ok=True)
+    # (the supported version's resource size table: make_game.romfs_problem tells the game's own RomFS of that version by it)
+    (romfs / "System" / "Resource" / make_game.ROMFS_TABLE).write_bytes(b"\x28\xb5\x2f\xfd" + b"authored size table stand-in")
     if heapdef:
         (romfs / heapdef).parent.mkdir(parents=True, exist_ok=True)
         (romfs / heapdef).write_bytes(b"\x28\xb5\x2f\xfd" + b"authored heap definition stand-in")
@@ -517,7 +519,7 @@ class NupCacheTests(unittest.TestCase):
         (packed / "romfs.bin").write_bytes(b"authored packed stand-in")
         empty.mkdir()
         self.game_files(half)
-        (half / "System" / "Resource").rmdir()
+        shutil.rmtree(half / "System" / "Resource")
         self.game_files(no_heap, heapdef=None)
         for romfs, said, packed_copy in ((packed, "no Pack/ZsDic.pack.zs", True), (empty, "no Pack/ZsDic.pack.zs", False),
                                          (half, "no System/Resource", False), (no_heap, "no " + HEAPDEF, False)):

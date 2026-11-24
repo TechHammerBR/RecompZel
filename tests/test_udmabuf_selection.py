@@ -29,6 +29,10 @@ CASES = [
     ("explicit on without device", -1, "missing", "1", (0, 0, 1, 0, 0, 0)),
     ("explicit off without device", -1, "64", "0", (0, 0, 0, 0, 0, 0)),
     ("explicit on with malformed limit", 42, "bad", "1", (0, 0, 1, 1, 1, 0)),
+    # (RX_VK_NO_DMABUF on: the renderer makes no dma-bufs, so the window stays anonymous memory unless HOS_GUEST_MEMFD asks)
+    ("no dma-bufs", 42, "64", "unset", (1, 64, 0, 1, 1, 0), "1"),
+    ("no dma-bufs, explicit on", 42, "64", "1", (1, 64, 1, 1, 1, 0), "1"),
+    ("no dma-bufs, explicit off", 42, "64", "0", (1, 64, 0, 1, 1, 0), "1"),
 ]
 
 FIXTURE = r'''
@@ -37,6 +41,7 @@ FIXTURE = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "hookshot_env.h"
 static const char *authored_limit;
 static int reads, closes, notices;
 static FILE *limit_file(const char *path, const char *mode) {
@@ -49,15 +54,16 @@ static int close_device(int fd) { assert(fd==42); ++closes; return 0; }
 #define fopen limit_file
 #define close close_device
 #define hos_log(...) (++notices)
-static void probe(int u, const char *e) {
+static void probe(int u, const char *e, int no_dmabuf) {
+    (void)no_dmabuf;   /* (a mutation of the selection may leave it unread) */
     int usable=0;
     unsigned long long limit_mb=0;
 @@BLOCK@@
     printf("%d,%llu,%d,%d,%d,%d\n",usable,limit_mb,@@SELECTION@@,reads,closes,notices);
 }
 int main(int argc, char **argv) {
-    assert(argc==4); authored_limit=strcmp(argv[2],"missing") ? argv[2] : NULL;
-    probe(atoi(argv[1]),strcmp(argv[3],"unset") ? argv[3] : NULL); return 0;
+    assert(argc==5); authored_limit=strcmp(argv[2],"missing") ? argv[2] : NULL;
+    probe(atoi(argv[1]),strcmp(argv[3],"unset") ? argv[3] : NULL,atoi(argv[4])); return 0;
 }
 '''
 
@@ -71,7 +77,7 @@ def main():
     source = args.source.read_text(encoding="utf-8")
     start = source.index('            if (u >= 0) {', source.index('getenv("HOS_GUEST_MEMFD")'))
     block = source[start:source.index('            if (!usable && !e)', start)]
-    selection = re.search(r'if \((e \? atoi\(e\) != 0 : usable)\)', source).group(1)
+    selection = re.search(r'if \((e \? !env_value_off\(e\) : usable && !no_dmabuf)\)', source).group(1)
     code = FIXTURE.replace("@@BLOCK@@", block).replace("@@SELECTION@@", selection)
     with tempfile.TemporaryDirectory(prefix="udmabuf-selection-") as folder:
         root = Path(folder)
@@ -79,11 +85,12 @@ def main():
         def check(text):
             c, exe = root / "fixture.c", root / "fixture"
             c.write_text(text, encoding="utf-8")
-            subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)],
+            subprocess.run([args.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "gpu/vk/compat"), str(c),
+                            "-o", str(exe)],
                            check=True, timeout=60)
             failures = []
-            for label, device, limit, override, expected in CASES:
-                result = subprocess.run([str(exe), str(device), limit, override], check=True,
+            for label, device, limit, override, expected, *no_dmabuf in CASES:
+                result = subprocess.run([str(exe), str(device), limit, override, *(no_dmabuf or ["0"])], check=True,
                                         capture_output=True, text=True, timeout=10)
                 actual = tuple(map(int, result.stdout.strip().split(",")))
                 if actual != expected:
@@ -91,7 +98,7 @@ def main():
             return failures
 
         assert not (failures := check(code)), failures
-        print("PASS: 16 production startup-selection cases; no real device or process setting changed")
+        print("PASS: %d production startup-selection cases; no real device or process setting changed" % len(CASES))
         if args.mutations:
             mutations = [
                 ("fallback lost", "limit_mb = 64;", "limit_mb = 0;"),
@@ -100,6 +107,7 @@ def main():
                  'if (fscanf(f, "%llu", &limit_mb) != 1) limit_mb = 64;'),
                 ("explicit off ignored", selection, "e ? usable : usable"),
                 ("explicit on ignored", selection, "e ? 0 : usable"),
+                ("no dma-bufs ignored", selection, "e ? !env_value_off(e) : usable"),
             ]
             for label, before, after in mutations:
                 assert code.count(before) == 1, label

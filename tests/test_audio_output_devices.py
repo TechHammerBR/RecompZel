@@ -54,6 +54,13 @@ def check_host_callbacks(api, backend):
     fields = [re.search(r'\(\*(\w+)\)', d).group(1) if '(*' in d else d.split()[-1]
               for d in body.split(';') if d.strip()]
     body = code(backend.split('static const MkwVkHost vk_host = {', 1)[1].split('};', 1)[0])
+    # (a slot one system fills and the other leaves empty, as version 36's: #ifdef _WIN32 <value> #else NULL #endif. Each
+    # branch must fill the same slots, or the table shifts on one system; the Windows branch stands for both.)
+    def one_system(match):
+        win, other = ([v for v in branch.split(',') if v.strip()] for branch in match.group(1, 2))
+        assert len(win) == len(other), 'The #ifdef _WIN32 branches of vk_host fill different numbers of slots'
+        return match.group(1)
+    body = re.sub(r'#ifdef _WIN32\n(.*?)#else\n(.*?)#endif', one_system, body, flags=re.S)
     table = [value.strip() for value in body.split(',') if value.strip()]
     expected = {'take_text': 'host_take_text', 'options_path': 'hos_options_file',
                 'audio_output_count': 'hos_audio_output_count', 'audio_output_info': 'hos_audio_output_info',
@@ -61,15 +68,18 @@ def check_host_callbacks(api, backend):
                 'mic_test': 'hos_mic_test', 'main_thread_times': 'host_main_thread_times',
                 'out_of_memory': 'host_out_of_memory',
                 'monitor_count': 'hos_monitor_count', 'monitor_info': 'hos_monitor_info',
-                'monitor_select': 'hos_monitor_select'}
+                'monitor_select': 'hos_monitor_select',
+                'ab_frame': 'hos_ab_frame', 'vulkan_loader_proc': 'host_vulkan_loader_proc'}
     assert len(fields) == len(table), 'Host interface/initializer lengths differ'
     # (the end of the table: playback, the microphone test (28), the frame trace's main_thread_times (29), the renderer's
-    # out_of_memory (30), the fullscreen monitor's three (31), the rumble test (33) and the NFC tab's seven (34); take_text
-    # and options_path come earlier, the mods' and cheats' callbacks between them and playback)
+    # out_of_memory (30), the fullscreen monitor's three (31), the rumble test (33), the NFC tab's seven (34), the A/B's
+    # ab_frame (35) and the Windows loader's vulkan_loader_proc (36); take_text and options_path come earlier, the mods' and
+    # cheats' callbacks between them and playback)
     tail = ['audio_output_count', 'audio_output_info', 'audio_output_select', 'audio_output_state', 'mic_test',
             'main_thread_times', 'out_of_memory', 'monitor_count', 'monitor_info', 'monitor_select', 'rumble_test',
-            'nfc_count', 'nfc_name', 'nfc_tap', 'nfc_state', 'nfc_dir', 'nfc_scan', 'nfc_scan_name']
-    assert fields[-len(tail):] == tail, 'Mic test must follow playback (29 appends main_thread_times, 30 out_of_memory, 31 the monitor callbacks, 33 the rumble test, 34 NFC)'
+            'nfc_count', 'nfc_name', 'nfc_tap', 'nfc_state', 'nfc_dir', 'nfc_scan', 'nfc_scan_name',
+            'ab_frame', 'vulkan_loader_proc']
+    assert fields[-len(tail):] == tail, 'Mic test must follow playback (29 appends main_thread_times, 30 out_of_memory, 31 the monitor callbacks, 33 the rumble test, 34 NFC, 35 ab_frame, 36 vulkan_loader_proc)'
     assert fields.index('take_text') < fields.index('options_path') < fields.index('audio_output_count'), \
         'take_text and options_path must come before playback'
     for field, value in expected.items():

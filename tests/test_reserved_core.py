@@ -19,6 +19,7 @@ CreateThread thread and a registered thread that calls ExitThread each give thei
 python -I -B tests/test_reserved_core.py [--cxx clang++] [--cc clang]
 """
 import argparse
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -244,7 +245,8 @@ static Host host_v = {
 };
 static Host* host = &host_v;
 static bool async_on() { return false; }
-static const uint8_t* memory_as_submitted(uint64_t, const uint8_t* p, uint64_t, std::vector<uint8_t>&) { return p; }
+static const uint8_t* memory_as_submitted(uint64_t, const uint8_t* p, uint64_t, std::vector<uint8_t>&, bool = false,
+                                         bool = false) { return p; }
 @REPLAY@
 @TEXTURE@
 }
@@ -337,6 +339,9 @@ def threads_check(cxx, cc):
                      block(replay, 'struct ReplayPin {') + ';'])
     texture = (ROOT / 'gpu/vk/vk_texture.cpp').read_text(encoding='utf-8')
     gather = block(texture, 'const uint8_t* guest_bytes(uint64_t gpu, uint64_t n, std::vector<uint8_t>& scratch) {')
+    # (issue 66: the gather hands memory_as_submitted the upload's two thread-local marks, declared above it)
+    marks = [line for line in texture.splitlines() if re.match(r'thread_local bool tl_(first_upload|reupload) = false;$', line)]
+    gather = '\n'.join(marks) + '\n' + gather
     helpers = block(texture, 'void helper_thread_start() {') + '\n' if 'void helper_thread_start() {' in texture else ''
     escape = (ROOT / 'gpu/vk/cxx_escape.h')   # (the gather's helper threads: fork_join)
     escape = '#include "%s"\n' % escape.as_posix() if escape.exists() else ''

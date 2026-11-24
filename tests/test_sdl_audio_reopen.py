@@ -28,6 +28,8 @@ DRIVER = r'''#include <windows.h>
 #include <stdlib.h>
 #include <time.h>
 void hos_log(const char *fmt, ...) { va_list a; va_start(a, fmt); vfprintf(stderr, fmt, a); va_end(a); fputc('\n', stderr); }
+/* (host/audio_output_devices.c: no output device chosen in the options, so the default device opens, as this test needs) */
+void hos_audio_output_preference(char *id, int capacity, unsigned *generation) { (void)id, (void)capacity, (void)generation; }
 
 static int played(WAVEHDR *h) {   /* (the device's callback took the block within 2 s) */
     for (int i = 0; i < 400; i++) {
