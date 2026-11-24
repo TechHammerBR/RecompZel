@@ -393,7 +393,7 @@ def pixel_fixture(source):
     # Use the actual mask expression and the patched FSR shader that consumes it.
     shader = (source / "gpu/vk/shaders/fg_hud.comp").read_text(encoding="utf-8")
     alpha = re.search(r"imageStore\(dst, g, vec4\(shown, (.*?)\)\);", shader)[1]
-    tool = ast.parse((source / "scripts/shaders.py").read_text(encoding="utf-8"))
+    tool = ast.parse((source / "scripts/fsr3_shaders.py").read_text(encoding="utf-8"))
     patches = next(node.value for node in tool.body if isinstance(node, ast.Assign)
                    and any(isinstance(target, ast.Name) and target.id == "FI_PATCHES" for target in node.targets))
     patched = "\n".join(edit.elts[1].value for edits in patches.values for edit in edits.elts
