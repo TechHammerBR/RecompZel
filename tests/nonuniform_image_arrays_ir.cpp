@@ -56,7 +56,10 @@ struct {
         VkBool32 shaderBufferInt64Atomics = 1;
         bool shaderStorageImageArrayNonUniformIndexing = false, shaderUniformTexelBufferArrayNonUniformIndexing = false,
              shaderStorageTexelBufferArrayNonUniformIndexing = false;
+        bool shaderInt8 = true;   // (make_profile: 8-bit integers where the GPU has them)
     } vk12;
+    struct { bool shaderInt16 = true; } features;   // (and 16-bit)
+    bool mesh_shader = true;   // (the stages' profile with task and mesh: a GPU with mesh shaders)
     struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
     // (device_policy.h's fields make_profile reads: no long warp path, no fragment shuffle fallback, no gather offset)
     struct { bool warp64 = false, frag_shuffle_fallback = false, gather_offset = false; } policy;

@@ -241,8 +241,9 @@ def check_device(tree):
     main = (tree / 'gpu/vk/vk_main.cpp').read_text(encoding='utf-8')
     device = section(main, 'bool create_device() {', 'vkCreateDevice(dev.physical, &ci', 'vk_main.cpp create_device')
     failures = []
+    # (the chain vkCreateDevice takes starts at the queried f: Intel XeSS's library may add what it needs to it, vk_xess.cpp)
     for text in ('f.pNext = &f11, f11.pNext = &f12', 'vkGetPhysicalDeviceFeatures2(dev.physical, &f);', 'dev.vk12 = f12;',
-                 'ci.pNext = &f;'):
+                 'void* chain = &f;', 'ci.pNext = chain;'):
         if text not in device:
             failures.append('create_device: no %r before vkCreateDevice' % text)
     if re.search(r'\.shader(StorageImage|UniformTexelBuffer|StorageTexelBuffer)ArrayNonUniformIndexing\s*=[^=]', main):

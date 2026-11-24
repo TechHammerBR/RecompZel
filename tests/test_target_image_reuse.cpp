@@ -44,12 +44,27 @@ struct Texture {
         uint32_t level;
     };
     std::vector<BlockAttachment> block_attachments;
+    uint64_t defer_frame = 0;   // (held back by the upload budget: 0, none here)
 };
+// (what the merged destroy_later and pool_cap read: the recording now, the caches' generation, the upload budget's held-back
+// textures, and what the driver allows (unknown here: target_pool.h's default for it, as at the first frame without it))
+uint64_t rec_value = 0;
+void logf(const char*, ...) {}
+bool vram_usage(uint64_t*, uint64_t*, uint64_t* = nullptr) { return false; }
+void destroy_gen_bump(const Texture*) {}
+void defer_note_done(Texture&, bool) {}
 
 /* DEAD */
 std::deque<Dead> dead;
 
+// (the cut inside vk_texture.cpp's own scopes, mkwvk and an unnamed namespace in it: its pool variable target_pool is found by
+// plain name, and target_pool:: is target_pool.h's namespace, as there)
+namespace mkwvk {
+namespace {
 /* ACTUAL */
+}  // namespace
+}  // namespace mkwvk
+using namespace mkwvk;
 
 static int fails = 0;
 #define CHECK(c)                                                          \
@@ -106,7 +121,7 @@ int main() {
         CHECK(taken_image == image);
         CHECK(taken_allocation == allocation);
         CHECK(taken_views.size() == 1 && taken_views.begin()->second == view);
-        CHECK(st_pool_reused == 1 && st_pool_destroyed == 0);
+        CHECK(st_pool_reused == 1 && st_pool_destroyed == 0 && st_pool_made == 0);   // (reused: none made for it)
         CHECK(destroyed_images == 0 && destroyed_views == 0);
         CHECK(pool_n == 0 && pool_bytes == 0);
         CHECK(total_bytes == 0);

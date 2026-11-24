@@ -83,6 +83,12 @@ struct {
     VkPhysicalDevice physical = VK_NULL_HANDLE;
 } dev;
 void logf(const char*, ...) {}
+// (what the merged pipeline build and bind read: RX_VK_PCACHE_MISSES' feedback, RX_VK_RES_LOG and RX_VK_LEDGER, all off here)
+bool pcache_misses_only() { return false; }
+bool res_log_on() { return false; }
+void res_note_pipeline_use(VkPipeline) {}
+enum : uint16_t { kUseVertex = 1 };   // (vk_ledger.h's use bits: a vertex buffer's)
+void ledger_mark(uint64_t, uint64_t, uint16_t) {}
 void pin_subgroup(VkPipelineShaderStageCreateInfo&) {}
 VkFormat vertex_format(int fmt) { return fmt == 1 ? VK_FORMAT_R32_SFLOAT : VK_FORMAT_UNDEFINED; }
 VkFormat supported_vertex_format(VkFormat fmt) { return fmt; }
