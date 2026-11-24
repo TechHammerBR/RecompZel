@@ -501,7 +501,8 @@ def main():
             code.append(block(replay, marker))
     source = (PREFIX.replace("@@NVN@@", clear[0]).replace("@@BUFFERREF@@", block(internal, "struct BufferRef {")) +
               "\n".join(code) +
-              SUFFIX.replace("@@PAYLOAD@@", "template <class T>\n" + block(replay, "T payload(const uint8_t* a, uint32_t bytes)"))
+              SUFFIX.replace("@@PAYLOAD@@", block(replay, "void payload_short(void* v, const uint8_t* a, uint32_t bytes)") + "\n"   # (its short copy)
+                                   "template <class T>\n" + block(replay, "T payload(const uint8_t* a, uint32_t bytes)"))
                     .replace("@@CLEAR@@", block(replay, "case NOP_CLEAR_BUF: {")))
     with tempfile.TemporaryDirectory(prefix="replay-write-order-") as tmp:
         cpp, exe = Path(tmp) / "t.cpp", Path(tmp) / ("t.exe" if os.name == "nt" else "t")

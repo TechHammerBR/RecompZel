@@ -41,7 +41,8 @@ void destroy_image(VkImage image, VmaAllocation) {
 // Keep submission code real; the queue executes captured command buffers only on advance().
 struct Recording { int slot = 0; VkCommandBuffer cmd{}, upload{}; VkFence fence{}; uint64_t value = 0, batch = 0, part = 0; bool submitted = false; };
 Recording* rec_cur = nullptr;
-uint64_t done_max = 20, oldest = UINT64_MAX, rec_seq = 0, batch_next = 0, batch_flushed = 0;
+uint64_t done_max = 20, oldest = UINT64_MAX, rec_seq = 0, batch_next = 0;
+uint64_t batch_flushed = 1;   // (with the batch timeline at 0 below: the GPU still busy, so no idle flush, as batch_gpu_idle says)
 VkSemaphore rec_timeline = reinterpret_cast<VkSemaphore>(uintptr_t(2));
 VkSemaphore batch_tl = reinterpret_cast<VkSemaphore>(uintptr_t(3));
 std::mutex rec_map_mu;
@@ -102,6 +103,11 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(VkQueue, uint32_t count, const VkS
     }
     queued.push_back(q); return VK_SUCCESS;
 }
+// (vk_replay.cpp: the submit made again after a refusal for want of memory goes to the queue as it is here; the host-read
+// barrier before a readback does nothing here)
+VkResult submit_or_retry(const VkSubmitInfo2& si, VkFence fence) { return vkQueueSubmit2(VK_NULL_HANDLE, 1, &si, fence); }
+void host_read_barrier(VkCommandBuffer) {}
+VKAPI_ATTR VkResult VKAPI_CALL vkGetSemaphoreCounterValue(VkDevice, VkSemaphore, uint64_t* value) { *value = 0; return VK_SUCCESS; }
 void advance() {
     need(!queued.empty(), "queued GPU work");
     auto q = queued.front(); queued.pop_front();
