@@ -28,6 +28,11 @@ Changes made here after the copy (against Hookshot's first import of it, commit 
 - Hookshot: `lift/a64_lift.py`'s fast float checks are kept by the instruction's text (`ff_joins`, `ff_convs`,
   `fp_is_frame_kept`, marked `(hookshot)`): the same C, the lift a third quicker on Windows.
 - Hookshot: `ff_region` takes `ff_min()` from its caller, read once a function (`least`, marked `(hookshot)`).
+- Hookshot, merged 2026-11-21 with the entries above (commit `e59d549`): `lift/a64_lift.py`'s fast float regions
+  (`fastfp_mode`, `ff_region`, `FASTFP_HEADER`; `A64_FASTFP=0` turns them off, `A64_FASTFP_MIN` their least size) and
+  the hot functions' float helpers on the host's own arithmetic (`NATIVE_FP`, `a64_hot_fp.inc`; `A64_NATIVE_FP=0`
+  turns them off). That commit recorded a tree-sha256 its own tree did not have; it was recorded again from the
+  same files on 2026-11-24, unchanged.
 
 So the copy can no longer be refreshed by copying the files again: a refresh keeps these changes, and the tree-sha256
 below is this folder's, not upstream's (python -I scripts/check_third_party.py).
@@ -35,4 +40,4 @@ below is this folder's, not upstream's (python -I scripts/check_third_party.py).
 Licensing: `lift/suyu/arm64_to_c.h` is suyu's (GPL-2.0-or-later, texts in `lift/suyu/`), so `a64emit.dll`, the
 generated runtime and all lifted C are GPL. See `NOTICE.TOTKPort.md`.
 
-tree-sha256: 62e2b3b6441109ccfce200785d57c114292887e5184c12f8c604893cf4dbd0a4
+tree-sha256: a9f65e695d570892e9f58ec8b98a270a9e0639c5e5f9b808b9e75732facb37c6

@@ -15,7 +15,9 @@ install() is run by nx2/lift.py at its module level.
 """
 import a64_lift
 
-KIT_TREE = "62e2b3b6441109ccfce200785d57c114292887e5184c12f8c604893cf4dbd0a4"   # (a64-kit's tree-sha256 the kit's walk was compared at)
+KIT_TREE = "a9f65e695d570892e9f58ec8b98a270a9e0639c5e5f9b808b9e75732facb37c6"   # (a64-kit's tree-sha256 the kit's walk was compared at)
+# (2026-11-24: the tree e59d549 left, its hash recorded again; Lifter.walk is the same text as at 4da0fa2, and test_walk's
+# comparison of the two walks passes)
 
 _installed = False
 
