@@ -366,7 +366,15 @@ def main():
         if fn in draw or key_h.count(fn) != 1:
             raise SystemExit("draw_key.h is not the one place that defines " + fn)
     wrapper = block(draw, "uint64_t pipeline_key(const Program& p, const NvnState& s, const Targets& at, VkPrimitiveTopology topo) {")
-    if "return pipeline_key(key_inputs(p, s, at, topo));" not in wrapper or "mix(" in wrapper:
+    # (the key from a seed, so that the shader ledger can seed it with a program's fingerprint (pipeline_key_from): the
+    # wrapper's seed is the one draw_key.h's pipeline_key takes, mix(prog, variant), and key_inputs copies both from the program)
+    seeded = block(draw, "static uint64_t pipeline_key_from(uint64_t seed, const Program& p, const NvnState& s, const Targets& at, "
+                         "VkPrimitiveTopology topo) {")
+    inputs = block(draw, "KeyInputs key_inputs(")
+    if "return pipeline_key_from(mix(p.key, p.variant), p, s, at, topo);" not in wrapper or \
+            "return pipeline_key_seeded(key_inputs(p, s, at, topo), seed);" not in seeded or "mix(" in seeded or \
+            "k.prog = p.key, k.variant = p.variant;" not in inputs or \
+            "inline uint64_t pipeline_key(const KeyInputs& k) { return pipeline_key_seeded(k, mix(k.prog, k.variant)); }" not in key_h:
         raise SystemExit("vk_draw.cpp's pipeline_key does not make its key with draw_key.h's")
     reads = block(draw, "KeyInputs key_inputs(")
     if "mix(" in reads:
@@ -382,7 +390,7 @@ def main():
                    .replace("@TARGETS@", block(draw, "struct Targets {"))
                    .replace("@TARGET_WRITE_MASK@", block(draw, "uint32_t target_write_mask(const Program& p, const NvnState& s, int i) {"))
                    .replace("@VERTEX_INFO@", block(draw, "const Shader::Info* vertex_info(const Program& p) {"))
-                   .replace("@KEY_INPUTS@", reads).replace("@PIPELINE_KEY@", wrapper)
+                   .replace("@KEY_INPUTS@", reads).replace("@PIPELINE_KEY@", seeded + "\n" + wrapper)
                    .replace("@KEYS@", "\n".join(draw_code(c, pipeline_key(c)) for c in cases)))
     with tempfile.TemporaryDirectory(prefix="pipeline-key-") as tmp:
         for name, text in (("alone", alone), ("draw", from_a_draw)):

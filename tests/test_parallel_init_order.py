@@ -68,10 +68,12 @@ def main():
     create = create[create.index("\n") + 1:]   # (from the line after: the image's initialization, to its Texture*)
     if "// into GENERAL, and cleared" not in create or "Texture* p = tex.get();" not in create:
         raise SystemExit("create()'s initialization moved: update this test")
-    jobs = cut(replay, "    struct Job {", "    seg_ms += std::chrono::duration")
+    # (replay_handle's segments: replay_handle_early, which no caller reaches, has a Job of its own above it)
+    jobs = cut(replay, "    struct Job {", "    seg_ms += std::chrono::duration",
+               after="const uint8_t* replay_handle(VkCommandBuffer& cmd")
     have_seg_init = "std::mutex seg_init_mu;" in texture
     exits = {"init_end_fail": 3} if have_seg_init else {}   # (replay_fatal ends the process)
-    for step in ("record_segment(c, j->g);", "texture_begin_recording(j->r->upload, j->r->value);", "vkQueueSubmit2(",
+    for step in ("record_segment(c, j->g);", "texture_begin_recording(j->r->upload, j->r->value);", "submit_or_retry(",
                  "j->uploads = texture_uploads_recorded();", "par_pool.cv.notify_all();"):
         if step not in jobs:
             raise SystemExit("the parallel block no longer has: " + step)
@@ -106,6 +108,7 @@ def main():
             (folder / name).write_text(text + "\n", encoding="utf-8")
         binary = folder / "fixture.exe"
         command = [compiler, "-std=c++20", "-O1", "-w", "-I" + str(folder), "-I" + str(args.headers),
+                   "-include", str(vk / "fps_stats.h"),   # (the FPS counter's render lane names: init_jobs.inc)
                    "-DHAVE_SEG_INIT=%d" % have_seg_init, "-DHAVE_INIT_POOLS=%d" % have_pools,
                    str(ROOT / "tests" / "parallel_init_order_test.cpp"), "-o", str(binary)]
         command += [] if os.name == "nt" else ["-pthread"]

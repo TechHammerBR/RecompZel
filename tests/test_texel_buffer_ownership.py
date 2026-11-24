@@ -42,9 +42,10 @@ def main():
         eviction,
     ])
     # Rollback, prefetch drops, a trim's rollback (mirrors_trim) and both published-import reapers must share the same
-    # owner-release point.
+    # owner-release point. (11: bg_drain also drops a chunk imported ahead that an import made since overlaps in part,
+    # which keeps the pools disjoint; it releases as the redundant chunk above it does)
     assert memory.count("vkDestroyBuffer(") == 1
-    assert memory.count("destroy_import_buffer(") == 10
+    assert memory.count("destroy_import_buffer(") == 11
     fixture = (ROOT / "tests/texel_buffer_ownership_test.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("/* DEAD IMPORT */", block(memory, "struct DeadImport {") + ";")
     fixture = fixture.replace("/* ACTUAL */", actual)
