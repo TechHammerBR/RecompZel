@@ -28,11 +28,9 @@ Changes made here after the copy (against Hookshot's first import of it, commit 
 - Hookshot: `lift/a64_lift.py`'s fast float checks are kept by the instruction's text (`ff_joins`, `ff_convs`,
   `fp_is_frame_kept`, marked `(hookshot)`): the same C, the lift a third quicker on Windows.
 - Hookshot: `ff_region` takes `ff_min()` from its caller, read once a function (`least`, marked `(hookshot)`).
-- Hookshot, merged 2026-11-21 with the entries above (commit `e59d549`): `lift/a64_lift.py`'s fast float regions
-  (`fastfp_mode`, `ff_region`, `FASTFP_HEADER`; `A64_FASTFP=0` turns them off, `A64_FASTFP_MIN` their least size) and
-  the hot functions' float helpers on the host's own arithmetic (`NATIVE_FP`, `a64_hot_fp.inc`; `A64_NATIVE_FP=0`
-  turns them off). That commit recorded a tree-sha256 its own tree did not have; it was recorded again from the
-  same files on 2026-11-24, unchanged.
+- Hookshot, merged 2026-11-18 from the other port (commit `0884419c`): `lift/a64_lift.py`'s hot functions' float
+  helpers on the host's own arithmetic (`NATIVE_FP`, `a64_hot_fp.inc`; `A64_NATIVE_FP=0` turns them off). That merge
+  left the tree-sha256 below as it was; it was recorded again from the same files on 2026-11-24, unchanged.
 
 So the copy can no longer be refreshed by copying the files again: a refresh keeps these changes, and the tree-sha256
 below is this folder's, not upstream's (python -I scripts/check_third_party.py).
