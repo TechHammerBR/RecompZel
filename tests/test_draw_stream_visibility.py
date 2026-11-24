@@ -33,7 +33,10 @@ def main():
     flush = block(draw, "void draw_flush_recording(") if "void draw_flush_recording(" in draw else ""
     fixture = fixture.replace("/* FLUSH */", flush).replace("/* BEGIN */", block(draw, "void draw_begin_recording("))
     fixture = fixture.replace("/* SUBMIT */", block(replay, "void submit_recording("))
-    start = replay.index("        if (j->inits < 0) init_lost = true;")
+    # (the segments replay_handle submits as each is done: replay_handle_early, which no caller reaches, has a block of the same
+    # start above it)
+    start = replay.index("        if (j->inits < 0) init_lost = true;",
+                         replay.index("const uint8_t* replay_handle(VkCommandBuffer& cmd"))
     end = replay.index("        if (res == VK_ERROR_DEVICE_LOST) device_lost();", start)
     end += len("        if (res == VK_ERROR_DEVICE_LOST) device_lost();")
     fixture = fixture.replace("/* SEGMENT */", replay[start:end])

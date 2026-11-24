@@ -65,7 +65,9 @@ std::atomic<uint64_t> stream_extra{0},stream_grown{0},stream_peak{0},pools_extra
 VkCommandBuffer rec_cmd{};
 uint64_t rec_value=0,targets_serial=0;
 VkBuffer zero_buffer{}; VmaAllocation zero_alloc{};
-VkDescriptorPool make_pool() { return handle<VkDescriptorPool>(); }
+VkDescriptorPool make_pool(uint32_t = 0) { return handle<VkDescriptorPool>(); }   // (vk_draw.cpp: the shift sizes it; a handle here)
+uint32_t pool_shift_first() { return 1; }   // (vk_draw.cpp's default: a slot's first pool at half the size)
+std::atomic<uint64_t> pools_grown{0};
 VKAPI_ATTR VkResult VKAPI_CALL vkResetDescriptorPool(VkDevice,VkDescriptorPool,VkDescriptorPoolResetFlags) { return VK_SUCCESS; }
 VKAPI_ATTR void VKAPI_CALL vkDestroyDescriptorPool(VkDevice,VkDescriptorPool,const VkAllocationCallbacks*) {}
 struct Pass {}; Pass& pass() { static Pass p;return p; }
@@ -80,6 +82,11 @@ std::array<ViewFast, 1024>& view_fast() { static thread_local std::array<ViewFas
 struct BankCache { uint64_t at=0; };
 std::array<std::array<BankCache,2>,2>& bank_cache() { static std::array<std::array<BankCache,2>,2> b;return b; }
 void make_dummies() {}
+// (vk_draw.cpp's per-program descriptor slots, emptied by a new recording past 8192: nothing kept here)
+std::unordered_map<const void*,int>& prog_slots() { static thread_local std::unordered_map<const void*,int> m; return m; }
+// (vk_fps.h: the FPS counter's render lane times a wait; fps_stats.h is the real one, included by the test)
+namespace fps_stats = mkwvk::fps_stats;
+struct FpsRtWait { explicit FpsRtWait(int) {} };
 /* BEGIN */
 struct Use { BufferRef ref;std::vector<uint8_t> expected; };
 std::vector<Use> pending;

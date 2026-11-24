@@ -41,6 +41,15 @@ std::atomic<uint64_t> work_epoch{0};
 VkCommandBuffer last_barrier_cmd{};
 uint64_t last_barrier_epoch=UINT64_MAX;
 std::atomic<int64_t> st_barriers_left_out{0}, st_barriers_made{0};
+// (the rest of full_barrier's state, as vk_texture.cpp and vk_work.h keep it: the parallel replay's dedupe (off: par_active is
+// false) and the trust points' counts, which this test does not read; the slots hashed as vk_work.h hashes them)
+std::atomic<uint64_t> foreign_work{0}, other_work_by_cmd[64], xfer_work_by_cmd[64], all_work_by_cmd[64];
+inline std::atomic<uint64_t>& other_work_slot(VkCommandBuffer c){const uintptr_t v=(uintptr_t)c;return other_work_by_cmd[((v>>4)^(v>>10)^(v>>16))&63];}
+inline std::atomic<uint64_t>& all_work_slot(VkCommandBuffer c){const uintptr_t v=(uintptr_t)c;return all_work_by_cmd[((v>>4)^(v>>10)^(v>>16))&63];}
+std::atomic<int64_t> st_barriers_left_out_par{0};
+uint64_t last_barrier_cmd_work=0, last_barrier_foreign=0, last_barrier_other=0, last_barrier_xfer=0;
+bool barrier_dedupe_par_on(){return false;}
+void note_trust_point(VkCommandBuffer){}
 struct GprofSpan { GprofSpan(VkCommandBuffer,const char*){} };
 void logf(const char* format,...) {
     char b[2048];va_list a;va_start(a,format);vsnprintf(b,sizeof b,format,a);va_end(a);lines.emplace_back(b);
