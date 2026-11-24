@@ -90,7 +90,7 @@ SW(HOS_HEAP_SPLIT_COLD, attempt, int, "unset: off", "With HOS_HEAP_SPLIT, above 
 SW(HOS_HLE_STATS, diag, bool, "off", "Counts each HLE function's and host call's calls and logs them about every 5 s.")
 SW(HOS_HOSTCALL_SLOW, kill, bool, "host calls without user data are called directly as plain functions", "=1 sends every host call through the slower a64_call_miss path, as before the direct call.")
 SW(HOS_HOSTCALL_STATS, diag, bool, "off", "Counts host calls and keeps the last 256; printed at exit (or at HOS_STATS_AFTER).")
-SW(HOS_HOST_SPLIT, diag, bool, "off", "Names the renderer's mapped allocations by kind, for the host's split of its memory (host/hos_hostsplit.c).")
+SW(HOS_HOST_SPLIT, diag, int, "unset: off", "<seconds>[,<every>]: that long in (then every <every> seconds) and at exit, counts the process's memory outside the game's by owner, naming the renderer's mapped allocations by kind (host/hos_hostsplit.c).")
 SW(HOS_HUD_FULL_RATIO, tune, float, "1.5 (3:2)", "Sets the aspect ratio below which the 16:9 HUD is drawn smaller.")
 SW(HOS_HUD_MAX_RATIO, tune, float, "2.4 (12:5)", "Sets the aspect ratio past which the HUD's side moves stop (0: the screen's edges at any width).")
 SW(HOS_INPUT_BACKGROUND, player, bool, "the menu's Controller in background row (off)", "Controllers and motion count while another window has the focus (1), or never (0), over the menu.")

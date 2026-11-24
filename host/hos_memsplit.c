@@ -4,6 +4,7 @@
    data, uniform blocks), by the pool's flags. A measurement for docs/native-engine/memory-boundary.md: RAM is the
    resident pages, not the committed ones. Windows only. */
 #include "hos.h"
+#include "../gpu/vk/compat/hookshot_env.h"
 #include "hos_guestpages.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -604,8 +605,7 @@ static DWORD WINAPI trap_main(void *p) {
 
 static void trap_init(void) {
     const char *e = getenv("HOS_POOL_TRAP");
-    const char *nw = getenv("HOS_POOL_TRAP_NEW");
-    const int fresh = nw && atoi(nw) != 0;
+    const int fresh = env_on("HOS_POOL_TRAP_NEW");
     if (!fresh && !(e && atoi(e) > 0)) return;
     const char *fl = getenv("HOS_POOL_TRAP_FLAGS");
     if (!fl || !*fl) fl = "24,64,22";
