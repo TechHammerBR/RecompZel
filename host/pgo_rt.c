@@ -50,12 +50,20 @@ extern const char __stop___llvm_prf_names[] __attribute__((weak, visibility("hid
 #define PGO_NAM_END __stop___llvm_prf_names
 #endif
 
-/* (raw format 10 for clang 22 and older, a Linux system's: 64-byte records, no uniform counter fields in the header; 11 after) */
-#if defined(__clang_major__) && __clang_major__ <= 22
-enum { DATA_SIZE = 64, RAW_VERSION = 10 };
+/* (raw format 9 for clang 18, Ubuntu 24.04's: 64-byte records, no vtable fields in the header and two value kinds; 10 for clang 19
+   to 22: the vtables' two header fields and a third value kind; 11 after: uniform counter fields too. Format 9's header and
+   IPVK_Last are clang 18's own (lib/clang/18/include/profile/InstrProfData.inc: INSTR_PROF_RAW_VERSION 9)) */
+#if defined(__clang_major__) && __clang_major__ <= 18
+enum { DATA_SIZE = 64, RAW_VERSION = 9, VALUE_KIND_LAST = 1 };
+#define RAW_VERSION_10_FIELDS 0
+#define RAW_VERSION_11_FIELDS 0
+#elif defined(__clang_major__) && __clang_major__ <= 22
+enum { DATA_SIZE = 64, RAW_VERSION = 10, VALUE_KIND_LAST = 2 };
+#define RAW_VERSION_10_FIELDS 1
 #define RAW_VERSION_11_FIELDS 0
 #else
-enum { DATA_SIZE = 72, RAW_VERSION = 11 };
+enum { DATA_SIZE = 72, RAW_VERSION = 11, VALUE_KIND_LAST = 2 };
+#define RAW_VERSION_10_FIELDS 1
 #define RAW_VERSION_11_FIELDS 1
 #endif
 
@@ -64,7 +72,7 @@ static void pgo_write(const char *path) {
     const uint64_t ndata = (uint64_t)(de - db) / DATA_SIZE, ncnt = (uint64_t)(ce - cb) / 8, nnames = (uint64_t)(ne - nb);
     const uint64_t header[] = {
         0xff6c70726f667281ULL,        /* magic: \xfflprofr\x81 */
-        RAW_VERSION,                  /* (11: the format llvm-profdata 24 reads; 10 for clang 22) */
+        RAW_VERSION,                  /* (11: the format llvm-profdata 24 reads; 10 for clang 19-22; 9 for clang 18) */
         0,                            /* binary ids */
         ndata, 0, ncnt, 0,
         0, 0,                         /* bitmap */
@@ -75,8 +83,10 @@ static void pgo_write(const char *path) {
         (uint64_t)(uintptr_t)cb - (uint64_t)(uintptr_t)db,   /* CountersDelta */
         (uint64_t)0,                  /* BitmapDelta */
         (uint64_t)(uintptr_t)nb,      /* NamesDelta */
+#if RAW_VERSION_10_FIELDS
         0, 0,                         /* vtables */
-        2,                            /* ValueKindLast (IPVK_Last) */
+#endif
+        VALUE_KIND_LAST,              /* ValueKindLast (IPVK_Last) */
     };
     FILE *f = fopen(path, "wb");
     if (!f) return;
