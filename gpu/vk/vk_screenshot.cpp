@@ -76,13 +76,24 @@ bool screenshot_write(const std::string& path, const uint8_t* rgba, uint32_t w, 
         bgr[i * 3 + 1] = rgba[i * 4 + 1];
         bgr[i * 3 + 2] = rgba[i * 4 + 0];
     }
-    const HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);   // (this worker thread's own; S_FALSE: already was)
+    // (ole32's three functions loaded at their first use, as vk_menu.cpp's share_proc loads its own: hookshot_vk.dll imports only
+    // kernel32, user32, gdi32, advapi32 and the UCRT, which the DLSS workflow's import check holds it to. Without ole32 the
+    // picture is written without compression, as for any failure below)
+    using CoInitFn = HRESULT(WINAPI*)(void*, DWORD);
+    using CoUninitFn = void(WINAPI*)();
+    using CoCreateFn = HRESULT(WINAPI*)(REFCLSID, IUnknown*, DWORD, REFIID, void**);
+    static const HMODULE ole32 = LoadLibraryExW(L"ole32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    static const auto co_init = ole32 ? (CoInitFn)(void*)GetProcAddress(ole32, "CoInitializeEx") : nullptr;
+    static const auto co_uninit = ole32 ? (CoUninitFn)(void*)GetProcAddress(ole32, "CoUninitialize") : nullptr;
+    static const auto co_create = ole32 ? (CoCreateFn)(void*)GetProcAddress(ole32, "CoCreateInstance") : nullptr;
+    const HRESULT co = co_init && co_uninit ? co_init(nullptr, COINIT_MULTITHREADED) : E_FAIL;   // (this worker thread's own; S_FALSE: already was)
     IWICImagingFactory* factory = nullptr;
     IWICStream* stream = nullptr;
     IWICBitmapEncoder* encoder = nullptr;
     IWICBitmapFrameEncode* frame = nullptr;
     WICPixelFormatGUID format = GUID_WICPixelFormat24bppBGR;
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_IWICImagingFactory, (void**)&factory);
+    HRESULT hr = co_create ? co_create(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_IWICImagingFactory, (void**)&factory)
+                           : E_FAIL;
     const char* step = "the imaging factory";
     if (SUCCEEDED(hr)) step = "the stream", hr = factory->CreateStream(&stream);
     if (SUCCEEDED(hr)) step = "the file", hr = stream->InitializeFromFilename(wide, GENERIC_WRITE);
@@ -100,7 +111,7 @@ bool screenshot_write(const std::string& path, const uint8_t* rgba, uint32_t w, 
     release(encoder);
     release(stream);
     release(factory);
-    if (SUCCEEDED(co)) CoUninitialize();
+    if (SUCCEEDED(co)) co_uninit();
     if (FAILED(hr)) {
         logf("vk: screenshot: Windows' PNG encoder failed at %s (%#lx): written without compression", step, (unsigned long)hr);
         DeleteFileW(wide);   // (what the encoder left of it)
