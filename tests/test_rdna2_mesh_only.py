@@ -42,6 +42,10 @@ Device choose(unsigned vendor, unsigned device, int mesh_mode, const char* overr
     return dev;
 }
 
+// (make_profile's RADV workaround, which keeps NumWorkgroups live in native mesh shaders: the stamp keeps its programs apart)
+struct Profile { bool need_mesh_num_workgroups = false; } the_profile;
+const Profile& profile() { return the_profile; }
+
 uint32_t cache_mesh_key(const Device& dev) {
     @STAMP@;
     return mesh;
@@ -75,6 +79,10 @@ int main() {
     const Device rdna2 = choose(amd, rx6800xt, 0, "1");
     expect("the cache separates mesh-only and task-only fallback", cache_mesh_key(rdna2) != cache_mesh_key(other),
            TEST_WINDOWS);
+    const uint32_t plain = cache_mesh_key(rdna2);
+    the_profile.need_mesh_num_workgroups = true;
+    expect("the cache separates RADV's NumWorkgroups workaround", cache_mesh_key(rdna2) != plain, true);
+    the_profile.need_mesh_num_workgroups = false;
     Device compute = rdna2;
     compute.mesh_fallback = true;
     expect("global compute fallback handles mesh-only", compute.uses_mesh_fallback(false), true);
