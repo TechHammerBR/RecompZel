@@ -135,6 +135,7 @@ def find_tools():
         "glslang": which("glslangValidator", "glslang"),
         "dotnet": which("dotnet"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),
+        "cc": os.environ.get("CC") or which("gcc", "clang"),
     }
 
 
