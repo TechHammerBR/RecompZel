@@ -6151,6 +6151,11 @@ void draw_startup(ui::Ctx& c) {
 } // namespace
 
 void startup_fade_to(float f) { startup_fade.store(f, std::memory_order_relaxed); }
+void menu_shown_output(uint32_t& w, uint32_t& h) {
+    const Out o = shown_output();
+    w = o.w, h = o.h;
+}
+void menu_game_size(float scale, uint32_t& w, uint32_t& h) { game_size(scale, w, h); }
 
 // (hookshot, #1886) The Upscaler row's one-time questions: NVIDIA's NGX started (dlss_probe), AMD's FSR 4 loaded
 // (fsr4_probe), Intel's XeSS context made once (xess_probe), FSR 3.1's GPU check. They were asked at the menu's first open, on the frame's thread, and NGX's start
