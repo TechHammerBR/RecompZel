@@ -22,7 +22,8 @@ def main():
         raise SystemExit("C++ compiler not found: " + args.cxx)
     with tempfile.TemporaryDirectory(prefix="hookshot-texdecode-") as folder:
         exe = Path(folder) / "t"
-        r = subprocess.run([cxx, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "gpu" / "vk"),
+        # (-D_CRT_SECURE_NO_WARNINGS: the harness opens the vectors with fopen, which clang for MSVC calls deprecated)
+        r = subprocess.run([cxx, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", "-I", str(ROOT / "gpu" / "vk"),
                             str(ROOT / "tests" / "texdecode_astc_test.cpp"), str(ROOT / "gpu" / "vk" / "texdecode" / "astc.cpp"),
                             "-o", str(exe)], capture_output=True, text=True, timeout=300)
         if r.returncode:
