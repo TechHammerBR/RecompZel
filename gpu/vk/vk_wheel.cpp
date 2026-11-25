@@ -24,7 +24,7 @@
 #include "vk_internal.h"
 #include "vk_menu.h"
 #include "oot_wheel_state.h"
-#include "video_core/textures/astc.h"
+#include "texdecode/texdecode.h"   // (the icons' ASTC: the CPU decoder, ported code, texdecode/PROVENANCE.md)
 #ifndef _WIN32
 #include "vk_wheel_text.h"   // (third_party/imgui's stb_truetype: the labels' letters off Windows)
 
@@ -175,11 +175,8 @@ void icons_load() {
             name[sizeof name - 1] = 0;
             const uint32_t w = d[1], h = d[2];
             std::vector<uint8_t> rgba((size_t)w * h * 4);
-            try {
-                Tegra::Texture::ASTC::DecompressSerial(blocks, w, h, 1, 4, 4, rgba);
-            } catch (...) {
-                continue;
-            }
+            // (linear, an illegal block transparent black, as suyu's decoder wrote it before; a refused level is passed over)
+            if (mkwvk::texdecode::astc_decode(blocks, w, h, 1, 4, 4, false, rgba, mkwvk::texdecode::Rgba8{0, 0, 0, 0}) < 0) continue;
             // (to kIconPx, each output pixel the average of the source pixels under it, premultiplied)
             Icon ic;
             ic.name = name;
