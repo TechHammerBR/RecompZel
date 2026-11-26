@@ -83,6 +83,7 @@
 #include "host_shaders/block_linear_unswizzle_2d_comp_spv.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
+#include "texture_health.h"   // (recompzel: texture problems told with one prefix)
 #endif
 #include "cxx_escape.h"   // (fork_join: a helper that cannot be started at the commit limit leaves its part to the caller)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
@@ -2731,6 +2732,8 @@ void astc_error_blocks_told(const Texture& tex, uint64_t blocks) {
     std::lock_guard lk(mu);
     if (told.size() >= 16 || std::find(told.begin(), told.end(), tex.id) != told.end()) return;
     told.push_back(tex.id);
+    texture_problem(TexProblem::AstcIllegal, "#%u %ux%u NVN %#x: %llu illegal ASTC blocks drawn as transparent black", tex.id,
+                    tex.width, tex.height, tex.nvn_format, (unsigned long long)blocks);   // (recompzel)
     logf("vk: ASTC texture #%u %ux%u NVN %#x: %llu illegal blocks decoded as transparent black%s", tex.id, tex.width, tex.height,
          tex.nvn_format, (unsigned long long)blocks, told.size() == 16 ? " (no more such lines)" : "");
 }
@@ -4267,6 +4270,12 @@ bool upload_defer(Texture& tex) {
     static const int64_t budget_ns = (int64_t)(getenv("RX_VK_UPLOAD_BUDGET_MS") ? atof(getenv("RX_VK_UPLOAD_BUDGET_MS")) : 12.0) * 1000000;
     static const bool summed = env_on("RX_VK_UPLOAD_BUDGET_SUM");
     if (!budget_ns || !upload_defer_ok || tex.uploaded || !tex.astc || tex.gpu_written) return false;
+    // (recompzel) one held back is held at most RX_VK_UPLOAD_DEFER_FRAMES presents (2), then uploaded whatever the budget: while
+    // an area streams, every present's budget went to the uploads it never defers (other formats, the terrain's arrays) before
+    // the held ones were looked at again, and those waited 1,760-1,940 presents (29-32 s) sampled as the dummy: the Kokiri
+    // Forest's cliffs and Hyrule Field's ground flat and smeared at 120 fps (RTX 4080, 2026-11-26, the "in at last" lines)
+    static const uint64_t max_hold = getenv("RX_VK_UPLOAD_DEFER_FRAMES") ? (uint64_t)atoi(getenv("RX_VK_UPLOAD_DEFER_FRAMES")) : 2;
+    if (tex.defer_frame && frame_no - tex.defer_frame >= max_hold) return false;
     const int64_t spent = summed ? frame_upload_ns.load(std::memory_order_relaxed) : tl_upload_frame == frame_no ? tl_upload_ns : 0;
     if (spent < budget_ns) return false;
     st_deferred.fetch_add(1, std::memory_order_relaxed), st_deferred_frame.fetch_add(1, std::memory_order_relaxed);
@@ -4751,6 +4760,9 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
             std::lock_guard lk(from_memory_mu);
             evicted_from_memory[evicted_key(tex->gpu, tex->width, tex->height, tex->nvn_format)] = tex->guest_size;
         }
+        texture_problem(TexProblem::UploadFailed, "#%u %#llx %ux%u x%u levels %u NVN %#x%s%s: tried again in 30 frames", tex->id,
+                        (unsigned long long)tex->gpu, tex->width, tex->height, tex->layers, tex->levels, tex->nvn_format,
+                        tex->bc ? ", as BC: " : "", tex->bc ? (astc_fail ? astc_fail : "unknown") : "");   // (recompzel)
         static std::atomic<int> told{0};
         if (told++ < 40) {
             if (tex->bc)
@@ -6914,6 +6926,7 @@ void texture_frame(uint64_t completed) {
             }
         }
         std::sort(big.begin(), big.end(), [](const Texture* a, const Texture* b) { return a->bytes > b->bytes; });
+        texture_problems_summary();   // (recompzel: texture_health.h)
         logf("vk: textures: decoded ASTC %llu MB, rendered %llu MB (%zu drawn in one frame, kept: %llu KB), other %llu MB; "
              "used in the last 8 presents %llu MB", (unsigned long long)(astc_b >> 20), (unsigned long long)(rt_b >> 20),
              baked_n, (unsigned long long)(baked_b >> 10), (unsigned long long)(other_b >> 20),

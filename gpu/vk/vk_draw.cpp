@@ -107,6 +107,7 @@
 #include "compute_gate.h"
 #include "intel_compiles.h"   // (intel_prepare_workers: the preparation's threads where Intel's compiler takes them side by side)
 #include "compute_pin.h"
+#include "texture_health.h"   // (recompzel: texture problems told with one prefix)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -4270,6 +4271,12 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
     }
     if (!view) {   // (what a shader reads as the dummy instead: once per texture slot)
         static std::unordered_map<uint32_t, int> told;
+        static std::unordered_set<uint32_t> problem_told;   // (recompzel: texture_health.h, once a slot)
+        if (problem_told.size() < 4096 && problem_told.insert(handle & 0xFFFFF).second)
+            texture_problem(TexProblem::Dummy, "slot %#x (handle %#x) sampled as the dummy: %s, NVN format %#x %ux%ux%u gpu %#llx",
+                            handle & 0xFFFFF, handle, !known ? "not registered" : tex ? "no view of it" : "no image for it",
+                            known ? t.d.format : 0, known ? t.d.width : 0, known ? t.d.height : 0, known ? t.d.depth : 0,
+                            known ? (unsigned long long)t.gpu : 0ull);
         if (told.size() < 64 && !told[handle & 0xFFFFF]++) {
             if (!known)
                 logf("vk: texture slot %#x (handle %#x) is not registered: sampled as the dummy", handle & 0xFFFFF, handle);
@@ -4280,6 +4287,15 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
                      t.d.height, t.d.depth, t.d.levels, (unsigned long long)t.gpu, has_view ? "yes" : "no",
                      has_view && v.set_format ? v.format : 0, has_view && v.set_target ? v.target : -1, (int)want, (int)use);
         }
+    }
+    // (recompzel) a lookup with no view is not kept: a texture the upload budget held back (vk_texture.cpp upload_defer) has no
+    // image yet, and its empty answer, kept, was what every later binding of the slot got until a texture somewhere was
+    // destroyed: the forest's cliffs and the field's ground sampled the dummy for 29-32 s after a load (RTX 4080, 2026-11-26).
+    // Looked up again, the next present's binding uploads it. (A slot not registered, or no view of an image there, is kept)
+    if (!view && known && !tex) {
+        if (tex_out) *tex_out = tex;
+        if (level_out) *level_out = level;
+        return view;
     }
     handle_hits()[key] = {view, tex, dgen, level, version, texture_epoch(), use == ViewUse::Sample || use == ViewUse::Storage};
     if (vf) vf->key = key, vf->view = view, vf->tex = tex, vf->level = level, vf->version = version, vf->destroy_gen = dgen,

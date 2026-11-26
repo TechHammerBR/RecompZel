@@ -1034,6 +1034,7 @@ SW(RX_VK_UNSWIZZLE_IMPORT, attempt, bool, "off: a GPU unswizzle reads only from 
 GONE(RX_VK_UPLOAD_ALL, "2026-11-16", "it does nothing: storage render targets took last is never uploaded (as default)")
 SW(RX_VK_UPLOAD_BUDGET_MS, tune, float, "12 ms of one thread's uploads a frame, then new small ASTC textures wait a frame", "Sets the per-frame upload time after which new non-terrain ASTC textures are deferred to a later frame; 0 means no deferral.")
 SW(RX_VK_UPLOAD_BUDGET_SUM, kill, bool, "off: the budget is the looking-up thread's own upload time", "=1 counts every thread's upload time summed against RX_VK_UPLOAD_BUDGET_MS, as before.")
+SW(RX_VK_UPLOAD_DEFER_FRAMES, tune, int, "2", "(RecompZel) Presents a new ASTC texture the upload budget held back may wait before it is uploaded whatever the budget; 0 holds none.")
 SW(RX_VK_UPSCALE, player, int, "the upscaling filter row", "Chooses the upscaling filter (0 to 2) for one run, over the options file.")
 SW(RX_VK_UPSCALE_LOD_BIAS, kill, bool, "on (upscalers add a texture LOD bias for their render share)", "0 turns off the extra texture LOD bias added for DLSS, FSR 3.1 and FSR 4.")
 SW(RX_VK_UPSCALE_LOG, diag, bool, "off", "Logs once the upscale filter's mode, sharpness, source, crop and destination sizes.")
