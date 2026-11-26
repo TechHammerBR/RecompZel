@@ -79,9 +79,6 @@ Reflex& rx() {
     return r;
 }
 
-/// Streamline's Reflex runs (DLSS-G needs it): this file's own, through VK_NV_low_latency2, stays out of its way
-bool sl_owns() { return slfg::active(); }
-
 int wanted_mode() {
     static const char* e = getenv("RX_VK_REFLEX");
     return std::clamp(e && *e ? atoi(e) : opts.reflex, 0, 2);
@@ -222,7 +219,7 @@ bool reflex_available() { return rx().ready; }
 
 void reflex_swapchain_info(VkSwapchainCreateInfoKHR& ci) {
     Reflex& r = rx();
-    r.latency_next = r.ready && wanted_mode() > 0 && !sl_owns();
+    r.latency_next = r.ready && wanted_mode() > 0;
     if (!r.latency_next) return;   // (Off: the swapchain as without Reflex)
     r.latency_info.pNext = ci.pNext;
     r.latency_info.latencyModeEnable = VK_TRUE;
@@ -232,7 +229,7 @@ void reflex_swapchain_info(VkSwapchainCreateInfoKHR& ci) {
 bool reflex_swapchain_stale() {
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
-    return r.ready && r.swapchain && r.latency != (wanted_mode() > 0 && !sl_owns());
+    return r.ready && r.swapchain && r.latency != (wanted_mode() > 0);
 }
 
 void reflex_swapchain_created(VkSwapchainKHR swapchain) {
@@ -258,8 +255,6 @@ void reflex_swapchain_destroyed() {
 }
 
 void reflex_present_begins() {
-    if (sl_owns()) return slfg::present_begins();
-    slfg::idle_tick();   // (after DLSS-G, once: Streamline's Reflex and DLSS-G off, this file's own back)
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
     if (!on() || !r.frame_marked) return;
@@ -270,7 +265,6 @@ void reflex_present_begins() {
 thread_local uint64_t reflex_present_frame = kReflexThisFrame;
 
 void reflex_submit_ends() {
-    if (sl_owns()) return slfg::submit_ends();
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
     if (!on() || reflex_present_frame != kReflexThisFrame) return;   // (frame generation's copies: not the game's rendering)
@@ -309,7 +303,6 @@ const VkPhysicalDevicePresentIdFeaturesKHR* reflex_present_id_features() {
     return rx().have_ext ? &rx().present_id : nullptr;
 }
 const void* reflex_present_id(const void* next) {
-    if (sl_owns()) return slfg::present_starts(), next;
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
     r.presenting = 0;
@@ -327,7 +320,6 @@ const void* reflex_present_id(const void* next) {
 }
 
 void reflex_presented() {
-    if (sl_owns()) return slfg::present_ends();
     Reflex& r = rx();
     std::lock_guard lk(r.mu);
     if (!on()) return;
@@ -336,7 +328,6 @@ void reflex_presented() {
 }
 
 void reflex_sleep() {
-    if (sl_owns()) return slfg::next_frame();
     Reflex& r = rx();
     uint64_t generation, value;
     const uint32_t minimum = fifo_min_interval_us();   // (before the lock: it may ask Windows)

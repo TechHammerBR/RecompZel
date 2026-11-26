@@ -45,7 +45,6 @@
 #include "oot_cheat_items.h"
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
-#include "vk_lang.h"   // (recompzel: the menu in Portuguese, from the dictionary: a text is turned at the last moment, vk_ui.h)
 #include "vk_menu_keys.h"   // (which gamepad buttons confirm and go back: those A and B are bound to)         // (how it looks: Dear ImGui, vk_imgui.h)
 #include "oot_teleport_capture.h"   // (hookshot: the Travel page's pictures)
 #include "oot_tp_places.h"   // (hookshot: the Travel page's places)
@@ -58,12 +57,10 @@
 #include "monitor_choice.h"
 #include "vk_fsr3.h"      // (the Upscaler row: whether AMD FSR 3.1 runs on this GPU)
 #include "vk_fsr3fi.h"    // (the Frame generation row: whether FSR 3.1 makes the frame)
-#include "vk_fsr4fg.h"    // (recompzel: AMD FSR 4 frame generation, the method row's fourth)
 #include "vk_fsr4.h"
 #include "vk_xess.h"
 #include "vk_temporal.h"
 #include "vk_reflex.h"
-#include "vk_streamline.h"   // (recompzel: the Frame generation method row, NVIDIA DLSS Frame Generation)
 #include "vk_antilag.h"
 #include "upscaler_rows.h"
 #include "auto_settings.h"
@@ -142,8 +139,6 @@ const char* hint_in(const char* const* t, int n, int lo, int v, int variant) {
         static const char* const t[] = {__VA_ARGS__};                                                                        \
         return hint_in(t, (int)(sizeof t / sizeof t[0]), lo, v, variant);                                                    \
     }
-// (recompzel) The value says which method makes the frames: RecompZel's own interpolation (vk_framegen.cpp), or AMD FSR 3.1 at 2x
-// where it is turned on and runs on this GPU (fsr3fi)
 const char* tx_framegen(int v) {
     static const char* t[] = {"Off", "Auto", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
     // (Auto, chosen: who makes its frames now (vk_framegen.cpp framegen_maker, as the FPS counter names it). NVIDIA DLSS FG
@@ -156,34 +151,6 @@ const char* tx_framegen(int v) {
     }
     // (as it runs: a saved value past DLSS FG's top while it makes the frames shows as the top, vk_framegen.h framegen_capped)
     return t[framegen_capped(v, dlss_fg_most())];
-}
-/// The Frame generation method (opts.fgtype): 0 RecompZel's own interpolation (any GPU), 1 NVIDIA DLSS Frame Generation (where
-/// Streamline is loaded and DLSS-G runs on this GPU), 2 AMD FSR 3.1 (2x, where this GPU can run its passes)
-bool fgtype_available(int v) {
-    return v == 0 || (v == 1 && slfg::max_generated() > 0) || (v == 2 && fsr3fi::capable()) || (v == 3 && fsr4fg::available());
-}
-const char* tx_fgtype(int v) {
-    static const char* const on[] = {"RecompZel", "NVIDIA DLSS-G", "AMD FSR 3.1", "AMD FSR 4 (Redstone)"};
-    static const char* const off[] = {"RecompZel", "NVIDIA DLSS-G (not here)", "AMD FSR 3.1 (not here)", "AMD FSR 4 (Redstone) (not here)"};
-    v = std::clamp(v, 0, 3);
-    return fgtype_available(v) ? on[v] : off[v];
-}
-const char* hn_fgtype(int v, int variant) {
-    static const char* const t[] = {
-        "RecompZel's own interpolation: a frame for each of the display's refreshes (Auto) or 2x to 8x. Works on any GPU.",
-        "NVIDIA's frame generation (RTX 40 and 50), from the scene's depth and motion. The Frame generation row below is its "
-        "multiplier: 2x on an RTX 40, up to 4x on an RTX 50. Choosing it sets the Upscaler to NVIDIA DLSS. Needs the NVIDIA files "
-        "beside the game (the launcher installs them).",
-        "AMD FSR 3.1's frame interpolation, at 2x (higher values use RecompZel's own). Works on most GPUs. The HUD can smear "
-        "while it moves: the game draws it into the same picture.",
-        "AMD FSR 4 frame generation (Redstone): AMD's machine-learning interpolation at 2x, from FSR 4's depth and motion: "
-        "less ghosting than FSR 3.1. Needs the Upscaler on AMD FSR 4, an RX 9000 GPU and AMD's files in the game's fsr4fg "
-        "folder."};
-    return variant <= 0 && v >= 0 && v <= 3 ? t[v] : nullptr;
-}
-const char* tx_language(int v) {
-    static const char* const names[] = {"Auto", "English", "Portugu\xc3\xaas (Brasil)"};
-    return names[std::clamp(v, 0, 2)];
 }
 const char* tx_onoff(int v) { return v ? "On" : "Off"; }
 const char* tx_fps_level(int v) { return fps_stats::level_name(v); }
@@ -810,7 +777,6 @@ const char* hn_resolution(int v, int variant) {
         case 67: return "FSR's Quality mode, 1.5x: the sharpest of AMD's upscaling modes.";
         case 58: return "FSR's Balanced mode, 1.7x.";
         case 50: return "FSR's Performance mode, 2x: faster, and softer.";
-        case 42: return "Between Performance and Ultra Performance: for weaker GPUs.";
         case 33: return "FSR's Ultra Performance mode, 3x: its fastest, and its softest.";
         default: return nullptr;   // (not one of FSR's steps: the row moves to one)
         }
@@ -830,7 +796,6 @@ const char* hn_resolution(int v, int variant) {
     if (up == ur::OFF) {   // (no upscaler: the 3D stretched to the output as it is drawn)
         if (!p) return "The game lowers it when the GPU is busy; the 3D is stretched from whatever size it draws.";
         if (p == 100) return "The 3D at the output's full size, not stretched: the sharpest, but its edges stay jagged.";
-        if (p == 25) return "A quarter of the output per side: the lightest for weak or integrated GPUs, and the blurriest.";
         return "A steady size, stretched to the output: lower is faster, and blurrier.";
     }
     if (!p) return "The game lowers it when the GPU is busy.";
@@ -1263,11 +1228,9 @@ const char* hn_framegen(int v, int variant) {
         return "One made frame between each two of the game's, by AMD FSR 3.1 from the scene's depth and motion.";
     if (variant > 0) return nullptr;
     if (v <= 0) return "Only the game's own frames: no added delay.";
-    if (v == 1)
-        return "A frame for each of the display's refreshes, by RecompZel's own interpolation: none made when the game keeps up. "
-               "Frame pacing does not apply.";
-    static char b[9][160];
-    snprintf(b[v], sizeof b[v], "%s between each two of the game's, by RecompZel's own interpolation of the finished pictures.", v == 2 ? "One made frame" : v == 3 ? "Two made frames" : v == 4 ? "Three made frames"
+    if (v == 1) return "A frame for each of the display's refreshes: none made when the game keeps up. Frame pacing does not apply.";
+    static char b[9][96];
+    snprintf(b[v], sizeof b[v], "%s between each two of the game's.", v == 2 ? "One made frame" : v == 3 ? "Two made frames" : v == 4 ? "Three made frames"
              : v == 5 ? "Four made frames" : v == 6 ? "Five made frames" : v == 7 ? "Six made frames" : "Seven made frames");
     return b[std::clamp(v, 2, 8)];
 }
@@ -2995,9 +2958,6 @@ void mic_chosen() {
     mic_row_ends();
     mic_tell_host();
 }
-// (recompzel) the card the options were last set for: "vendor:device:VRAM MB" (gpu_card= in hookshot_options.ini). A different card
-// at the start gets the settings for its memory again (menu_first_start_for_gpu); empty: a file from before, or none yet
-std::string gpu_card_saved, gpu_card_now;
 void save() {
     // (one writer at a time: the present's thread, the game's (menu_option_set) and the control bridge's, menu_setting_set)
     static std::mutex save_mu;
@@ -3634,14 +3594,6 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         if (up != upscaler()) opts.dlss = up;   // (Native in or out: DLAA / DLSS, FSR 4's native AA / FSR 4, XeSS's / XeSS)
         v = ur::full_scale(up) ? *r.value : res;   // (Native changes the mode, not the saved numeric scale)
     }
-    if (r.value == &opts.fgtype) {   // (only the methods that can run here: the next one that can, in the arrow's direction)
-        int c = ((v % 4) + 4) % 4;
-        for (int i = 0; i < 4 && !fgtype_available(c); i++) c = (c + (dir < 0 ? 3 : 1)) % 4;
-        v = c;
-    }
-    // (recompzel) AMD FSR 3.1 makes the midpoint only: with it as the method, the Frame generation row is Off or 2x, not the
-    // Auto and 3x to 8x that went to RecompZel's own interpolation behind its back
-    if (r.value == &opts.framegen && (opts.fgtype == 2 || opts.fgtype == 3) && fgtype_available(opts.fgtype)) v = *r.value == 2 ? 0 : 2;
     if (r.value == &opts.output_res) {   // (smallest to largest: step_output_choice)
         v = step_output_choice(*r.value, dir);
         if (v == *r.value) return;
@@ -3979,36 +3931,7 @@ int scrolled_to[TAB_FPS_DEV + 2] = {-1, -1, -1, -1, -1, -1, -1, -1, -1};   // (t
 float scroll_want[TAB_FPS_DEV + 2];   // (where scroll_at is going: the wheel moves it, a new selection too)
 float ease_step = 0;     // (this drawing's share of the way: the time since the last one)
 
-/// (recompzel) The language the Language row says, and where its files are: every drawing, once changed. Windows' own language
-/// is what Auto follows
-void sync_language() {
-    static int last = -1;
-    if (last == opts.language) return;
-    if (last < 0) {
-        char exe[MAX_PATH];
-        const DWORD n = game_module_path(exe, MAX_PATH);
-        std::string dir(exe, n);
-        lang::set_dir(dir.substr(0, dir.find_last_of("\\/") + 1));
-#ifdef _WIN32
-        wchar_t loc[LOCALE_NAME_MAX_LENGTH] = {};
-        char name[LOCALE_NAME_MAX_LENGTH] = {};
-        if (GetUserDefaultLocaleName(loc, LOCALE_NAME_MAX_LENGTH))
-            for (int i = 0; loc[i] && i + 1 < LOCALE_NAME_MAX_LENGTH; i++) name[i] = loc[i] < 128 ? (char)loc[i] : '?';
-        lang::set_system(name);
-#else
-        // (Linux: the locale's environment, "pt_BR.UTF-8"; only its first two letters are read, lang::detail::resolve)
-        const char* e = getenv("LC_ALL");
-        if (!e || !*e) e = getenv("LC_MESSAGES");
-        if (!e || !*e) e = getenv("LANG");
-        lang::set_system(e ? e : "");
-#endif
-    }
-    last = opts.language;
-    lang::set_mode(opts.language);
-}
-
 ui::Ctx ui_ctx(uint32_t w, uint32_t h) {
-    sync_language();
     ui::Ctx c{ImGui::GetForegroundDrawList(), ui::fonts(), 1, (float)w, (float)h, 0, pad_last};
     c.confirm_dot = menu_keys::dot(pad_confirm), c.back_dot = menu_keys::dot(pad_back);
     c.paste_dot = menu_keys::dot(pad_paste);   // (hookshot: a text field's Paste)
@@ -4082,9 +4005,7 @@ std::vector<size_t> char_starts(const std::string& t) {
     at.push_back(t.size());
     return at;
 }
-std::string fit(ui::Ctx& c, ImFont* f, float px, float room, const std::string& said, bool sel) {
-    const std::string label = lang::tr(said);   // (recompzel: the text in the language chosen, cut to the room as it is: lang::Raw below)
-    lang::Raw raw;
+std::string fit(ui::Ctx& c, ImFont* f, float px, float room, const std::string& label, bool sel) {
     auto width = [&](const std::string& t) { return ui::size_of(f, px, t.c_str()).x; };
     if (width(label) <= room) return label;
     const std::vector<size_t> at = char_starts(label);
@@ -4233,7 +4154,6 @@ void name_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const char* name, bool sel, bool 
     }
     ImFont* f = sel ? c.f.strong : c.f.body;
     const std::string shown = fit(c, f, px * s, room, name, false);
-    lang::Raw raw;   // (fit has turned it)
     ui::text_mid(c, f, px * s, a.x + 20 * s, mid, sel ? ui::kInkBright : ui::kInk, shown.c_str());
 }
 /// A value cell: a choice with arrows at its ends (left, right: whether it can go that way), gold when selected
@@ -4247,7 +4167,6 @@ void choice_cell(ui::Ctx& c, ImVec2 a, ImVec2 b, const std::string& value, bool 
     if (right) ui::triangle(c, ImVec2(b.x - in - 11 * s, mid), 9 * s, 1, arrow);
     ImFont* f = sel ? c.f.strong : c.f.body;
     const std::string shown = fit(c, f, px, b.x - a.x - 2 * in - (left || right ? 48 : 16) * s, value, sel);   // (room for arrows)
-    lang::Raw raw;   // (fit has turned it)
     ui::text_mid_centre(c, f, px, (a.x + b.x) * 0.5f, mid, ink, shown.c_str());
     if (sel) ui::glow(c, a, b);
 }
@@ -4823,7 +4742,7 @@ void draw_options(ui::Ctx& c) {
         float aspect = 1;
         ImTextureData* logo = ui::logo(&aspect);
         const auto width = [&](float p) {
-            return (logo ? p * 1.25f * aspect + 10 * s : 0) + ui::size_of(c.f.heading, p, "Hookshot").x;
+            return (logo ? p * 1.25f * aspect + 10 * s : 0) + ui::size_of(c.f.heading, p, "RecompZel").x;
         };
         const float fit = ui::fit_px(px, opts.menu_size == 3 ? px : 14 * s, 0.5f * s, room, width);
         if (fit > 0) {
@@ -4833,7 +4752,7 @@ void draw_options(ui::Ctx& c) {
                 c.d->AddImage(logo->GetTexRef(), ImVec2(lx, ty - lh * 0.5f), ImVec2(lx + lh * aspect, ty + lh * 0.5f));
                 lx += lh * aspect + 10 * s;
             }
-            ui::text_mid(c, c.f.heading, fit, lx, ty, ui::kBannerInk, "Hookshot");
+            ui::text_mid(c, c.f.heading, fit, lx, ty, ui::kBannerInk, "RecompZel");
         }
     }
     {   // (which build, at the banner's right, so a report can say it without opening the log: as players see it, version_text,
@@ -5736,11 +5655,10 @@ struct Tab {
         }
         return x - x0;
     }
-    float width(const char* t) const { t = lang::tr(t); return pieces(t, 0, [](const char*, const char*, float, float) {}); }   // (recompzel: in the language chosen)
+    float width(const char* t) const { return pieces(t, 0, [](const char*, const char*, float, float) {}); }
     /// Each piece five times under itself (a faint copy at each diagonal step, a darker one a step down) and once in col: a
     /// dozen strings make a few hundred quads' worth of glyphs, not a glyph each ten times
     void draw(ImDrawList* d, float x, float y, ImU32 col, const char* t, float s) const {
-        t = lang::tr(t);   // (recompzel: in the language chosen)
         const float o = std::max(1.0f, s);
         const int a = std::max(200, (int)((col >> IM_COL32_A_SHIFT) & 0xff));
         const ImU32 shade = ui::rgba(0, 0, 0, a * 210 / 255), faint = ui::rgba(0, 0, 0, a * 160 / 255);
@@ -5904,7 +5822,7 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     if (foot) {   // (the footer, at the column's foot: the version, as the banner says it; at Dev the CPU, the GPU, its driver. A line
         // too long for the column's width loses its end)
         static std::string cpu, gpu, drv, fit[4];
-        static const std::string ver = std::string("Hookshot ") + version_text(HOOKSHOT_VERSION);
+        static const std::string ver = std::string("RecompZel ") + version_text(HOOKSHOT_VERSION);
         static float fit_w = 0;
         if (gpu.empty()) cpu = hardware_cpu_name(bug_report::cpu_name()), gpu = hardware_gpu_name(device_name_text()), drv = driver_text(), fit_w = 0;
         if (fit_w != gw) {
@@ -6437,7 +6355,6 @@ void menu_init() {
     outputs_sync();   // (the Aspect ratio follows the size read)
     gfx_limits();
     restart_init();   // (what this run started with: the rows that take a restart differ from it once changed)
-    sync_language();   // (recompzel: before the first drawing, the start-up screen's)
 }
 
 /// (hookshot) The Quality preset "Auto (this PC)", once the card is chosen (vk_main.cpp pick_device): the profile auto_settings.h

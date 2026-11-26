@@ -82,7 +82,6 @@
 #include "vk_xess.h"
 #include "xess_rules.h"
 #include "vk_menu.h"
-#include "vk_streamline.h"   // (recompzel: DLSS Frame Generation takes the depth and motion from here)
 #include "vk_texture.h"
 
 #include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
@@ -140,14 +139,6 @@ int temporal_mode() {
 bool temporal_wanted() { return temporal_mode() != ur::GAME; }
 bool temporal_off() { return opts.dlss == ur::OFF && temporal_mode() == ur::GAME; }
 bool temporal_full_scale() { return ur::full_scale(temporal_mode()); }
-// (recompzel) RX_VK_DLSS_LINEAR=1: NVIDIA DLSS takes linear scene light (the square of the network's perceptual colour)
-// with IsHDR and AutoExposure (vk_dlss.cpp), as NX2navi feeds DLSS (runtime/vk_dlaa.c, MIT). Averaging in the perceptual
-// space darkens blended edges against a bright sky (a dark rim, a halo). Only DLSS reads it: FSR 4 keeps the perceptual
-// inputs (temporal_upscale gates on the engine). Off by default until a run in the game compares the two
-bool temporal_linear_color() {
-    static const bool v = getenv("RX_VK_DLSS_LINEAR") && atoi(getenv("RX_VK_DLSS_LINEAR")) != 0;
-    return v;
-}
 
 namespace {
 /// (hookshot) DLAA before the game's bloom and tone map (temporal_pre_bloom) now, the mode being DLAA: the Upscaler's DLAA
@@ -186,7 +177,6 @@ struct Camera {
     float projection[16]{};   // (its projection, jittered: FSR 3.1's depth constants, and DLSS Frame Generation's camera, vk_dlss.cpp dlss_fg_inputs)
     float jitter[2]{};        // (the projection's offset of the picture's centre, in clip space: nx2/oot_jitter.py)
     float near_z = 0, far_z = 0, fov_y = 0;   // (its projection's, 0 when it is not a plain perspective one)
-    float projection[16]{};   // (the projection itself, jittered: FSR 3.1's frame interpolation reads its camera from it)
     uint32_t width = 0, height = 0;
     Texture* depth = nullptr;
     uint64_t depth_gen = 0;   // (texture_destroy_generation when taken: a depth texture destroyed since is not used)
@@ -1310,7 +1300,7 @@ bool stretch_record(VkCommandBuffer cmd, VkImageView in_view, const Texture* out
         ~Disturbed() { descriptors_disturbed(); }
     } disturbed;
     full_barrier(cmd);   // (the scene's colour, written before)
-    const int32_t pc[3] = {(int32_t)ow, (int32_t)oh, 0};   // (the network's perceptual colour in: squared back to linear)
+    const int32_t pc[2] = {(int32_t)ow, (int32_t)oh};
     const VkDescriptorImageInfo info[2] = {{s.linear, in_view, VK_IMAGE_LAYOUT_GENERAL},
                                            {VK_NULL_HANDLE, out_view, VK_IMAGE_LAYOUT_GENERAL}};
     VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
@@ -1725,44 +1715,9 @@ bool draw_engine(VkCommandBuffer cmd, State& s, int mode, const Camera& cam, uin
         engine.failed = true;
         return false;   // (the network writes its output over whatever the evaluation did)
     }
-    if (slfg::active()) {   // (recompzel: the same depth and motion are DLSS-G's inputs for this frame's present)
-        slfg::FrameInputs gi;
-        gi.depth = f.depth.image, gi.depth_view = f.depth.view, gi.depth_format = f.depth.format;
-        gi.depth_w = f.depth.width, gi.depth_h = f.depth.height;
-        gi.motion = f.motion.image, gi.motion_view = f.motion.view, gi.motion_format = f.motion.format;
-        gi.motion_w = f.motion.width, gi.motion_h = f.motion.height;
-        gi.render_w = rw, gi.render_h = rh;
-        gi.jitter[0] = f.jitter[0], gi.jitter[1] = f.jitter[1];
-        gi.near_z = f.near_z, gi.far_z = f.far_z, gi.fov_y = f.fov_y;
-        gi.reset = f.reset;
-        slfg::frame_inputs(gi);
-    }
-    // (FSR 4 draws: its depth (inverted for it, the reversed depth FSR 3.1 takes) and motion are AMD FSR 3.1's frame
-    // interpolation inputs too. Without them it had none, and the renderer's own colour-only interpolation made the frames:
-    // the ghosts of what moves)
-    if (engine.e == fsr4_engine() && (fsr3fi::frames_wanted() != 0 || fsr4fg::wanted())) {
-        float projection[16];
-        std::memcpy(projection, cam.projection, sizeof projection);
-        dlss_math::unjitter(projection, cam.jitter);
-        fsr3_inputs::Frame fi;
-        if (fsr3_math::camera_from_projection(projection, fi.camera) && fi.camera.flip_depth) {
-            const auto t = std::chrono::steady_clock::now();
-            fi.color = f.color.view, fi.depth = f.depth.view, fi.motion = f.motion.view;
-            fi.depth_image = f.depth.image, fi.motion_image = f.motion.image;
-            fi.width = rw, fi.height = rh;
-            fi.jitter[0] = f.jitter[0], fi.jitter[1] = f.jitter[1];
-            fi.reset = f.reset;
-            fi.frame_ms = s.fi_last.time_since_epoch().count() && !f.reset
-                              ? (float)std::min(250.0, std::chrono::duration<double, std::milli>(t - s.fi_last).count())
-                              : 16.667f;
-            fi.frame = texture_frame_no();
-            s.fi_last = t;
-            fsr3_inputs::offer(fi);
-        }
-    }
     full_barrier(cmd);
     {
-        const int32_t opc[3] = {(int32_t)ow, (int32_t)oh, lin_color ? 1 : 0};   // (linear in: the engine's output is not squared)
+        const int32_t opc[2] = {(int32_t)ow, (int32_t)oh};
         const VkDescriptorImageInfo info[2] = {{native ? s.linear : s.point, s.output.view, VK_IMAGE_LAYOUT_GENERAL},
                                                {VK_NULL_HANDLE, out_view, VK_IMAGE_LAYOUT_GENERAL}};
         VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};

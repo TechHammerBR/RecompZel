@@ -10,11 +10,6 @@
 // the game folder: amd_fidelityfx_loader_vk.dll, with amd_fidelityfx_upscaler_vk.dll beside it (Linux: a Vulkan FSR 4
 // library, amd_fidelityfx_upscaler_vk.so). Of the upscalers it lists for this GPU the newest FSR 4 is taken, never an older
 // one in its place. RX_VK_FSR4=0: FSR 4 out for this run.
-// (recompzel) A "direct" library, one that exports the ffx entry points itself, is also taken on Windows when AMD's loader is
-// not in the folder: fsr4vk's amd_fidelityfx_upscaler_vk.dll (GPLv3, its own INT8 FSR 4.1.1 and 4.0.2, any Vulkan GPU with the
-// extensions it asks for), the Windows twin of the Linux path. It reads the older backend description, takes an exposure image,
-// and needs the device made with VK_EXT_descriptor_buffer, VK_EXT_mutable_descriptor_type and
-// VK_KHR_compute_shader_derivatives (vk_main.cpp asks for them only when such a library is there).
 #include "vk_fsr4.h"
 
 #include <atomic>
@@ -24,7 +19,6 @@
 #include "vk_temporal.h"
 
 #ifdef HOOKSHOT_FSR
-#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -89,7 +83,6 @@ namespace {
 
 #ifdef _WIN32
 constexpr const char* kLoader = "amd_fidelityfx_loader_vk.dll";
-constexpr const char* kDirect = "amd_fidelityfx_upscaler_vk.dll";   // (recompzel) a library that exports the ffx API itself: fsr4vk
 #else
 // (linux) no AMD loader exists there: the upscaler library itself, which exports the ffx entry points (a Vulkan FSR 4 build)
 constexpr const char* kLoader = "amd_fidelityfx_upscaler_vk.so";
@@ -100,16 +93,11 @@ struct Library {
     std::mutex mu;
     bool tried = false, ok = false;
     HMODULE lib = nullptr;
-    bool direct = false;   // (the library exports the ffx API itself: fsr4vk, or the Linux build. It wants the older backend
-                           // description and an exposure image)
     PfnFfxCreateContext create = nullptr;
     PfnFfxDestroyContext destroy = nullptr;
     PfnFfxQuery query = nullptr;
     PfnFfxDispatch dispatch = nullptr;
     uint64_t version_id = 0;
-    // (every 4.x the library lists, newest first, with its name: a newer model may refuse the chain's inputs, as 4.1.1 asks for
-    // inverted depth, and an older one is tried then)
-    std::vector<std::pair<uint64_t, std::string>> fallbacks;
     VkDeviceContext device_context{};
 };
 // (lib() and st() are never destroyed: Hookshot leaves through ExitProcess / exit() with the device alive, and a destructor
@@ -124,7 +112,9 @@ Library& lib() {
 struct Context {
     ffxCreateBackendVKDesc backend{};
     ffxOverrideVersion version{};
-    ffxCreateBackendVKDesc_DEPRECATED legacy_backend{};   // (a direct library) the backend description a Vulkan FSR 4 build like fsr4-vk reads
+#ifndef _WIN32
+    ffxCreateBackendVKDesc_DEPRECATED legacy_backend{};   // (linux) the backend description a Vulkan FSR 4 build like fsr4-vk reads
+#endif
     ffxCreateContextDescUpscale upscale{};
     ffxContext context = nullptr;
     uint32_t width = 0, height = 0;   // (its output, which is also the most the render size can be)
@@ -983,31 +973,27 @@ bool load() {
     std::string where;
     for (const std::string& dir : library_dirs()) {
         where += (where.empty() ? "" : ", ") + dir;
-        std::string path;
-        bool direct = false;
-        if (!library_in(dir, path, direct)) continue;
 #ifdef _WIN32
+        const std::string path = dir + "\\" + kLoader;
+        if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES) continue;
         // (the upscaler DLL the loader picks lies beside it: the loader's folder first in the search)
         l.lib = LoadLibraryExA(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         // (there but not loaded: a DLL it needs missing, a bad signature, or a relative RX_VK_FSR_DIR, which the search
         // flags refuse)
         if (!l.lib) logf("vk: AMD FSR 4: %s not loaded (Windows error %lu)", path.c_str(), (unsigned long)GetLastError());
 #else
+        const std::string path = dir + "/" + kLoader;
+        if (access(path.c_str(), R_OK) != 0) continue;
         l.lib = (HMODULE)dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
         if (!l.lib) logf("vk: AMD FSR 4: %s not loaded: %s", path.c_str(), dlerror());
 #endif
         if (l.lib) {
-            l.direct = direct;
-            logf("vk: AMD FSR 4: %s%s", path.c_str(), direct ? " (a library that exports the FSR API itself, not AMD's loader)" : "");
+            logf("vk: AMD FSR 4: %s", path.c_str());
             break;
         }
     }
     if (!l.lib) {
-#ifdef _WIN32
-        logf("vk: AMD FSR 4: no %s (or %s) in %s (the readme says where AMD's files come from)", kLoader, kDirect, where.c_str());
-#else
         logf("vk: AMD FSR 4: no %s in %s (the readme says where AMD's files come from)", kLoader, where.c_str());
-#endif
         return no(FSR_NO_LIBRARY);
     }
     l.create = (PfnFfxCreateContext)symbol("ffxCreateContext");
@@ -1015,7 +1001,7 @@ bool load() {
     l.query = (PfnFfxQuery)symbol("ffxQuery");
     l.dispatch = (PfnFfxDispatch)symbol("ffxDispatch");
     if (!l.create || !l.destroy || !l.query || !l.dispatch) {
-        logf("vk: AMD FSR 4: %s lacks the FSR API's entry points", l.direct ? "the library" : kLoader);
+        logf("vk: AMD FSR 4: %s lacks the FSR API's entry points", kLoader);
         return no(FSR_NO_LIBRARY);
     }
     l.device_context = VkDeviceContext{dev.device, dev.physical, vkGetDeviceProcAddr};
@@ -1045,13 +1031,11 @@ bool load() {
     }
     std::string listed;
     unsigned best[3] = {0, 0, 0};
-    std::vector<std::pair<unsigned, std::pair<uint64_t, std::string>>> fours;   // (major.minor.patch packed, id and name)
     for (uint64_t i = 0; i < count; i++) {
         const char* name = names[i] ? names[i] : "";
         listed += (listed.empty() ? "" : ", ") + std::string(name);
         unsigned v[3] = {0, 0, 0};
         sscanf(name, "%u.%u.%u", &v[0], &v[1], &v[2]);
-        if (v[0] == 4) fours.push_back({(v[1] << 16) | v[2], {ids[i], name}});
         // (the first of equal versions: a Vulkan FSR 4 build lists its Auto, which picks the GPU's model, before INT8 and FP8)
         if (v[0] == 4 && (!l.version_id || v[1] > best[1] || (v[1] == best[1] && v[2] > best[2]))) {
             std::memcpy(best, v, sizeof best);
@@ -1062,10 +1046,6 @@ bool load() {
         logf("vk: AMD FSR 4: no FSR 4 for this GPU (AMD's library has: %s)", listed.c_str());
         return no(FSR_NO_MODEL);
     }
-    // (stable: of equal versions the first listed stays first, as for version_id)
-    std::stable_sort(fours.begin(), fours.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-    for (const auto& f : fours)
-        if (f.second.first != l.version_id) l.fallbacks.push_back(f.second);
     logf("vk: AMD FSR 4: upscalers %s; using %u.%u.%u", listed.c_str(), best[0], best[1], best[2]);
     l.ok = true;
     g_why = FSR_OK;
@@ -1082,15 +1062,15 @@ std::shared_ptr<Context> make_context(uint32_t w, uint32_t h, bool hdr) {
     c->version.header.type = FFX_API_DESC_TYPE_OVERRIDE_VERSION;
     c->version.versionId = l.version_id;
     c->backend.header.pNext = &c->version.header;
-    if (l.direct) {
-        // (a direct library: linux's fsr4-vk, fsr4vk) it looks for the SDK's older backend description, not ffxCreateBackendVKDesc:
-        // without it, it finds no device and creation returns FFX_API_RETURN_ERROR_PARAMETER. Both stay chained
-        c->legacy_backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_DEPRECATED;
-        c->legacy_backend.vkDevice = l.device_context.vkDevice;
-        c->legacy_backend.vkPhysicalDevice = l.device_context.vkPhysicalDevice;
-        c->legacy_backend.vkDeviceProcAddr = l.device_context.vkDeviceProcAddr;
-        c->version.header.pNext = &c->legacy_backend.header;
-    }
+#ifndef _WIN32
+    // (linux) fsr4-vk looks for the SDK's older backend description, not ffxCreateBackendVKDesc: without it, it finds no device
+    // and creation returns FFX_API_RETURN_ERROR_PARAMETER. Both stay chained
+    c->legacy_backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK_DEPRECATED;
+    c->legacy_backend.vkDevice = l.device_context.vkDevice;
+    c->legacy_backend.vkPhysicalDevice = l.device_context.vkPhysicalDevice;
+    c->legacy_backend.vkDeviceProcAddr = l.device_context.vkDeviceProcAddr;
+    c->version.header.pNext = &c->legacy_backend.header;
+#endif
     c->upscale.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
     c->upscale.header.pNext = &c->backend.header;
     // (the chain's colour is tonemapped and square-root encoded already: LDR, perceptual, no auto exposure; depth not
@@ -1103,27 +1083,11 @@ std::shared_ptr<Context> make_context(uint32_t w, uint32_t h, bool hdr) {
     c->upscale.maxUpscaleSize = {w, h};
     c->upscale.fpMessage = &on_message;
     const auto t0 = std::chrono::steady_clock::now();
-    ffxReturnCode_t r = l.create(&c->context, &c->upscale.header, nullptr);
-    if (r != FFX_API_RETURN_OK || !c->context) {
-        // (the newest model refused: the older 4.x the library lists, newest first. The one made is kept for the next
-        // contexts, so a refusal is paid once)
-        for (const auto& [id, name] : l.fallbacks) {
-            logf("vk: AMD FSR 4: its upscaler was not made (%d) for %ux%u; trying %s", (int)r, w, h, name.c_str());
-            c->context = nullptr;
-            c->version.versionId = id;
-            r = l.create(&c->context, &c->upscale.header, nullptr);
-            if (r == FFX_API_RETURN_OK && c->context) {
-                l.version_id = id;
-                break;
-            }
-        }
-    }
+    const ffxReturnCode_t r = l.create(&c->context, &c->upscale.header, nullptr);
     const double made_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     if (r != FFX_API_RETURN_OK || !c->context) {
         logf("vk: AMD FSR 4: its upscaler was not made (%d) for %ux%u", (int)r, w, h);
         c->context = nullptr;
-        // (no model of the library takes the chain's inputs: the menu stops offering FSR 4 and shows the upscaler that runs)
-        g_why = FSR_NO_MODEL;
         return nullptr;
     }
     c->width = w, c->height = h, c->hdr = hdr;
@@ -1141,14 +1105,9 @@ std::shared_ptr<Context> make_context(uint32_t w, uint32_t h, bool hdr) {
     return c;
 }
 
-// (w, h: the size to describe, when not the image's own. The inputs are kept as large as the largest render size seen
-// (prepare), and FSR 4's Vulkan library rejects a colour, depth or motion description that is not the render size:
-// "invalid color resource: dimensions=2560x1440 expected=2382x1340", and after one failure the game's upscale ran for
-// the rest of the session. The render size's texels are at the image's top left, so it is described at that size)
-FfxApiResource resource(const TemporalImage& im, VkImageUsageFlags usage, uint32_t state, uint32_t w = 0, uint32_t h = 0) {
+FfxApiResource resource(const TemporalImage& im, VkImageUsageFlags usage, uint32_t state) {
     VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    ci.imageType = VK_IMAGE_TYPE_2D, ci.format = im.format;
-    ci.extent = {w ? std::min(w, im.width) : im.width, h ? std::min(h, im.height) : im.height, 1};
+    ci.imageType = VK_IMAGE_TYPE_2D, ci.format = im.format, ci.extent = {im.width, im.height, 1};
     ci.mipLevels = 1, ci.arrayLayers = 1, ci.samples = VK_SAMPLE_COUNT_1_BIT, ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     ci.usage = usage, ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     return ffxApiGetResourceVK((void*)im.image, ffxApiGetImageResourceDescriptionVK(im.image, ci, 0), state);
@@ -1168,7 +1127,8 @@ void barriers(VkCommandBuffer cmd, const VkImageMemoryBarrier2* b, uint32_t n) {
     vkCmdPipelineBarrier2(cmd, &di);
 }
 
-/// (a direct library) a Vulkan FSR 4 build takes no frame without an exposure, and the chain's colour is tonemapped already: a 1x1 R32F of 1
+#ifndef _WIN32
+/// (linux) a Vulkan FSR 4 build takes no frame without an exposure, and the chain's colour is tonemapped already: a 1x1 R32F of 1
 bool unit_exposure(VkCommandBuffer cmd, TemporalImage& out) {
     static VkImage image = VK_NULL_HANDLE;
     static VmaAllocation allocation{};
@@ -1194,6 +1154,7 @@ bool unit_exposure(VkCommandBuffer cmd, TemporalImage& out) {
     }
     return true;
 }
+#endif
 
 // ---- the engine (vk_temporal.h TemporalEngine) ----
 
@@ -1233,8 +1194,10 @@ int prepare(VkCommandBuffer, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh,
 bool evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
     State& s = st();
     Library& l = lib();
+#ifndef _WIN32
     TemporalImage exposure{};
-    if (l.direct && !unit_exposure(cmd, exposure)) return false;
+    if (!unit_exposure(cmd, exposure)) return false;
+#endif
     const auto now = std::chrono::steady_clock::now();
     const float frame_ms = s.evals ? std::chrono::duration<float, std::milli>(now - s.last).count() : 1000.0f / 30.0f;
     s.last = now;
@@ -1250,10 +1213,9 @@ bool evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
     ffxDispatchDescUpscale d{};
     d.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
     d.commandList = cmd;
-    const uint32_t rw = f.render_w, rh = f.render_h;
-    d.color = resource(f.color, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ, rw, rh);
-    d.depth = resource(f.depth, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ, rw, rh);
-    d.motionVectors = resource(f.motion, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ, rw, rh);
+    d.color = resource(f.color, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    d.depth = resource(f.depth, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ);
+    d.motionVectors = resource(f.motion, VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_COMPUTE_READ);
     d.output = resource(f.output, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
 #ifndef _WIN32
     if (!s.context->hdr)   // (an HDR context works out its own exposure: FFX_UPSCALE_ENABLE_AUTO_EXPOSURE)
@@ -1422,13 +1384,14 @@ void fsr4_prepare_shaders() {
 void fsr4_close() { tune::close(); }
 
 bool fsr4_wants_descriptor_buffer() {
-    if (fsr4_why() == FSR_ENV_OFF) return false;
-    for (const std::string& dir : library_dirs()) {
-        std::string path;
-        bool direct = false;
-        if (library_in(dir, path, direct)) return direct;   // (the folder's own library decides: AMD's loader needs nothing here)
-    }
+#ifdef _WIN32
     return false;
+#else
+    if (fsr4_why() == FSR_ENV_OFF) return false;
+    for (const std::string& dir : library_dirs())
+        if (access((dir + "/" + kLoader).c_str(), R_OK) == 0) return true;
+    return false;
+#endif
 }
 
 #else  // (no HOOKSHOT_FSR in this build: FSR is not there)

@@ -223,7 +223,7 @@ VkImageView depth_view(Texture* t) {
 
 } // namespace
 
-bool wanted() { return fsr3_wanted() || fsr3fi::frames_wanted() != 0 || fsr4fg::wanted(); }
+bool wanted() { return fsr3_wanted() || fsr3fi::frames_wanted() != 0; }
 
 bool scene_format(VkFormat format) {
     if (format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) return true;
