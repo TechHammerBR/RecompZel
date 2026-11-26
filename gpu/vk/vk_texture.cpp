@@ -83,8 +83,8 @@
 #include "host_shaders/block_linear_unswizzle_2d_comp_spv.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
-#include "texture_health.h"   // (recompzel: texture problems told with one prefix)
 #endif
+#include "texture_health.h"   // (recompzel: texture problems told with one prefix)
 #include "cxx_escape.h"   // (fork_join: a helper that cannot be started at the commit limit leaves its part to the caller)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
