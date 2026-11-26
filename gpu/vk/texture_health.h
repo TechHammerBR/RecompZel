@@ -4,6 +4,7 @@
 // "vk: texture problems: ...", whenever a count changed. scripts/texture_problems.py reads a log for them (and for the
 // older lines that say the same). Counts and addresses only, never texel values.
 #pragma once
+#define TEXTURE_HEALTH_H 1   // (the call sites are inside #ifdef TEXTURE_HEALTH_H: the checks that cut their functions out leave them)
 
 #include <atomic>
 #include <cstdarg>

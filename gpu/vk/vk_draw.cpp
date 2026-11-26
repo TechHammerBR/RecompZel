@@ -4271,12 +4271,14 @@ VkImageView texture_view_of(uint32_t handle, VkImageViewType want, ViewUse use, 
     }
     if (!view) {   // (what a shader reads as the dummy instead: once per texture slot)
         static std::unordered_map<uint32_t, int> told;
-        static std::unordered_set<uint32_t> problem_told;   // (recompzel: texture_health.h, once a slot)
-        if (problem_told.size() < 4096 && problem_told.insert(handle & 0xFFFFF).second)
+#ifdef TEXTURE_HEALTH_H
+        static std::unordered_map<uint32_t, int> problem_told;   // (recompzel: texture_health.h, once a slot)
+        if (problem_told.size() < 4096 && !problem_told[handle & 0xFFFFF]++)
             texture_problem(TexProblem::Dummy, "slot %#x (handle %#x) sampled as the dummy: %s, NVN format %#x %ux%ux%u gpu %#llx",
                             handle & 0xFFFFF, handle, !known ? "not registered" : tex ? "no view of it" : "no image for it",
                             known ? t.d.format : 0, known ? t.d.width : 0, known ? t.d.height : 0, known ? t.d.depth : 0,
                             known ? (unsigned long long)t.gpu : 0ull);
+#endif
         if (told.size() < 64 && !told[handle & 0xFFFFF]++) {
             if (!known)
                 logf("vk: texture slot %#x (handle %#x) is not registered: sampled as the dummy", handle & 0xFFFFF, handle);

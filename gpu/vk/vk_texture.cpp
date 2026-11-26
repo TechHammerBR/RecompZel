@@ -2732,8 +2732,10 @@ void astc_error_blocks_told(const Texture& tex, uint64_t blocks) {
     std::lock_guard lk(mu);
     if (told.size() >= 16 || std::find(told.begin(), told.end(), tex.id) != told.end()) return;
     told.push_back(tex.id);
+#ifdef TEXTURE_HEALTH_H
     texture_problem(TexProblem::AstcIllegal, "#%u %ux%u NVN %#x: %llu illegal ASTC blocks drawn as transparent black", tex.id,
                     tex.width, tex.height, tex.nvn_format, (unsigned long long)blocks);   // (recompzel)
+#endif
     logf("vk: ASTC texture #%u %ux%u NVN %#x: %llu illegal blocks decoded as transparent black%s", tex.id, tex.width, tex.height,
          tex.nvn_format, (unsigned long long)blocks, told.size() == 16 ? " (no more such lines)" : "");
 }
@@ -4760,9 +4762,11 @@ Texture* texture_touch(Texture* tex, bool for_sampling) {
             std::lock_guard lk(from_memory_mu);
             evicted_from_memory[evicted_key(tex->gpu, tex->width, tex->height, tex->nvn_format)] = tex->guest_size;
         }
+#ifdef TEXTURE_HEALTH_H
         texture_problem(TexProblem::UploadFailed, "#%u %#llx %ux%u x%u levels %u NVN %#x%s%s: tried again in 30 frames", tex->id,
                         (unsigned long long)tex->gpu, tex->width, tex->height, tex->layers, tex->levels, tex->nvn_format,
                         tex->bc ? ", as BC: " : "", tex->bc ? (astc_fail ? astc_fail : "unknown") : "");   // (recompzel)
+#endif
         static std::atomic<int> told{0};
         if (told++ < 40) {
             if (tex->bc)
@@ -6926,7 +6930,9 @@ void texture_frame(uint64_t completed) {
             }
         }
         std::sort(big.begin(), big.end(), [](const Texture* a, const Texture* b) { return a->bytes > b->bytes; });
+#ifdef TEXTURE_HEALTH_H
         texture_problems_summary();   // (recompzel: texture_health.h)
+#endif
         logf("vk: textures: decoded ASTC %llu MB, rendered %llu MB (%zu drawn in one frame, kept: %llu KB), other %llu MB; "
              "used in the last 8 presents %llu MB", (unsigned long long)(astc_b >> 20), (unsigned long long)(rt_b >> 20),
              baked_n, (unsigned long long)(baked_b >> 10), (unsigned long long)(other_b >> 20),
