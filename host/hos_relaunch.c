@@ -206,8 +206,8 @@ void hos_window_closed_exit(void) {
     hos_log(again ? "display: window closed for a restart (the Insert menu's Restart now)" : "display: window closed, exiting");
     hos_close_finish();
     if (again) relaunch();
-#ifdef _WIN32
-    if (!env_on("HOS_EXIT_DETACH")) _cexit(), TerminateProcess(GetCurrentProcess(), 0);   /* (recompzel: below) */
+#if defined(_WIN32) && !defined(HOS_FIXTURE)   /* (HOS_FIXTURE: the tests that compile this function, which end it themselves) */
+    if (!env_on("HOS_EXIT_DETACH")) _cexit(), TerminateProcess(GetCurrentProcess(), 0);   /* (recompzel: above) */
 #endif
     ExitProcess(0);
 }

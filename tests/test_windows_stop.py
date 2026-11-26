@@ -38,6 +38,7 @@ def main():
     relaunch = (args.source / "host/hos_relaunch.c").read_text(encoding="utf-8")
     chain = r'''
 #define _CRT_SECURE_NO_WARNINGS
+#define HOS_FIXTURE 1   /* (recompzel: hos_window_closed_exit's own end without the DLLs' detach left out) */
 #include <assert.h>
 #include <stdarg.h>
 #include <stdint.h>

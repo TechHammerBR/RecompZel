@@ -2,6 +2,7 @@
    Authored process/guest stand-ins; the writer and adapter functions are real. */
 #define _GNU_SOURCE
 #define _CRT_SECURE_NO_WARNINGS
+#define HOS_FIXTURE 1   /* (recompzel: hos_window_closed_exit's own end without the DLLs' detach left out) */
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
