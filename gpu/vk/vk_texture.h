@@ -67,8 +67,6 @@ struct Texture {
     bool only_cleared = false; // (hookshot) all the GPU did was clear it: what the CPU writes after still counts (a font cache's glyphs)
     uint32_t gpu_gen = 0;     // (the memory generation when the GPU last wrote it: CPU writes after it are taken)
     bool released = false;    // its texture was finalized after the GPU wrote it: CPU writes count again
-    uint64_t let_go = 0;      // (Triforce) the present at which the game finalized a texture over it, 0 once it is used again:
-                              // one uploaded from memory goes first while VRAM is short (texture_sweep)
     uint32_t release_gen = 0;
     uint64_t gpu_wrote_seen = 0;   // (the newest finished GPU write into its storage it was uploaded after)
     uint64_t last_written = 0;     // (the frame the GPU last wrote it: a render target, each frame it is used)
@@ -100,12 +98,6 @@ struct Texture {
     uint64_t owned_frame = 0; // (the present its storage was last noted as render targets' (gpu_owned))
     uint32_t key_layout = 0, key_cls = 0;   // (the key's storage layout and format class)
     bool vw_listed = false;   // (in the list of GPU-written textures of virtual pools: texture_flush_to_guest)
-    uint64_t wb_written = 0;  // (Triforce: the last_written its texels were put into the game's memory for, or are on their way for (bake_writeback_step); 0: not)
-    uint64_t wb_done_frame = 0;   // (and the present they got there at; 0: not yet)
-    uint64_t wb_burst = 0;        // (the frame the GPU began drawing into it after a frame or more of not doing so: texture_written)
-    uint32_t wb_quick = 0;        // (how many such runs in a row began within 30 presents of the one before: a target drawn in turns)
-    uint64_t wb_rec = 0;          // (the recording it was last listed in as written early in such a run: texture_end_recording)
-    uint64_t wb_value = 0;        // (the submission whose own commands write its texels into its memory; 0: none)
     uint64_t pool_key = 0;    // (a render target's image: its create info's key in the pool it goes to when the texture does)
     std::unordered_map<uint64_t, VkImageView> views;
     uint64_t view_failed_frame = 0;   // (transient allocation failure: retry uncached views next frame, keep cached ones usable)
@@ -129,9 +121,6 @@ void texture_resident_flush(Texture* tex);
 /// What the replay's recording is: the main command buffer, and the one uploads and new images' layout changes go to
 /// (submitted right before it, so nothing has to end a render pass for them)
 void texture_begin_recording(VkCommandBuffer upload_cmd, uint64_t value);
-/// (Triforce) A recording's end, its passes ended: what the GPU drew for the first time into small textures in it goes into
-/// their storage in guest memory, by commands of this recording (vk_texture.cpp, "what the GPU baked")
-void texture_end_recording(VkCommandBuffer cmd);
 /// true when anything was recorded into the upload command buffer since texture_begin_recording
 bool texture_uploads_recorded();
 /// (RX_VK_SEG_EARLY) the submission part's readback refresh (memory_rb_refresh, once a part) into this thread's upload

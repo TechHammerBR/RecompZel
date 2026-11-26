@@ -36,7 +36,6 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "compat/hookshot_env.h"   // (env_on, env_value_off: the switches' one rule)
 #include "vk_temporal.h"
 #include "vk_fsr3_inputs.h"   // (the camera jitter while AMD FSR 3.1 upscales)
 #include "vk_fsr3.h"          // (retire old FSR 3.1 images after leaving its upscaler)
@@ -576,8 +575,6 @@ void queue_flush_locked() {   // (dev.present_mu held)
     si.pCommandBufferInfos = pend.cbs.data();
     si.signalSemaphoreInfoCount = n;
     si.pSignalSemaphoreInfos = sig;
-    VkSemaphoreSubmitInfo bind_wait;   // (Triforce: after the memory of the mirrors' new pieces is bound, vk_memory.cpp)
-    if (memory_mirror_bind_wait(&bind_wait)) si.waitSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &bind_wait;
     PROF(PROF_QSUBMIT);
     si.pNext = reflex_submit_id(nullptr, pend.reflex);   // (NVIDIA Reflex: the game frame of the batch's first command buffer)
     VkSemaphoreSubmitInfo sparse_wait;   // (hookshot: after the sparse mirrors' binds, RX_VK_MIRROR_SPARSE)
@@ -662,7 +659,6 @@ void wait_lost(const char* what, uint64_t v) {
     if (logged++ >= 8) return;
     logf("vk: %s %llu came back VK_ERROR_DEVICE_LOST: the GPU device is lost", what, (unsigned long long)v);
 }
-bool wait_recorded(uint64_t f, uint64_t timeout_ns, int* ok);
 } // namespace
 uint64_t vk_timeline_completed() { return timeline ? completed() : 0; }
 int64_t vk_value_submitted_ns(uint64_t v);
@@ -1963,9 +1959,6 @@ int64_t vk_value_submitted_ns(uint64_t v) {   // (0: not submitted yet, or the r
     return value_submit_v[v & 1023].load(std::memory_order_relaxed) == v ? value_submit_ns[v & 1023].load(std::memory_order_relaxed) : 0;
 }
 
-/// (Evil Hookshot) the GPU's time in all recordings so far, ns (the timestamps read back so far): vk_memory.cpp's mirror trials
-int64_t gpu_time_total_ns() { return st_gpu_ns; }
-
 uint64_t ub_generation() {
     return ub_gen;
 }
@@ -2444,9 +2437,7 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             end_pass(cmd);
             GprofSpan gp(cmd, "event signal (barrier, write, barrier)");
             full_barrier(cmd);
-            memory_bind_event_write(true);   // (Triforce: not a write-back the captures of its page wait for)
             gpu_write(cmd, e.gpu, &v, 4);
-            memory_bind_event_write(false);
             break;
         }
         case NOP_WAIT_EVENT: {   // (a wait for an event another queue's work signals: submit_job orders them)
@@ -3292,58 +3283,6 @@ int par_threads() {
     static const int n = std::clamp(getenv("RX_VK_PARALLEL") ? atoi(getenv("RX_VK_PARALLEL")) : 0, 0, 8);
     return n;
 }
-bool par_auto() {   // (the tuner only when asked for: RX_VK_PARALLEL_AUTO)
-    static const bool v = !getenv("RX_VK_PARALLEL") && getenv("RX_VK_PARALLEL_AUTO") && par_threads_max() >= 2;
-    return v;
-}
-bool par_auto_on = false;   // (the replay thread's: the parallel replay is the one in use now)
-int par_threads() {
-    const int n = par_threads_max();
-    return par_auto() && !par_auto_on ? 0 : n;
-}
-/// At each present (the replay thread): the tuner. Every kEvery presents it times kTake frames as they are, kTake the other way
-/// (after kSettle to settle) and kTake as they were again, and changes over when the other way's mean frame was at least 4%
-/// shorter than both: a scene that changed under the trial does not pass for a gain. Frames over 60 ms (a load) are left out
-void par_tune_present() {
-    if (!par_auto()) return;
-    constexpr int kEvery = 900, kTake = 80, kSettle = 24;
-    static auto last = std::chrono::steady_clock::now();
-    const auto now = std::chrono::steady_clock::now();
-    const double ms = std::chrono::duration<double, std::milli>(now - last).count();
-    last = now;
-    static int phase = 0, n = 0, cnt[3];
-    static double sum[3];
-    static int64_t frames = 0, next_trial = 600, st_trials = 0, st_changes = 0;
-    frames++;
-    if (phase == 0) {
-        if (frames < next_trial) return;
-        phase = 1, n = 0;
-        sum[0] = sum[1] = sum[2] = 0, cnt[0] = cnt[1] = cnt[2] = 0;
-        return;
-    }
-    const int k = phase - 1;
-    n++;
-    if (n > (phase == 1 ? 0 : kSettle) && ms <= 60.0) sum[k] += ms, cnt[k]++;
-    if (n < (phase == 1 ? kTake : kSettle + kTake)) return;
-    n = 0;
-    if (phase == 1) {
-        par_auto_on = !par_auto_on, phase = 2;
-    } else if (phase == 2) {
-        par_auto_on = !par_auto_on, phase = 3;
-    } else {
-        phase = 0, st_trials++;
-        const bool ok = cnt[0] >= kTake * 3 / 4 && cnt[1] >= kTake * 3 / 4 && cnt[2] >= kTake * 3 / 4;
-        const double a = cnt[0] ? sum[0] / cnt[0] : 0, b = cnt[1] ? sum[1] / cnt[1] : 0, c = cnt[2] ? sum[2] / cnt[2] : 0;
-        const bool better = ok && b < std::min(a, c) * 0.96;
-        if (better) par_auto_on = !par_auto_on, st_changes++;
-        next_trial = frames + (better ? kEvery : kEvery * 2);
-        if (better || st_trials <= 8 || st_trials % 20 == 0)
-            logf("vk: parallel replay, trial %lld: %s %.2f ms a frame, the other way %.2f, %s again %.2f: %s (%lld changes so far)",
-                 (long long)st_trials, par_auto_on != better ? "parallel" : "serial", a, b, par_auto_on != better ? "parallel" : "serial", c,
-                 better ? (par_auto_on ? "parallel from now on" : "serial from now on") : (ok ? "as it was" : "not measured (a load)"),
-                 (long long)st_changes);
-    }
-}
 struct ParPool {
     std::mutex mu;
     std::condition_variable cv, done;
@@ -3414,8 +3353,6 @@ Recording& begin_segment_recording(uint64_t value) {
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(r.cmd, &bi);
     r.value = value;
-    r.part = 0;   // (a parallel replay's segment: it writes nothing back itself, and its submit is not on the recordings' timeline)
-    memory_recording_part(++rec_part_next);   // (a number of its own all the same: what it reads in place comes after the parts before it)
     return r;
 }
 // ---- RX_VK_SEG_SETUP_PAR=1 (off by default): a segment's command buffers begun by the thread that records it ----
@@ -4389,15 +4326,6 @@ struct SlowWatch {
             if (a + b + c >= 1.0 || w >= 1.0)
                 k += snprintf(line + k, sizeof line - k, " [memory sync: maps %.1f (lock waits %.1f), capture %.1f, collect %.1f]", a, w, b, c);
         }
-        {   // (hookshot: which part of "memory sync" it was: the pools' refresh [and its lock waits], the capture, the written pages collected.
-            // Counted across threads, so a part another thread spent meanwhile shows too)
-            const double a = (memsync_part_ns[0].load(std::memory_order_relaxed) - ms0[0]) / 1e6,
-                         b = (memsync_part_ns[1].load(std::memory_order_relaxed) - ms0[1]) / 1e6,
-                         c = (memsync_part_ns[2].load(std::memory_order_relaxed) - ms0[2]) / 1e6,
-                         w = (memsync_lock_wait_ns.load(std::memory_order_relaxed) - ms0[3]) / 1e6;
-            if (a + b + c >= 1.0 || w >= 1.0)
-                k += snprintf(line + k, sizeof line - k, " [memory sync: maps %.1f (lock waits %.1f), capture %.1f, collect %.1f]", a, w, b, c);
-        }
         logf("%s", line);
     }
 };
@@ -4529,12 +4457,6 @@ std::mutex held_mu;   // (its own: sync_order_mu is held while whole submissions
 std::vector<nvn_tex> held_tex_releases;    // (held_mu)
 std::vector<nvn_prog> held_prog_releases;  // (held_mu)
 std::atomic<int64_t> st_held_releases{0};
-/// Whether a stopped queue waits on an event whose value is guest memory's (never set by the stream or nvnEventSignal)
-bool waits_on_memory_event() {
-    for (const auto& [queue, q] : qruns)
-        if (q.waiting && !ev_values.count(wait_at(q.p).gpu)) return true;
-    return false;
-}
 /// Whether a stopped queue waits on an event whose value is guest memory's (never set by the stream or nvnEventSignal)
 bool waits_on_memory_event() {
     for (const auto& [queue, q] : qruns)
@@ -7052,7 +6974,7 @@ void status_tick() {
     static int64_t last_ns = 0, slowest_ns = 0;
     const int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (last_ns) slowest_ns = std::max(slowest_ns, now_ns - last_ns);
-    // (RX_VK_FRAME_TRACE=1: every frame a line of triforce_frames.csv beside the game, present to present and what the frame did,
+    // (RX_VK_FRAME_TRACE=1: every frame a line of hookshot_frames.csv beside the game, present to present and what the frame did,
     // so that each stutter can be matched to its cause: waits for shaders or pipelines, translation, uploads, the memory sync,
     // pipeline compiles, the GPU behind. RX_VK_FRAME_LOG has the frame times alone)
     static FILE* trace = [] {
@@ -7436,7 +7358,6 @@ void do_present(const nvn_tex* t, const int crop[4], float cover) {
     // (hookshot) NVIDIA Reflex (vk_reflex.cpp): this frame's simulation ended, its submission starts; on the way out (after the
     // present) the driver's sleep until the next frame should begin. AMD Anti-Lag 2 (vk_antilag.cpp) waits there as well: the
     // next frame's input stage
-    // (Triforce calls renodx_present here: RenoDX is not part of RecompZel)
     temporal_idle();   // (DLSS, FSR: their video memory let go once not used for a while)
     status_tick();   // (the status line, and the video-memory warning)
     reflex_present_begins();
@@ -9847,7 +9768,7 @@ bool replay_start() {
         VkFenceCreateInfo fi{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         if (vkCreateFence(dev.device, &fi, nullptr, &acquire_fence) != VK_SUCCESS) return false;
     }
-    if (par_threads_max() >= 2 && !init_pools_make(pi)) return false;   // (last: nothing after it fails and leaves them made)
+    if (par_threads() >= 2 && !init_pools_make(pi)) return false;   // (last: nothing after it fails and leaves them made)
     logf("vk: replay ready (%s; push descriptors %s (%u), extended dynamic state 3 %s, custom border colours %s)",
          dev.offscreen ? "offscreen" : "window", dev.push_descriptor ? "yes" : "no", dev.max_push_descriptors,
          dev.eds3_blend ? "yes" : "no", dev.custom_border_color ? "yes" : "no");

@@ -7,7 +7,6 @@
 //
 // Pipelines persist in a VkPipelineCache in the game folder's cache/ (hookshot_vk_pipelines.bin).
 #include <algorithm>
-#include "prepare_workers.h"
 #include <filesystem>
 #include <iterator>
 #include <tuple>
@@ -36,7 +35,6 @@
 #include <malloc.h>   // (malloc_trim: compute_gate.h trims)
 #endif
 
-#include "compat/hookshot_env.h"   // (env_on, env_value_off: the switches' one rule)
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 
 #include "vk_paths.h"
@@ -5180,7 +5178,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
                     const uint64_t head = std::min<uint64_t>(n, (addr - base) + 0x40);
                     (void)gpu_buffer_bind(base, (head + 3) & ~3ull, true);
                 }
-                // (on by default: the whole range kept for the GPU against the CPU's page syncs, vk_memory.cpp prot_pages; RX_VK_PROTECT_BARE=0 off)
+                // (RX_VK_PROTECT_BARE=1: the whole range kept for the GPU against the CPU's page syncs, vk_memory.cpp prot_pages)
                 if (b && bare && d.is_written)
                     if (const uint64_t guest = host->gpu_guest(base)) memory_protect_gpu(guest, n);
                 if (b && wide_n) {   // (the same buffer, its binding longer, nothing more marked written)
@@ -11714,38 +11712,6 @@ size_t warm_computes_apart(const std::function<void(size_t done, size_t total)>&
 /// background: in play, behind the game: a few workers at idle priority, translation only (the driver's part is left to first use:
 /// its compiler crashing in here would take the game with it)
 /// refresh_states: Builder preparation also imports state lists when the seed is already prepared
-// (upstream Hookshot #15: the preparation's worker count, gpu/vk/prepare_workers.h)
-unsigned usable_cpus() {
-    const unsigned all = std::max(1u, std::thread::hardware_concurrency());
-#ifdef _WIN32
-    DWORD_PTR proc = 0, sys = 0;
-    if (!GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) || !proc) return all;
-    unsigned n = 0;
-    for (uint64_t m = (uint64_t)proc; m; m &= m - 1) n++;
-    // (a mask covers one processor group, 64 CPUs at most: past that, Windows may run the process on every group)
-    return n < 64 ? std::clamp(n, 1u, all) : all;
-#else
-    return all;
-#endif
-}
-unsigned half_cpus() {
-    return std::max(1u, std::min(std::max(1u, std::thread::hardware_concurrency()) / 2, usable_cpus()));
-}
-bool segment_heap() {
-#ifdef _WIN32
-    return prepare_workers::segment_heap_signature(GetProcessHeap());
-#else
-    return false;
-#endif
-}
-unsigned prepare_cpus() {
-    uint64_t avail_mb = 0;
-#ifdef _WIN32
-    MEMORYSTATUSEX m{sizeof m};
-    if (GlobalMemoryStatusEx(&m)) avail_mb = m.ullAvailPhys >> 20;
-#endif
-    return prepare_workers::count(half_cpus(), usable_cpus(), avail_mb, segment_heap());
-}
 bool prepare_run(void (*progress)(size_t done, size_t total), bool background, bool refresh_states) {
     const auto t0 = std::chrono::steady_clock::now();
     const std::string path = prepared_path();
@@ -14463,7 +14429,5 @@ UniformUpload uniform_upload(uint64_t size) {
     if (at == UINT64_MAX) return {};
     return {{cur->stream, at, size, 0}, cur->mapped + at, cur->stream_alloc};
 }
-
-int64_t draw_dummy_textures() { return 0; }   // (Triforce's frame trace column; the dummy bindings are not counted here)
 
 } // namespace mkwvk
