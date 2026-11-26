@@ -1,5 +1,45 @@
 # Changelog
 
+## [3.0.3](https://github.com/TheologyAIGeek/Hookshot/pull/1) (2026-11-26)
+
+The first release of this fork, which carries on from Hookshot 3.0.2 now that the original project has stopped. It takes
+the fixes of [Longshot](https://git.magicbean.dev/MagicBeanDev/Longshot), the active fork of the same code, that stand
+on their own, and gets the game-free checks passing again. Built from source on Windows (RTX 3080 Ti laptop) and played.
+
+
+### Bug Fixes
+
+* **vk:** finalized render targets whose storage the game wrote over are let go again (RAM and VRAM no longer fill up with them)
+* **vk:** freed game memory under a large import is no longer given back to Windows while the GPU still imports it
+* **vk:** a DLSS feature refused for lack of video memory is retried, not left off for the session
+* **vk:** no more game stalls waiting for GPU work it does not need (culling-table reads wait only for their own bytes)
+* **vk:** a load marker left by caches that lacked pipelines is not followed on PCs with 20 GB of RAM or less
+* **vk:** Lunar Lake (Arc 140V) draws its foliage cut out; RADV older than 26.2.5 keeps NumWorkgroups live in native mesh shaders
+* **vk:** global loads across the reserved register boundary are mapped correctly
+* **vk:** the FSR 4 back end builds again, and the renderer imports only Windows' core DLLs (the screenshot writer loads ole32 at its first use)
+* **video:** a movie's picture waits for its clock, so its sound is no longer late at high frame rates
+* **video:** movies keep their 16:9 shape on screens narrower than 16:9
+* **input:** a trigger presses only once it has read let go for a second (receivers whose triggers read as held no longer lock ZL and ZR)
+* **input:** Plus is Tab alone, not Enter, which controller software sends for a pad's A
+* **oot:** a save left outside Hyrule Field in the first adult night's time lock runs its clock again
+* **debug:** inventory song edits survive a save reload
+* **saves:** an old save that could not be deleted can still be read
+* **recomplauncher:** backups and cloud saves copy the save folders, not the whole data folder
+* **host:** on/off switches read `true`, `yes` and `on` as on
+* **build:** translated files the PC changed, or that hold a zero byte, are made again in the same build
+
+
+### Features
+
+* **vk:** the CPU texture decoders are ported MIT code (`gpu/vk/texdecode/`), replacing suyu's, whose ASTC decoder was wrong on some legal blocks
+* **build:** one shader that crashes or hangs the GPU driver costs the shader preparation that shader, not the whole run
+
+
+### Continuous Integration
+
+* the game-free checks pass again on Linux; the Windows checks fail 64 times, all as on 3.0.2's code (a cleanup of their own)
+
+
 ## [2.2.0-rc.1](https://git.notrexed.dev/Hookshot/Hookshot/compare/v2.1.0...v2.2.0-rc.1) (2026-11-12)
 
 
