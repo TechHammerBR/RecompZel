@@ -195,7 +195,7 @@ static void fps_refresh(void) {
     else if (v != 60) hos_log("vi: frame rate cap %d: pacing, the game's limiter and its time step follow it", v);
     else if (was) hos_log("vi: frame rate cap 60: the game's own limiter and step");
 }
-static int fps_max(void) {
+static int fps_cap(void) {
     if (!fps_now) fps_refresh();
     return fps_now;
 }
@@ -210,13 +210,15 @@ static int menu_hold(int64_t now, int64_t shown, int cap, int on) {
 static int fps_effective(int64_t now) {
     static int on = -1, was;
     if (on < 0) on = !(getenv("HOS_MENU_FPS60") && !atoi(getenv("HOS_MENU_FPS60")));
-    const int held = menu_hold(now, __atomic_load_n(&hos_menu_shown_ns, __ATOMIC_RELAXED), fps_max(), on);
+    const int held = menu_hold(now, __atomic_load_n(&hos_menu_shown_ns, __ATOMIC_RELAXED), fps_cap(), on);
     if (held != was) {
         was = held;
         hos_log("vi: %s", held ? "a game menu in front: 60 fps, the console's step" : "menu closed: the frame rate cap again");
     }
-    return held ? 60 : fps_max();
+    return held ? 60 : fps_cap();
 }
+/* the rate every pacing, limiter and step site reads: the cap, 60 while a menu is in front */
+static int fps_max(void) { return fps_effective(hos_now_ns()); }
 static int64_t next_frame_at, window_start, frames_in_window;
 static volatile LONG64 presents;
 /* (HL_STEP_SCAN, hl_trace.c: the frames presented so far) */
@@ -616,7 +618,7 @@ static void realtime_step(int64_t now) {
     } else {
         __atomic_store_n(&hos_frame_seconds_bits, 0, __ATOMIC_RELAXED);
     }
-    const int top = timed ? 60 : fps_effective(now);
+    const int top = timed ? 60 : fps_max();
     const double ratio = sum / count * 60.0;
     int *slot = (int *)GP(mod + 0x2c8);
     if (*slot < 15 || (*slot > (fps_max() < 60 ? 60 : fps_max()) && *slot != slot_set)) {

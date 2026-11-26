@@ -25,13 +25,10 @@ def main():
     args = parser.parse_args()
     vi = (ROOT / "host/nn_vi.c").read_text(encoding="utf-8")
     menu = (ROOT / "host/oot_menu.c").read_text(encoding="utf-8")
-    step = block(vi, "static void realtime_step(")
-    for need in ("const int cap_now = fps_now(now);", "const int timed = fps_now(now) > 60",
-                 "const int top = timed ? 60 : fps_now(now);"):
-        if need not in step:
-            raise SystemExit(f"realtime_step does not use the menu-aware rate: {need}")
-    if "period = 1000000000LL / fps_now(now) * present_interval" not in block(vi, "void hos_vi_native_presented("):
-        raise SystemExit("the present pacing does not use the menu-aware rate")
+    if "static int fps_max(void) { return fps_effective(hos_now_ns()); }" not in vi:
+        raise SystemExit("fps_max (every pacing, limiter and step site) is not the menu-aware rate")
+    if "return held ? 60 : fps_cap();" not in block(vi, "static int fps_effective("):
+        raise SystemExit("fps_effective does not hold 60 while a menu is in front")
     tick = block(menu, "void hos_oot_menu_tick(")
     if "__atomic_store_n(&hos_menu_shown_ns, now" not in tick or "if (front || pause_runs)" not in tick:
         raise SystemExit("the menu tick does not stamp hos_menu_shown_ns")
