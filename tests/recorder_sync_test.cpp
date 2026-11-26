@@ -27,6 +27,9 @@
 #ifdef _WIN32
 #include <malloc.h>
 #endif
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 #include "vk_work.h"
 
@@ -37,6 +40,7 @@ extern "C" __declspec(dllimport) int __stdcall GetThreadTimes(void*, void*, void
 
 namespace mkwvk {
 std::atomic<uint64_t> work_epoch{0};
+std::atomic<uint64_t> foreign_work{0};   // (vk_work.h's note_work counts into it, as vk_texture.cpp defines it)
 std::atomic<bool> par_active{false};
 void logf(const char* fmt, ...) {   // (the renderer's log: printed, for test_recorder_sync.py to count)
     char b[1024];
@@ -395,6 +399,8 @@ F(vkCmdSetCheckpointNV, (VkCommandBuffer cb, const void* m), handle(cb), handle(
 F(vkCmdWriteTimestamp2, (VkCommandBuffer cb, VkPipelineStageFlags2 s, VkQueryPool p, uint32_t q), handle(cb), put(s), handle(p), put(q);
   fx(cb, 1, (uint64_t)(uintptr_t)p << 16 | q);)
 F(vkCmdResetQueryPool, (VkCommandBuffer cb, VkQueryPool p, uint32_t f, uint32_t n), handle(cb), handle(p), put(f), put(n);)
+F(vkCmdCopyQueryPoolResults, (VkCommandBuffer cb, VkQueryPool p, uint32_t f, uint32_t n, VkBuffer b, VkDeviceSize o, VkDeviceSize s,
+  VkQueryResultFlags fl), handle(cb), handle(p), put(f), put(n), handle(b), put(o), put(s), put(fl);)
 
 static VkResult VKAPI_CALL fake_vkBeginCommandBuffer(VkCommandBuffer cb, const VkCommandBufferBeginInfo* bi) {
     Guard g_(cb, "vkBeginCommandBuffer", false);
@@ -813,6 +819,9 @@ static void frame() {
         vkCmdClearDepthStencilImage(cmd, H<VkImage>(0xD109), VK_IMAGE_LAYOUT_GENERAL, &ds, 1, &dr);
         if (g_mutate) poison(&ds), poison(&dr), poison(ranges, 2);
     }
+    // (vk_replay.cpp occ_copy_part, RX_VK_OCC_COPY: a recording's occlusion queries copied into host memory at its end)
+    vkCmdCopyQueryPoolResults(cmd, H<VkQueryPool>(0x401), 3, 97, H<VkBuffer>(0xE200), 48, 16,
+                              VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
     vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, H<VkQueryPool>(0x400), 1);
 }
 
@@ -987,6 +996,17 @@ static void oversize() {
     draws_into(kCmd, 20, 1);
     recording_end(6);
 }
+/// The same packet first, the ring empty (the recorder just started, at the ring's start): the ring has room for it, the packet's
+/// room has not, so it is still made directly (the room alone decides, not how far the recorder has got)
+static void oversize_first() {
+    recording_begin();
+    std::vector<uint8_t> big(4096);
+    for (size_t i = 0; i < big.size(); i++) big[i] = (uint8_t)(i * 7);
+    vkCmdUpdateBuffer(kUp, H<VkBuffer>(0xE200), 0, big.size(), big.data());
+    if (g_mutate) poison(big.data(), big.size());
+    draws_into(kCmd, 20, 2);
+    recording_end(7);
+}
 /// Teardown with work queued: g_at_stop runs with frames in flight (the recorder stopped and joined), then more is recorded (the
 /// recorder started again), then vkDestroyDevice (stopped again: its boundary)
 static void (*g_at_stop)() = nullptr;
@@ -1057,17 +1077,40 @@ static void status_reads() {
     }
 }
 /// A buffer destroyed while a recording that names it is open (valid: that recording is reset, never submitted); every command
-/// naming it must have reached the driver before the destruction
+/// naming it must have reached the driver before the destruction. Leave the last copy unpublished: a producer pause cannot let
+/// the recorder finish it by chance. The real destruction boundary publishes and waits; a missing boundary leaves the copy until
+/// the following pool reset, so both the ordered log and the destroyed-buffer check catch it.
 static void destroy_recorded() {
     recording_begin();
     frame();
-    copy_runs(kUp, 0);   // (names 0xE001: in flight behind the frame when it is destroyed)
+    const bool threaded = rec::mode() == rec::THREAD;
+    static uint64_t unpublished_at;
+    if (threaded) {
+        // Drain the frame and restart at a ring boundary, so the one small copy neither wraps nor fills a publication batch.
+        const uint64_t cap = rec::g_rec.cap;
+        rec::g_rec.stop();
+        unpublished_at = (rec::g_rec.W.load() + cap - 1) & ~(cap - 1);
+        rec::g_rec.W.store(unpublished_at), rec::g_rec.R.store(unpublished_at);
+        // Stay awake until the first publication. Otherwise sleeping could make publish() flush the copy immediately.
+        rec::g_thread_start_hook = [] {
+            while (rec::g_rec.W.load() == unpublished_at) std::this_thread::yield();
+        };
+    }
+    copy_runs(kUp, 0);   // (names 0xE001: left unpublished until an ordered boundary)
+    if (threaded && (rec::g_rec.w <= unpublished_at || rec::g_rec.W.load() != unpublished_at)) {
+        std::fprintf(stderr, "FAIL destroy fixture: the copy must be pending and unpublished before destruction\n");
+        std::exit(2);
+    }
     vkDestroyBuffer(kDev, H<VkBuffer>(0xE001), nullptr);
     vkResetCommandPool(kDev, kUpPool, 0);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     vkBeginCommandBuffer(kUp, &bi);
     copy_runs(kUp, 2);
     recording_end(14);
+    if (threaded) {
+        rec::g_rec.stop();
+        rec::g_thread_start_hook = nullptr;   // (only changed while the recorder is joined)
+    }
 }
 static int g_stress_frames = 0;
 static void stress() {
@@ -1140,7 +1183,7 @@ struct Out {
 static Out run_tracked(void (*scenario)(), int mode, bool mutate, bool own_thread = false, bool lock = true) {
     Out o;
     const auto body = [&] {
-        rec::Arena& a = rec::t_arena;
+        rec::Arena& a = rec::t_arena();
         const uint64_t f0 = a.failures, b0 = a.budget_drains, fb0 = a.fallbacks;
         const long live0 = g_aligned_live.load() - (long)a.nchunks;
         rec::set_mode(mode);
@@ -1243,7 +1286,7 @@ static int bench(int n) {
     } shapes[] = {{"typical draw (push descriptors x3 writes, push constants 96 B, vertex buffers x16, draw)", draw_typical,
                    draw_typical_direct, 4},
                   {"cold draw (+ pipeline, 9 writes, 9 dynamic states, index buffer)", draw_cold, nullptr, 16}};
-    rec::Arena& a = rec::t_arena;
+    rec::Arena& a = rec::t_arena();
     for (const Shape& sh : shapes) {
         // (modes: 0 direct (no wrapper), 1 off (the wrapper's branch), 2 sync, 3 deferred: encode and drain timed apart, 4 thread:
         // the producer's encode and publish, and its wait at the boundary, timed apart; the recorder's busy time a packet)
@@ -1465,13 +1508,13 @@ static void thread_checks(const std::vector<Call>& ref) {
     }
     g_delay_ns = 1000;   // (the recorder behind the producer: a missed wait shows as a call out of place or on a busy command buffer)
     const Out lref = run_tracked(lifecycle, rec::OFF, false);
-    const uint64_t fb0 = rec::t_arena.fallbacks;
+    const uint64_t fb0 = rec::t_arena().fallbacks;
     g_hold_ms = 50;   // (and held at each point the producer must wait: hold())
     const Out lt = run_tracked(lifecycle, rec::THREAD, true);
     g_hold_ms = 0, g_hold_until_ns = 0;
     check_run("thread lifecycle (2 command buffers interleaved; reset, begin, end, submit, wait x2; query read; destruction; caller "
               "memory poisoned; driver 1 us a call)", lref.log, lt);
-    if (rec::t_arena.fallbacks - fb0 != 4) std::printf("FAIL thread lifecycle: %llu fallbacks, 4 expected\n", (unsigned long long)(rec::t_arena.fallbacks - fb0)), failures++;
+    if (rec::t_arena().fallbacks - fb0 != 4) std::printf("FAIL thread lifecycle: %llu fallbacks, 4 expected\n", (unsigned long long)(rec::t_arena().fallbacks - fb0)), failures++;
     // (each thread run with the recorder held at the points the producer must wait: hold(); the direct references without)
     const auto held = [](void (*scenario)(), bool lock) {
         g_hold_ms = 50;
@@ -1551,6 +1594,17 @@ static void thread_checks(const std::vector<Call>& ref) {
         check_run("thread, a packet bigger than its room (4 KB vkCmdUpdateBuffer, 2 KB room): made directly in order", oref.log,
                   run_tracked(oversize, rec::THREAD, true));
         if (rec::g_rec.direct.load() - d0 != 1) std::printf("FAIL thread oversize: %llu calls made directly, 1 expected\n", (unsigned long long)(rec::g_rec.direct.load() - d0)), failures++;
+        // (again with the ring empty: stopped, its counters moved on to the ring's start, so the 8 KB free ahead of the first
+        // packet would hold it; the 2 KB room must still decide)
+        rec::g_rec.stop();
+        const uint64_t at = (rec::g_rec.W.load() + 8191) & ~uint64_t(8191);
+        rec::g_rec.W.store(at), rec::g_rec.R.store(at);
+        const uint64_t d1 = rec::g_rec.direct.load();
+        check_run("thread, the same packet first with the ring empty: made directly in order",
+                  run_tracked(oversize_first, rec::OFF, false).log, run_tracked(oversize_first, rec::THREAD, true));
+        if (rec::g_rec.direct.load() - d1 != 1)
+            std::printf("FAIL thread oversize, ring empty: %llu calls made directly, 1 expected\n",
+                        (unsigned long long)(rec::g_rec.direct.load() - d1)), failures++;
         rec::g_rec.stop();
         rec::g_ring_bytes = bytes, rec::g_ring_room = room;
     }
@@ -1601,6 +1655,9 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
     SetErrorMode(0x0002 | 0x0001);   // (SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS)
 #endif
+#ifdef __linux__
+    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);   // (a fault or abort ends it without a core dump: no crash report, no notification)
+#endif
     std::setvbuf(stdout, nullptr, _IONBF, 0);   // (a broken variant may end the process: what it printed before is kept)
     // (the switch as the renderer reads it: first use, from the environment)
     std::printf("env mode %d\n", rec::mode());
@@ -1620,16 +1677,16 @@ int main(int argc, char** argv) {
     }
     same("direct, caller memory reused after each call", ref, run(frame, rec::OFF, true));
     if (env_mode != rec::OFF) same("RX_VK_RECORDER from the environment, caller memory reused", ref, run(frame, env_mode, true));
-    rec::t_arena.packets = 0;
+    rec::t_arena().packets = 0;
     same("sync (packed, run at once), caller memory reused", ref, run(frame, rec::SYNC, true));
-    if (rec::t_arena.packets != ref.size()) std::printf("FAIL sync: %llu packets for %zu calls\n", (unsigned long long)rec::t_arena.packets, ref.size()), failures++;
-    if (rec::t_arena.ci || rec::t_arena.used) std::printf("FAIL sync: the arena not rewound\n"), failures++;
+    if (rec::t_arena().packets != ref.size()) std::printf("FAIL sync: %llu packets for %zu calls\n", (unsigned long long)rec::t_arena().packets, ref.size()), failures++;
+    if (rec::t_arena().ci || rec::t_arena().used) std::printf("FAIL sync: the arena not rewound\n"), failures++;
     same("deferred (packed, run at the drain), caller memory poisoned in between", ref, run(frame, rec::DEFER, true));
-    if (rec::t_arena.fallbacks) std::printf("FAIL: %llu calls not packed\n", (unsigned long long)rec::t_arena.fallbacks), failures++;
+    if (rec::t_arena().fallbacks) std::printf("FAIL: %llu calls not packed\n", (unsigned long long)rec::t_arena().fallbacks), failures++;
 
     const std::vector<Call> fref = run(fallbacks, rec::OFF, false);
     same("fallback order (pNext chain, inline uniform block), deferred", fref, run(fallbacks, rec::DEFER, false));
-    if (rec::t_arena.fallbacks != 2) std::printf("FAIL: %llu fallbacks, 2 expected\n", (unsigned long long)rec::t_arena.fallbacks), failures++;
+    if (rec::t_arena().fallbacks != 2) std::printf("FAIL: %llu fallbacks, 2 expected\n", (unsigned long long)rec::t_arena().fallbacks), failures++;
 
     // ---- defer (step 1.5): the lifecycle, the replay lock, the budgets, an allocation failure, a parallel replay
     const Out lref = run_tracked(lifecycle, rec::OFF, false);
@@ -1676,7 +1733,7 @@ int main(int argc, char** argv) {
         rec::set_mode(rec::DEFER);
         g_mutate = true, g_log.clear();
         frame();
-        const bool at_once = g_log.size() == ref.size() && !rec::t_arena.head;
+        const bool at_once = g_log.size() == ref.size() && !rec::t_arena().head;
         rec::drain();
         const std::vector<Call> got = g_log;
         rec::set_mode(rec::OFF);

@@ -3,11 +3,16 @@
    (debug output, ticks, info queries) or a sign that an SDK function above it wants an HLE. Unknown ones stop the
    run with the svc number and the caller, so the log says what to do next. Numbers: switchbrew.org "SVC". */
 #include "hos.h"
+#include "hos_guestpages.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifdef TRACY_ENABLE
+#define HT_WRAP_LOCKS   /* (HOOKSHOT_TRACY: this file's locks that have to wait are zones) */
+#include "hos_tracy.h"
+#endif
 
 #define R_OK 0
 /* (mkw-recomp) the region of GetInfo 29/30: 128 GB at 192 GB, between the heap (up from 64 GB) and the address
@@ -149,7 +154,9 @@ static uint32_t arbitrate_lock(uint32_t owner, uint64_t mutex, uint32_t tag) {
     waiters[nwaiters++] = (Waiter){self, mutex, 0, tag, 0};
     ReleaseSRWLockExclusive(&klock);
     int to;
+    HOS_JT(JT_K_WAIT_B, mutex, hos_jt_lr());
     hos_thread_wait(self, -1, &to);   /* woken once release_locked made us the owner */
+    HOS_JT(JT_K_WAIT_E, mutex, 2);
     return 0;
 }
 
@@ -174,7 +181,9 @@ static uint32_t wait_key(uint64_t mutex, uint64_t key, uint32_t tag, int64_t tim
     release_locked(mutex);
     ReleaseSRWLockExclusive(&klock);
     int to;
+    HOS_JT(JT_K_WAIT_B, key, hos_jt_lr());
     hos_thread_wait(self, timeout, &to);
+    HOS_JT(JT_K_WAIT_E, key, to ? 6 : 2);
     if (!to) return 0;
     AcquireSRWLockExclusive(&klock);
     int i = find_thread(self);
@@ -267,7 +276,9 @@ static uint32_t wait_address(uint64_t addr, uint32_t type, uint64_t value, int64
     waiters[nwaiters++] = (Waiter){self, 0, addr, 0, 2};
     ReleaseSRWLockExclusive(&klock);
     int to;
+    HOS_JT(JT_K_WAIT_B, addr, hos_jt_lr());
     hos_thread_wait(self, timeout, &to);
+    HOS_JT(JT_K_WAIT_E, addr, to ? 6 : 2);
     if (!to) return 0;
     AcquireSRWLockExclusive(&klock);
     int i = find_thread(self);
@@ -333,7 +344,20 @@ static void query_memory(uint64_t out, uint64_t addr) {
     else if (addr >= hos_image_base && addr < hos_image_end) { base = hos_image_base; size = hos_image_end - base; state = 0x03; perm = 5; }   /* Code */
     else if (addr >= HOS_HEAP_BASE && addr < HOS_HEAP_BASE + hos_heap_size) { base = HOS_HEAP_BASE; size = hos_heap_size; state = 0x05; perm = 3; }   /* Normal */
     else if (addr >= HOS_SYSTEM_BASE && addr < HOS_SYSTEM_END) { base = HOS_SYSTEM_BASE; size = HOS_SYSTEM_END - HOS_SYSTEM_BASE; state = 0x05; perm = 3; }
-    else { base = addr & ~0xFFFULL; size = 0x1000; }   /* Free: one page, enough for callers probing an address */
+    else if (addr >= HOS_GUEST_SPACE) { base = HOS_GUEST_SPACE; size = 0 - HOS_GUEST_SPACE; state = 0x10; }   /* Inaccessible: past the address space, to its end, as the kernel answers */
+    else {   /* Free: the whole gap, from the end of the region before addr to the start of the one after it, as the kernel
+                answers (free blocks are merged). A walk over the address space region by region, base + size each step,
+                reaches every mapping in a few steps; at one page a step it never got past the system region */
+        const uint64_t lo[] = {HOS_SYSTEM_BASE, hos_image_base, HOS_HEAP_BASE, stack};
+        const uint64_t hi[] = {HOS_SYSTEM_END, hos_image_end, HOS_HEAP_BASE + hos_heap_size, stack + stack_size};
+        uint64_t end = HOS_GUEST_SPACE;
+        for (int i = 0; i < 4; i++) {
+            if (hi[i] <= lo[i]) continue;
+            if (hi[i] <= addr && hi[i] > base) base = hi[i];
+            if (lo[i] > addr && lo[i] < end) end = lo[i];
+        }
+        size = end - base;
+    }
     memset(GP(out), 0, 0x28);
     G64(out) = base;
     G64(out + 8) = size;
@@ -345,6 +369,8 @@ static void query_memory(uint64_t out, uint64_t addr) {
 #define CUR_THREAD 0xFFFF8000u
 static HosThread *thread_handle(uint32_t h) { return h == CUR_THREAD ? hos_self() : hos_thread_by_handle(h); }
 
+int hos_core_count_on(void);
+void hos_core_count_svc(void);
 void a64_svc(Ctx *c, uint32_t imm) {
     hos_vcore_checkpoint();
     switch (imm) {
@@ -373,6 +399,8 @@ void a64_svc(Ctx *c, uint32_t imm) {
     case 0x07:   /* ExitProcess */
         hos_log("svcExitProcess");
         hos_log_flush();
+        void hos_crash_clean_end(void);
+        hos_crash_clean_end();
         ExitProcess(0);
         return;
     case 0x0C: { /* GetThreadPriority(-, handle) -> (result, priority) */
@@ -437,6 +465,7 @@ void a64_svc(Ctx *c, uint32_t imm) {
         return;
     }
     case 0x10:   /* GetCurrentProcessorNumber */
+        if (hos_core_count_on()) hos_core_count_svc();   /* (TICK-062 A10, HOS_CORE_COUNT) */
         c->x[0] = (uint32_t)hos_thread_core(hos_self());
         return;
     case 0x1E:   /* GetSystemTick */
@@ -456,7 +485,9 @@ void a64_svc(Ctx *c, uint32_t imm) {
     case 0x27: { /* OutputDebugString(str, size) */
         uint64_t n = c->x[1] > 4096 ? 4096 : c->x[1];
         char buf[4097];
-        memcpy(buf, GP(c->x[0]), n);
+        const void *from = hos_guest_range(c->x[0], n);   /* (hookshot: guest memory only, not the host's, into the log) */
+        if (!from) n = 0;
+        else memcpy(buf, from, n);
         buf[n] = 0;
         hos_log("debug: %s", buf);
         c->x[0] = R_OK;
@@ -475,7 +506,8 @@ void a64_svc(Ctx *c, uint32_t imm) {
         {   /* (pages under a Vulkan import stay committed, zeroed: hos_mem.c FreeMemoryPages) */
             extern int rx_guest_imported(uint64_t lo, uint64_t hi);
             if (rx_guest_imported(c->x[0], c->x[0] + c->x[1])) memset(GP(c->x[0]), 0, (size_t)c->x[1]);
-            else VirtualFree(GP(c->x[0]), (SIZE_T)c->x[1], MEM_DECOMMIT);
+            else if (hos_gp_ready() && hos_gp_touches(GP(c->x[0]), (size_t)c->x[1])) hos_gp_decommit(GP(c->x[0]), (size_t)c->x[1]);
+            else hos_gp_hold(1), VirtualFree(GP(c->x[0]), (SIZE_T)c->x[1], MEM_DECOMMIT), hos_gp_hold(0);
         }
         c->x[0] = R_OK;
         return;

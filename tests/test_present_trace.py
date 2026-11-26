@@ -49,6 +49,7 @@ static int64_t renderer_work, back_work;
 #define I(i) 0
 static void die(const char *fmt, ...) { (void)fmt; exit(91); }
 static void held_flush(void) { clock_now += 2000000; }
+#define HOS_CHAIN(kind, key) ((void)(key))   /* (HOS_CHAIN off: host/hos.h) */
 static int hos_vcore_away(void) { clock_now += 1000000; return has_vcore; }
 static const nvn_tex *win_tex(const nvn_win *o, int i) { (void)o; (void)i; return &texture; }
 static void rx_nvn_present(const nvn_tex *t, const int crop[4]) {
@@ -64,6 +65,7 @@ static void hos_sleep_ns(int64_t ns) { (void)ns; ++sleeps; }
 static void scan_dt(long long frame) { (void)frame; ++scans; }
 static void realtime_step(int64_t now) { (void)now; ++steps; }
 static void hos_log(const char *fmt, ...) { (void)fmt; }
+void hos_cheats_frame(void) {}   /* (host/cheats.c: the mods' cheats, at each present) */
 static uint64_t hos_ticks(void) { return 0; }
 static int fps_max(void) { return 60; }   /* (nn_vi.c's Frame rate cap: the console's 60 here) */
 static int fps_now(int64_t now) { (void)now; return fps_max(); }   /* (60 while a menu is in front) */

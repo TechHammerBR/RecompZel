@@ -1,28 +1,24 @@
 """A draw does not bind vertex streams or an index buffer already on the command buffer.
 
-python -I -B tests/test_draw_binds.py [--cxx g++]
+python -I -B tests/test_draw_binds.py [--cxx g++] [--headers <Vulkan headers>]
 """
 import argparse
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
+
+RUN_ALL_ARGS = ["--headers", "{vulkan_headers}"]   # (draw_key.h includes Vulkan's, for its types)
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cxx", default="g++")
+    p.add_argument("--headers", type=Path, help="the Vulkan headers, where the compiler does not find them itself")
     a = p.parse_args()
     source = (ROOT / "gpu" / "vk" / "vk_draw.cpp").read_text(encoding="utf-8")
     draw = block(source, "void draw(")
@@ -43,16 +39,25 @@ def main():
     if source.count("vkCmdBindIndexBuffer(") != 1:
         raise SystemExit("an index buffer is bound from more than one place")
     begin = block(source, "void draw_begin_recording(")
-    if "vertex_set.on = false" not in begin or "last_ib.on = false" not in begin:
+    # (what the command buffer has bound is one object, CmdBound: a new recording forgets all of it with reset())
+    bound = block(source, "struct CmdBound {")
+    reset, keeping = block(bound, "void reset() {"), block(bound, "void reset_keeping_index() {")
+    if ("bound().reset();" not in begin or "reset_keeping_index();" not in reset or "ib.on = false" not in reset or
+            "vertex_set.on = false" not in keeping):
         raise SystemExit("a new command buffer keeps the vertex set and index buffer of the last one")
-    verts = block(source, "bool vertex_set_same(")
-    index = block(source, "bool index_bind_same(")
+    # (the functions run below are draw_key.h's, which vk_draw.cpp includes: they were cut out of vk_draw.cpp by their text)
+    key = (ROOT / "gpu" / "vk" / "draw_key.h").read_text(encoding="utf-8")
+    if '#include "draw_key.h"' not in source:
+        raise SystemExit("vk_draw.cpp does not include draw_key.h: what runs below is not what a draw runs")
+    for fn in ("bool vertex_set_same(", "bool index_bind_same("):
+        if fn in source or fn not in key:
+            raise SystemExit("draw_key.h is not the one place that defines " + fn)
     fixture = f'''#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #define CHECK(x) do {{ if (!(x)) {{ std::fprintf(stderr, "FAIL:%d %s\\n", __LINE__, #x); std::exit(1); }} }} while (0)
-{verts}
-{index}
+#include "draw_key.h"
+using namespace mkwvk;
 int main() {{
     uint64_t addr[16]{{}}, size[16]{{}}, caddr[16]{{}}, csize[16]{{}};
     uint32_t stride[16]{{}}, cstride[16]{{}};
@@ -88,7 +93,8 @@ int main() {{
         cpp = Path(tmp) / "fixture.cpp"
         exe = Path(tmp) / "fixture"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+        subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "gpu" / "vk"),
+                        *(["-I", str(a.headers)] if a.headers else []), str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
 

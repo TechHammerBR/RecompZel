@@ -25,6 +25,13 @@ int main() {
     CHECK("handheld at the game's 3/4", dc::scene_size_fits(1152, 648, 1536, 864));
     CHECK("DLAA, the scene at full size", dc::scene_size_fits(1536, 864, 1536, 864));
     CHECK("1080p Ultra Performance", dc::scene_size_fits(640, 360, 1920, 1080));
+    // Rounding the render size may put either axis up to two input pixels below one third.
+    CHECK("one pixel under a third wide", dc::scene_size_fits(511, 288, 1536, 864));
+    CHECK("two pixels under a third wide", dc::scene_size_fits(510, 288, 1536, 864));
+    CHECK("one pixel under a third high", dc::scene_size_fits(512, 287, 1536, 864));
+    CHECK("two pixels under a third high", dc::scene_size_fits(512, 286, 1536, 864));
+    CHECK("two pixels under a third on both axes", dc::scene_size_fits(510, 286, 1536, 864));
+    CHECK("rounded 1440p Ultra Performance", dc::scene_size_fits(853, 480, 2560, 1440));
     // every output the menu has, with every DLSS share (8, 7, 6, 4 twelfths) and DLAA's (12)
     const unsigned outputs[][2] = {{1536, 864}, {1920, 1080}, {2048, 1152}, {2560, 1440}, {3840, 2160}};
     for (const auto& o : outputs)
@@ -37,8 +44,8 @@ int main() {
     CHECK("output not known yet", !dc::scene_size_fits(512, 288, 0, 0));
     CHECK("output not known yet (1080p scene)", !dc::scene_size_fits(1536, 864, 0, 0));
     CHECK("no size", !dc::scene_size_fits(0, 0, 1536, 864));
-    CHECK("under a third wide", !dc::scene_size_fits(511, 288, 1536, 864));
-    CHECK("under a third high", !dc::scene_size_fits(512, 287, 1536, 864));
+    CHECK("beyond two pixels under a third wide", !dc::scene_size_fits(509, 288, 1536, 864));
+    CHECK("beyond two pixels under a third high", !dc::scene_size_fits(512, 285, 1536, 864));
     CHECK("a square shadow-map-like target", !dc::scene_size_fits(384, 384, 1536, 864));
     CHECK("a half-size pass of the handheld scene", !dc::scene_size_fits(256, 144, 1536, 864));
     CHECK("the old floor is under a third of 2048x1152", !dc::scene_size_fits(640, 360, 2048, 1152));
@@ -80,6 +87,79 @@ int main() {
     CHECK("good after bad", decode("\xFF\xC3\xA9", bad) == L"�é" && bad);
     CHECK("no flag asked", dc::utf8_to_wide("\xFF") == L"�");
     CHECK("empty", decode("", bad).empty() && !bad);
+    // ---- which DLSS mode takes a render size (vk_dlss.cpp prepare) ----
+    {
+        // (a 4416x1864 output, the 3840x2160-pixel widescreen picture on a 21:9 screen: NGX's ranges there. Quality,
+        // Balanced and Performance share 50-100 %; Ultra Performance takes its third alone)
+        const dc::ModeRange r[] = {{2208, 932, 4416, 1864}, {1472, 621, 1472, 621}};
+        dc::ModeRange took;
+        CHECK("Performance's half", dc::mode_for(2208, 932, 4416, 1864, r, 2, &took) == 0 && took.max_w == 4416);
+        CHECK("Ultra Performance's exact third", dc::mode_for(1472, 621, 4416, 1864, r, 2, &took) == 1 && took.max_h == 621);
+        // (the game's third of 1864 came out 622: no mode took it, and the game's own network upscaled in DLSS's place)
+        CHECK("Ultra Performance's third rounded up",
+              dc::mode_for(1472, 622, 4416, 1864, r, 2, &took) == 1 && took.min_h == 621 && took.max_h == 622 &&
+              took.min_w == 1472 && took.max_w == 1472);
+        // (a size between the two ranges is no mode's: 42 % between a third and a half)
+        CHECK("between the modes", dc::mode_for(1856, 784, 4416, 1864, r, 2, &took) == -1);
+        // (rounding below a third is also allowed within the scene-size tolerance, widening both axes)
+        CHECK("Ultra Performance's third rounded down",
+              dc::mode_for(1471, 620, 4416, 1864, r, 2, &took) == 1 && took.min_w == 1471 && took.max_w == 1472 &&
+              took.min_h == 620 && took.max_h == 621);
+        // (past the two-input-pixel allowance on either axis: never widened into Ultra Performance)
+        CHECK("below a third beyond width tolerance", dc::mode_for(1469, 620, 4416, 1864, r, 2, &took) == -1);
+        CHECK("below a third beyond height tolerance", dc::mode_for(1471, 619, 4416, 1864, r, 2, &took) == -1);
+        // (a 2560x1440 output's Ultra Performance, 853x480: the game's twelfths make 854 (game_size above))
+        const dc::ModeRange q[] = {{1280, 720, 2560, 1440}, {853, 480, 853, 480}};
+        unsigned w = 0, h = 0;
+        game_size(2560, 1440, 4, w, h);
+        CHECK("1440p Ultra Performance, the menu's size", dc::mode_for(w, h, 2560, 1440, q, 2, &took) == 1);
+        // (a range NGX did not give (zeros) is never widened into)
+        const dc::ModeRange z[] = {{0, 0, 0, 0}};
+        CHECK("no range", dc::mode_for(1472, 622, 4416, 1864, z, 1, &took) == -1);
+    }
+    // ---- the DLSS model row stepped through (issue 17): K (11) to L (12) passes M (13) ----
+    {
+        const unsigned K = 11, L = 12, M = 13;
+        dc::PresetSettle p;
+        // (the first feature takes the row's preset at once)
+        CHECK("first feature", p.pick(K, ~0u, false, 100, 30) == K);
+        CHECK("held", p.pick(K, K, true, 101, 30) == K);
+        // (Right twice, 11 frames apart as in the report's log: neither press makes a feature until the row holds L)
+        CHECK("M stepped past", p.pick(M, K, true, 200, 30) == K);
+        CHECK("M still stepped past", p.pick(M, K, true, 205, 30) == K);
+        CHECK("L just picked", p.pick(L, K, true, 211, 30) == K);
+        CHECK("L not yet held", p.pick(L, K, true, 240, 30) == K);
+        CHECK("L held half a second", p.pick(L, K, true, 241, 30) == L);
+        CHECK("L made", p.pick(L, L, true, 242, 30) == L);
+        // (back to the feature's own preset before the wait ended: nothing to make)
+        CHECK("away", p.pick(M, L, true, 300, 30) == L);
+        CHECK("and back", p.pick(L, L, true, 305, 30) == L);
+        CHECK("and back, later", p.pick(L, L, true, 400, 30) == L);
+        // (no feature (let go, or not made): the row's preset at once, held or not)
+        CHECK("no feature", p.pick(M, L, false, 401, 30) == M);
+        // (NVIDIA's default (0) is a preset like the others)
+        CHECK("default stepped to", p.pick(0, M, true, 500, 30) == M);
+        CHECK("default held", p.pick(0, M, true, 530, 30) == 0);
+    }
+    // ---- a feature refused for want of video memory: a bounded retry (vk_dlss.cpp prepare) ----
+    {
+        namespace rt = mkwvk::dlss_checks::retry;
+        rt::Refusal r;
+        CHECK("nothing refused", rt::verdict(r, 7, 0) == rt::Verdict::None);
+        CHECK("out of video memory waits", !rt::failed(r, 7, true, 100));
+        CHECK("before the interval", rt::verdict(r, 7, 699) == rt::Verdict::Wait);
+        CHECK("at the interval", rt::verdict(r, 7, 700) == rt::Verdict::Try);
+        CHECK("another key at once", rt::verdict(r, 8, 700) == rt::Verdict::None);
+        CHECK("second failure", !rt::failed(r, 7, true, 700));
+        CHECK("second wait", rt::verdict(r, 7, 1299) == rt::Verdict::Wait);
+        CHECK("third failure is final", rt::failed(r, 7, true, 1300));
+        CHECK("ended", rt::verdict(r, 7, 100000) == rt::Verdict::Ended);
+        rt::made(r);
+        CHECK("made clears", rt::verdict(r, 7, 2000) == rt::Verdict::None && r.tries == 0);
+        CHECK("another result is final", rt::failed(r, 9, false, 2000) && rt::verdict(r, 9, 100000) == rt::Verdict::Ended);
+        rt::made(r);
+        CHECK("a different key starts its count", !rt::failed(r, 10, true, 3000) && r.tries == 1);
+    }
     std::puts("dlss checks: ok");
     return 0;
 }

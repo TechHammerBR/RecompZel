@@ -9,6 +9,7 @@ import bisect, collections, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import prof  # noqa: E402
+import samples  # noqa: E402
 
 top = int(sys.argv[2]) if len(sys.argv) > 2 else 40
 prefix = sys.argv[3] if len(sys.argv) > 3 else "mkw_vk"
@@ -30,12 +31,12 @@ def name(f):
     return r
 
 
-RUN = prof.RUN_MODS + ("nvoglv64.dll",)
+RUN = prof.RUN_MODS + ("nvoglv64.dll", "amdvlk64.dll", "amdxc64.dll", "amdxx64.dll", "igvk64.dll", "igxelpicd64.dll")
 DRIVERS = ("libnvidia-glcore.so", "libvulkan_radeon.so", "libvulkan_intel.so")   # (Linux: the driver's file has its version after .so)
 seen, running = collections.Counter(), collections.Counter()
 incl, self_ = collections.Counter(), collections.Counter()
 nrun = 0
-for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+for line in samples.lines(sys.argv[1]):   # (plain or packed)
     head, _, st = line.rstrip("\n").partition("|")
     th = head.split(" ", 1)[-1]
     if not st or not th.startswith(prefix):

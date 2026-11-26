@@ -38,9 +38,8 @@ def main():
     start = source.index("        auto take = [&](uint64_t at_value, int64_t at_present) {")
     end = source.index("            // (RX_VK_DUMP_BLACK", start)
     take = source[start:end] + "\n(void)at_present; return px; };\n"
-    helper_start = source.index("std::shared_ptr<std::vector<uint8_t>> shot_pixels(")
-    helper_end = source.index("void do_present(", helper_start)
-    helper = source[helper_start:helper_end]
+    # (shot_pixels alone: the teleport preview's and the menu screenshot's captures follow it now, before do_present)
+    helper = block(source, "std::shared_ptr<std::vector<uint8_t>> shot_pixels(") + "\n"
     start = source.index("        if (shot && made_src && made_map) {")
     end = source.index("        } else if (shot)", start)
     made = source[start:end] + "\n}\n"

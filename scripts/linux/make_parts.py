@@ -27,7 +27,7 @@ PARTS = (
     ("usr/lib/hookshot/emsdk", None),
     ("usr/lib/hookshot/ffmpeg", None),
     ("usr/lib/hookshot/sysroot", None),
-    ("usr/lib/hookshot", ("hookshot_vk.so", "libSDL2-2.0.so.0")),
+    ("usr/lib/hookshot", ("libSDL2-2.0.so.0",)),   # (no built Vulkan back end since 2026-11-14: every build compiles it)
 )
 
 
@@ -87,7 +87,7 @@ def main():
     parser.add_argument("appdir")
     parser.add_argument("tag")
     parser.add_argument("out")
-    parser.add_argument("--base", default="https://github.com/NotRexed/Hookshot/releases/download/linux-parts")
+    parser.add_argument("--base", default="https://git.notrexed.dev/Hookshot/Hookshot/releases/download/linux-parts")
     args = parser.parse_args()
     root = os.path.abspath(args.appdir)
     if not os.path.isfile(os.path.join(root, "AppRun")):

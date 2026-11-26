@@ -35,7 +35,9 @@ def actual_coordinator(source):
     wrapper = ast.parse('def run_compile_jobs():\n    return 0\n').body[0]
     wrapper.body = main.body[start:end + 1] + wrapper.body
     module = ast.fix_missing_locations(ast.Module(body=[compile_one, wrapper], type_ignores=[]))
-    scope = dict(os=os, time=time, concurrent=concurrent, GATE=None, no_throttle=lambda handle: None)
+    # (DEPFILE_DEPS, DEPFILE_PENDING: compile_one leaves an object keyed by a depfile to rekey_depfiles; these jobs have none)
+    scope = dict(os=os, time=time, concurrent=concurrent, GATE=None, no_throttle=lambda handle: None, below_normal=lambda handle: None,
+                 DEPFILE_DEPS=b"depfile:", DEPFILE_PENDING="depfile-pending")
     exec(compile(module, str(source), 'exec'), scope)
     return scope
 
@@ -89,13 +91,13 @@ class CompileRetryJobsTests(unittest.TestCase):
                 calls.append(job)
             return actual_compile(job)
 
-        self.scope.update(compile_one=observed_compile, jobs=jobs, a=SimpleNamespace(jobs=2),
+        self.scope.update(compile_one=observed_compile, jobs=jobs, order=jobs, a=SimpleNamespace(jobs=2),
                           subprocess=SimpleNamespace(Popen=Child, PIPE=subprocess.PIPE,
                                                      CompletedProcess=subprocess.CompletedProcess),
                           OBJ_CACHE=str(self.cache), PLANNED={(job[1], job[2]): keys[job[2]] for job in jobs},
                           cache_put=lambda obj, key: cached.append((obj, key)), counted=counted,
                           expected={str(self.source): [11, 22]}, pending=[11, 22], eta_jobs=2,
-                          eta_left=lambda pending, jobs: sum(pending) / jobs)
+                          eta_left=lambda pending, jobs: sum(pending) / jobs, src_size=os.path.getsize)
         log = io.StringIO()
         with redirect_stdout(log):
             result = self.scope['run_compile_jobs']()

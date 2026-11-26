@@ -31,6 +31,13 @@ bool coherent=false,fail_buffer=false;
 unsigned flushed=0,queued=0;
 std::mutex par_mutex;
 struct ParLock { std::lock_guard<std::mutex> lock{par_mutex}; };
+namespace rec {   // (vk_recorder.h's RX_VK_RECORDER_OWN marks, as they are with the recorder off)
+inline void slot_begin(uint64_t) {}
+inline void slot_done() {}
+inline uint64_t produced() { return 0; }
+struct OwnSlot { OwnSlot() {} ~OwnSlot() {} };   // (a scope, as the real one)
+}   // namespace rec
+uint64_t rec_end_pos[64];   // (vk_replay.cpp: each slot's end in the recorder's ring)
 void logf(const char*,...) {}
 bool create_buffer(uint64_t size,VkBufferUsageFlags,bool,VkBuffer& buffer,VmaAllocation& allocation,void** mapped,bool=false) {
     if(fail_buffer) return false;
@@ -51,26 +58,35 @@ std::deque<RecordingRes> res;
 thread_local RecordingRes* cur=nullptr;
 const uint64_t kStream=1024;
 constexpr VkBufferUsageFlags kStreamUse=VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-std::atomic<uint64_t> stream_extra{0},stream_grown{0},stream_peak{0};
-bool grow_off=false; bool stream_grow_off() { return grow_off; }
+std::atomic<uint64_t> stream_extra{0},stream_grown{0},stream_peak{0},pools_extra{0};
 /* BUFFER_TYPES */
 
 /* STREAM */
 VkCommandBuffer rec_cmd{};
 uint64_t rec_value=0,targets_serial=0;
 VkBuffer zero_buffer{}; VmaAllocation zero_alloc{};
-VkDescriptorPool make_pool() { return handle<VkDescriptorPool>(); }
+VkDescriptorPool make_pool(uint32_t = 0) { return handle<VkDescriptorPool>(); }   // (vk_draw.cpp: the shift sizes it; a handle here)
+uint32_t pool_shift_first() { return 1; }   // (vk_draw.cpp's default: a slot's first pool at half the size)
+std::atomic<uint64_t> pools_grown{0};
 VKAPI_ATTR VkResult VKAPI_CALL vkResetDescriptorPool(VkDevice,VkDescriptorPool,VkDescriptorPoolResetFlags) { return VK_SUCCESS; }
 VKAPI_ATTR void VKAPI_CALL vkDestroyDescriptorPool(VkDevice,VkDescriptorPool,const VkAllocationCallbacks*) {}
 struct Pass {}; Pass& pass() { static Pass p;return p; }
-bool work_since_barrier=false,last_dyn_valid=false,last_desc_valid=false,last_vb_valid=false;
-VkPipeline last_pipeline{};
-struct { bool on=false; } vertex_set,last_ib;
+bool work_since_barrier=false;
+struct CmdBound { void reset() {} };   // (vk_draw.cpp's: what the command buffer has bound, forgotten by a new recording)
+CmdBound& bound() { static CmdBound b; return b; }
 void descriptors_disturbed() {}
 std::unordered_map<int,int>& handle_hits() { static std::unordered_map<int,int> h;return h; }
+// (vk_draw.cpp's front cache of handle_hits, #2960: emptied with it, nothing else read here)
+struct ViewFast { uint64_t key = ~0ull; };
+std::array<ViewFast, 1024>& view_fast() { static thread_local std::array<ViewFast, 1024> a; return a; }
 struct BankCache { uint64_t at=0; };
 std::array<std::array<BankCache,2>,2>& bank_cache() { static std::array<std::array<BankCache,2>,2> b;return b; }
 void make_dummies() {}
+// (vk_draw.cpp's per-program descriptor slots, emptied by a new recording past 8192: nothing kept here)
+std::unordered_map<const void*,int>& prog_slots() { static thread_local std::unordered_map<const void*,int> m; return m; }
+// (vk_fps.h: the FPS counter's render lane times a wait; fps_stats.h is the real one, included by the test)
+namespace fps_stats = mkwvk::fps_stats;
+struct FpsRtWait { explicit FpsRtWait(int) {} };
 /* BEGIN */
 struct Use { BufferRef ref;std::vector<uint8_t> expected; };
 std::vector<Use> pending;
@@ -85,6 +101,7 @@ int64_t st_wait_ns=0;
 #define PROF(x) ((void)0)
 void queue_flush_locked(){batch_flushed=1;}
 void gpu_time_collect(Recording&){} void gprof_collect(int){} void gpu_time_begin(Recording&){}
+void occ_collect(){}   // (vk_replay.cpp: the occlusion counts' harvest, RX_VK_OCC_QUERIES)
 void gprof_begin_recording(int,VkCommandBuffer,VkCommandBuffer){}
 uint64_t completed(){return 0;}
 void memory_recording_value(uint64_t,uint64_t){} void memory_recording_part(uint64_t){} void texture_begin_recording(VkCommandBuffer,uint64_t){}
@@ -125,10 +142,10 @@ int main(int argc,char**argv) {
         fail_buffer=false;require(admitted(VK_NULL_HANDLE,in),"same input can retry reservation");return 0;
     }
     evaluate(1);
-    if(mode=="failure" || mode=="growth-off") {
-        cur->used=cur->size;auto before=cur->used;fail_buffer=mode=="failure";grow_off=mode=="growth-off";
+    if(mode=="failure") {
+        cur->used=cur->size;auto before=cur->used;fail_buffer=true;
         require(!upload(2) && cur->used==before,"failed growth preserves current stream and returns empty");
-        fail_buffer=false;grow_off=false;evaluate(3);read_pending();return 0;
+        fail_buffer=false;evaluate(3);read_pending();return 0;
     }
     if(mode=="workers") {
         std::thread a([]{draw_begin_recording(1,handle<VkCommandBuffer>(),2);evaluate(2);});a.join();

@@ -24,6 +24,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 struct Op {
@@ -117,6 +118,8 @@ VkResult vkQueueSubmit2(VkQueue, uint32_t n, const VkSubmitInfo2* si, VkFence) {
         }
     return VK_SUCCESS;
 }
+// (vk_replay.cpp: a segment's submit, made again after a refusal for want of memory; to the queue as it is here)
+VkResult submit_or_retry(const VkSubmitInfo2& si, VkFence fence) { return vkQueueSubmit2(VK_NULL_HANDLE, 1, &si, fence); }
 std::mutex cbs_mu;
 VkCommandBuffer make_cb(const char* what, int k) {
     auto cb = std::make_unique<VkCommandBuffer_T>();
@@ -183,16 +186,19 @@ VkCommandBuffer last_barrier_cmd = VK_NULL_HANDLE;
 thread_local VkCommandBuffer last_pass_end_cmd = VK_NULL_HANDLE;
 bool is_bc(VkFormat) { return false; }
 bool is_astc(VkFormat) { return false; }
-// (Triforce: the mirrors' piece binds, flushed before a recording is submitted and waited for by its submission: none here)
-void memory_mirror_binds_flush() {}
-bool memory_mirror_bind_wait(VkSemaphoreSubmitInfo*) { return false; }
+struct Texture {
+    VkImage image;
+    // (what the cut's astc_trace_note reads, RX_VK_FRAME_TRACE: unset here, so it returns at once)
+    uint32_t levels = 1, width = 1, height = 1, layers = 1, nvn_format = 0;
+    uint64_t gpu = 0;
+};
+namespace {   // (vk_texture.cpp's unnamed namespace, open where the cut starts: the cut closes it and opens it again around
+              // upload_to_earliest_begin/end, which other files call)
 #include "init_upload.inc"
+}
 #include "init_hooks.inc"
 
 // ---- create()'s initialization of a new image ----
-struct Texture {
-    VkImage image;
-};
 std::vector<std::unique_ptr<Texture>> textures;
 std::mutex par_lock;   // (texture_get's ParLock: an image is made once, by whichever worker gets there first)
 Texture* create(VkImage image) {
@@ -214,7 +220,7 @@ std::mutex bc_mu;
 std::chrono::steady_clock::time_point bc_used_at;
 uint64_t bc_last_value = 0;
 std::atomic<bool> bc_have{false};
-constexpr uint32_t kBcLayers = 8;
+uint32_t bc_layers() { return 1; }
 VkImage bc_scratch = VK_NULL_HANDLE, bc_scratch2 = VK_NULL_HANDLE;
 bool bc_scratch_fresh = false, bc_scratch2_fresh = false;
 bool bc_scratch_make() {
@@ -269,6 +275,8 @@ void draw_begin_recording(int, VkCommandBuffer, uint64_t) {}
 void draw_flush_recording(int slot) { CHECK(slot >= 0 && slot < 8); published_slots.insert(slot); }
 void queue_flush_locked() {}
 void checkpoints_report() {}
+const void* reflex_submit_id(const void* next, uint64_t = ~0ull) { return next; }   // (vk_reflex.cpp: no tag without Reflex)
+bool memory_sparse_wait(VkSemaphoreSubmitInfo*) { return false; }   // (vk_memory.cpp: no sparse mirror binds here)
 [[noreturn]] void device_lost() { std::_Exit(3); }   // (vk_replay.cpp: the report, then the process ends)
 struct {
     VkDevice device = VK_NULL_HANDLE;
@@ -359,6 +367,10 @@ void submit_post() {
     si.commandBufferInfoCount = n, si.pCommandBufferInfos = cb;
     vkQueueSubmit2(VK_NULL_HANDLE, 1, &si, VK_NULL_HANDLE);
 }
+// (vk_replay.cpp: the host-read barrier at a segment's end does nothing here; the FPS counter's render lane times a wait,
+// fps_stats.h is the real one, included by the test)
+void host_read_barrier(VkCommandBuffer) {}
+struct FpsRtWait { explicit FpsRtWait(int) {} };
 /// replay_handle from its segments on (the dry pass, the part before and the slots' order are the caller's)
 void submit_segments(std::vector<Segment> seg, std::vector<int> order) {
     run_order = order;

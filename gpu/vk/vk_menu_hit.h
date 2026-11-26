@@ -16,10 +16,21 @@ enum Part {
     kCtlOption, // the Controls page: one of its own rows above the grid (index), side -1 the value's left half, 1 its right
                 // half, 0 the name
     kCtlRow,    // the Controls page: a row's name (index; index == the count: Reset to defaults)
-    kCtlCell,   // a binding: index the row, side 0 the gamepad's, 1 the keyboard's
+    kCtlCell,   // a binding: index the row, side the CtlColumn
     kListLine,  // a list (the teleport list, the inventory): a line as shown (index, 0 the top one), side -1 the left half, 1 the right half
     kButton,    // the restart question's buttons: index 0 Later, 1 Restart now
 };
+enum CtlColumn { kCtlPrimary, kCtlAlternate, kCtlKeyboard, kCtlKeyboard2, kCtlToggle, kCtlColumns };
+/// A key column's slot of the host's two keys per control (0 or 1); -1 for a gamepad column or the toggle
+constexpr int ctl_key_slot(int col) { return col == kCtlKeyboard || col == kCtlKeyboard2 ? col - kCtlKeyboard : -1; }
+/// The column a row's selection is in: a keys-only row (its gamepad cells and toggle off) keeps to the key columns
+constexpr int ctl_column(int col, bool keys_only) { return keys_only && (col < kCtlKeyboard || col == kCtlToggle) ? kCtlKeyboard : col; }
+/// The column after Left (dir -1) or Right (1): round the columns the row has (columns: kCtlColumns with its toggle,
+/// kCtlToggle for a button with none), or round the two key columns on a keys-only row
+constexpr int ctl_step(int col, int dir, bool keys_only, int columns = kCtlColumns) {
+    return keys_only ? kCtlKeyboard + (ctl_key_slot(ctl_column(col, true)) + 1) % 2
+                     : ((col < columns ? col : kCtlKeyboard) + columns + dir) % columns;
+}
 struct Hit {
     Part part = kNone;
     int index = -1;
@@ -71,7 +82,7 @@ struct Map {
         float t0, t1;   // (a slider's track: kSlider along it; t0 >= t1: none)
         int side;       // (a fixed side: the Controls page's cells)
     };
-    static constexpr int kMax = 96;
+    static constexpr int kMax = 128;   // (the Controls grid including its hold-to-toggle cells)
     static constexpr float kGrab = 6;   // (a click this far past either end of a track still takes the end, in pixels)
     Box box[kMax];
     int n = 0;

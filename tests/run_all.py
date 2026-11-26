@@ -1,13 +1,18 @@
 """Every game-free check in one run: each tests/test_*.py and nx2/test_*.py in its own process, the C++ unit tests under
 gpu/vk/tests and a byte-compile of every tracked Python file. All of them run even when one fails; the failures are
 printed whole at the end, with a table of every check (slowest first), also to $GITHUB_STEP_SUMMARY when it is set.
-Exits 1 when anything failed.
+Exits 1 when anything failed. On Linux a check that ends or times out takes every process it started with it.
 
-    python -I -B tests/run_all.py [--jobs N] [--timeout SECONDS] [--strict] [--no-skip] [--shard K/N] [name ...]
+    python -I -B tests/run_all.py [--jobs N] [--timeout SECONDS] [--strict] [--no-skip] [--shard K/N]
+                                  [--list] [--junit FILE] [--exact] [name ...]
+    python -I -B tests/run_all.py --changed [BASE]   (only the checks that read files changed since BASE: main on the
+                                                     remote that points at Hookshot, else origin/main)
 
-A name picks the checks whose path contains it. --strict: a check that needs a tool this PC lacks (a compiler, the
+A name picks the checks whose path contains it (--exact: only a check whose path is exactly the name; with names given
+and none matching, nothing runs and it exits 2). --strict: a check that needs a tool this PC lacks (a compiler, the
 SPIR-V or Vulkan headers, spirv-val) fails instead of being skipped (CI installs them all). --no-skip runs the checks a
-test skips on this OS too. Standard library only: no package is installed for the runner itself.
+test skips on this OS too. --list prints the checks a run would start, one a line, and runs none. --junit FILE also
+writes the results as JUnit XML. Standard library only: no package is installed for the runner itself.
 
 A test says what it needs in its own file, with up to three top-level assignments of plain literals (after its
 docstring and imports). The runner reads them with ast and never imports the test; a test that declares none runs with
@@ -18,7 +23,7 @@ no arguments and its own defaults.
     RUN_ALL_SKIP = {"windows": "needs spirv-val: checked on Linux"}       # OS ("linux", "windows") -> why it is skipped
 
 {name} in an argument is a tool or folder find_tools looks for (cxx, vulkan_headers, spirv_headers, spirv_val, glslang,
-dotnet); a check whose tool, compiler (the word after --cc or --cxx) or module is missing here is skipped, or fails
+dotnet, dav1d); a check whose tool, compiler (the word after --cc or --cxx) or module is missing here is skipped, or fails
 with --strict. A check skipped on both OSes (a GPU, the game) names both. A declaration that is not a plain literal of
 that shape, names an unknown placeholder or OS, or any other RUN_ALL_ name, stops the run with the file and line; so
 does one set or changed anywhere but its own top-level line (inside an if or a try, .append(...), +=, a subscript).
@@ -30,17 +35,23 @@ OS's checks of 2 s or more, as CI last measured them (a check not in it counts a
 parts, which split the checks by those times so the parts take about as long (CI runs Windows in parts); every check is
 in exactly one part, whatever the times say, so stale times only make the parts uneven. After a full run on one OS,
 --write-times puts that run's times in the file, for that OS.
+
+The byte-compile of every tracked .py is listed as BYTE_COMPILE_ATOM, a name with no spaces, so it can be passed on a
+command line (--exact).
 """
 import argparse
 import ast
 import concurrent.futures
 import importlib.util
+import itertools
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -57,6 +68,7 @@ OSES = ("linux", "windows")
 
 # (each OS's measured seconds per check, for the order and the --shard split: see the docstring)
 TIMES = os.path.join(ROOT, "tests", "run_all_times.json")
+BYTE_COMPILE_ATOM = "tests/byte_compile_tracked.py"
 DEFAULT_SECS = 1.0   # (a check not in TIMES: most take about that or less)
 TIMES_MIN = 2.0      # (--write-times keeps only the checks that took this long or longer)
 
@@ -87,14 +99,43 @@ def header_dir(env, cpm_name, probe):
     return None
 
 
+def dav1d_prefix():
+    """A dav1d to build against (its include/dav1d/dav1d.h, and lib/libdav1d.a or the system's -ldav1d): HOOKSHOT_DAV1D, else
+    the CPM cache's (scripts/windows/dav1d.sh), the Linux dependencies' (scripts/linux/deps.sh), the system's"""
+    roots = [os.environ.get("HOOKSHOT_DAV1D")]
+    for cpm in (os.environ.get("RX_CPM"), os.path.join(ROOT, "build-linux", "deps", "cpm")):
+        d = os.path.join(cpm or "", "dav1d")
+        if cpm and os.path.isdir(d) and os.listdir(d):
+            roots.append(os.path.join(d, sorted(os.listdir(d))[-1]))
+    roots += [os.path.join(ROOT, "build-linux", "deps", "ffmpeg"), "/usr"]
+    for r in roots:
+        if r and os.path.exists(os.path.join(r, "include", "dav1d", "dav1d.h")):
+            return r
+    return None
+
+
+def bundled_mingw():
+    """(windows) The clone's llvm-mingw folder as HOOKSHOT_MINGW for every check, as nx2/make_game.py's bundled_mingw() gives
+    it to the build (CONTRIBUTING.md: the variable, or that folder). Without it a check that builds with
+    toolchain.native_target() asks that folder's clang, found on PATH, for the MSVC target: "'algorithm' file not found".
+    HOOKSHOT_MINGW set already wins; HOOKSHOT_MSVC=1 (the Visual Studio route) and a folder without its clang leave it unset"""
+    if not WINDOWS or os.environ.get("HOOKSHOT_MINGW") or os.environ.get("HOOKSHOT_MSVC") == "1":
+        return
+    here = os.path.join(ROOT, "llvm-mingw")
+    if os.path.isfile(os.path.join(here, "bin", "clang.exe")):
+        os.environ["HOOKSHOT_MINGW"] = here
+
+
 def find_tools():
     return {
+        "dav1d": None if WINDOWS else dav1d_prefix(),
         "spirv_headers": header_dir("HOOKSHOT_SPIRV_HEADERS", "spirv-headers", os.path.join("spirv", "unified1", "spirv.h")),
         "vulkan_headers": header_dir("HOOKSHOT_VULKAN_HEADERS", "vulkanheaders", os.path.join("vulkan", "vulkan.h")),
         "spirv_val": which("spirv-val"),
         "glslang": which("glslangValidator", "glslang"),
         "dotnet": which("dotnet"),
         "cxx": which(os.environ.get("CXX", ""), "clang++", "g++", "c++"),
+        "cc": os.environ.get("CC") or which("gcc", "clang"),
     }
 
 
@@ -226,9 +267,106 @@ def python_check(rel, decl, tools, timeout):
     missing += [m for m in decl["modules"] if importlib.util.find_spec(m) is None]
 
     def run():
-        return subprocess.run([sys.executable, "-I", "-B", os.path.join(ROOT, rel)] + args, cwd=ROOT, timeout=timeout,
-                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        return run_check([sys.executable, "-I", "-B", os.path.join(ROOT, rel)] + args, timeout)
     return run, missing
+
+
+# (Linux) A check's processes end with it: when it times out, and what it left running when it ends.
+# subprocess.run's timeout kills the check alone, and a child it was waiting for ran on with no end
+# (tests/test_recorder_sync.py's broken recorder hangs on purpose until the check's own 30 s timeout). Each check's
+# processes carry a token in their environment, which they keep when their parent ends or they leave the process
+# group, so they are found in /proc; the descendants of the check and of each of those are found by their parents too
+# (one started with another environment). The checks stay in the runner's process group, so Ctrl-C and a kill of the
+# group reach them as before. Elsewhere (Windows, macOS) a check runs as subprocess.run runs it.
+CHECKS_ENV = "HOOKSHOT_RUN_ALL_CHECKS"   # (space-separated: a runner run by a check adds its own token)
+CHECK_IDS = itertools.count()
+# (one scan at a time: the runner's threads share one interpreter, and scans at once slow each other down many times over)
+SCAN_LOCK = threading.Lock()
+PROC = sys.platform.startswith("linux") and os.path.isdir("/proc")
+
+
+def run_check(cmd, timeout):
+    if not PROC:
+        return subprocess.run(cmd, cwd=ROOT, timeout=timeout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              stdin=subprocess.DEVNULL)
+    token = "%d.%d" % (os.getpid(), next(CHECK_IDS))
+    env = dict(os.environ)
+    env[CHECKS_ENV] = (env.get(CHECKS_ENV, "") + " " + token).strip()
+    with subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          stdin=subprocess.DEVNULL) as p:
+        try:
+            out, _ = p.communicate(timeout=timeout)
+        except BaseException:   # (the timeout, with the output so far: not waited for again, as a child may hold it)
+            end_check(p.pid, token)
+            p.wait()
+            raise
+        end_check(None, token)
+        return subprocess.CompletedProcess(cmd, p.returncode, out)
+
+
+def check_processes(root, token):
+    """the live processes (not zombies) of the check: root, any process of ours with the token, and their descendants"""
+    with SCAN_LOCK:
+        return scan_processes(root, token)
+
+
+def scan_processes(root, token):
+    me, uid, parent, found = os.getpid(), os.getuid(), {}, set()
+    key, mine = CHECKS_ENV.encode() + b"=", token.encode()
+    for d in os.listdir("/proc"):
+        if not d.isdigit() or int(d) == me:
+            continue
+        pid = int(d)
+        try:
+            if os.stat("/proc/%d" % pid).st_uid != uid:   # (only our own: the rest cannot be the check's, nor be killed)
+                continue
+            with open("/proc/%d/stat" % pid, "rb") as f:
+                stat = f.read().rsplit(b")", 1)[1].split()
+            if stat[0] == b"Z":
+                continue
+            parent[pid] = int(stat[1])
+            with open("/proc/%d/environ" % pid, "rb") as f:
+                env = f.read().split(b"\0")
+            if any(e.startswith(key) and mine in e[len(key):].split() for e in env):
+                found.add(pid)
+        except (OSError, IndexError, ValueError):   # (ended while read, or not ours to read)
+            continue
+    if root in parent:
+        found.add(root)
+    grew = True
+    while grew:   # (a descendant started with another environment, by its parent)
+        more = {pid for pid, pp in parent.items() if pp in found and pid not in found}
+        found |= more
+        grew = bool(more)
+    return found
+
+
+def end_check(root, token):
+    """SIGKILL to each of the check's processes, again until none is left: one started while they were being ended is
+    found the next time, and a last look after the first empty one finds one whose environment read back empty in the
+    middle of an execve. Given up once five rounds in a row (about 0.2 s) end none (a process that cannot be killed, as one in
+    uninterruptible sleep). A PID is read and killed a moment apart: one reused in between could be hit, as with any
+    kill by PID"""
+    last, empty, stuck = None, 0, 0
+    for _ in range(100):
+        procs = check_processes(root, token)
+        if not procs:
+            empty += 1
+            if empty == 2:
+                return
+            time.sleep(0.01)
+            continue
+        empty = 0
+        stuck = stuck + 1 if last is not None and len(procs) >= len(last) else 0
+        if stuck == 5:
+            return
+        last = procs
+        for pid in procs:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        time.sleep(0.005)
 
 
 def cpp_checks(tools, timeout):
@@ -242,12 +380,10 @@ def cpp_checks(tools, timeout):
         def run():
             with tempfile.TemporaryDirectory() as tmp:
                 exe = os.path.join(tmp, "t.exe")
-                r = subprocess.run([cxx, "-std=c++20", *flags, os.path.join(ROOT, src), "-o", exe], cwd=ROOT,
-                                   timeout=timeout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+                r = run_check([cxx, "-std=c++20", *flags, os.path.join(ROOT, src), "-o", exe], timeout)
                 if r.returncode:
                     return r
-                return subprocess.run([exe] + [a.replace("{tmp}", tmp) for a in args], cwd=ROOT, timeout=timeout,
-                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+                return run_check([exe] + [a.replace("{tmp}", tmp) for a in args], timeout)
         return run
     rect = "gpu/vk/tests/present_rect_test.cpp"
     out.append((rect, build_and_run(rect, ["-Wall", "-Wextra", "-Werror"], [])))
@@ -258,6 +394,8 @@ def cpp_checks(tools, timeout):
     out.append((regmap, build_and_run(regmap, ["-O1", "-Wno-everything", "-I" + eden, "-I" + compat], [])))
     ldsm = "gpu/vk/tests/ldsm_address_test.cpp"   # (LDSM's row addresses kept apart from its shuffles' registers)
     out.append((ldsm, build_and_run(ldsm, ["-O1", "-Wno-everything", "-I" + eden, "-I" + compat], [])))
+    push = "gpu/vk/tests/push_fix_test.cpp"   # (the fallback task modules' push-constant accesses by byte offset: vk_push_fix.h)
+    out.append((push, build_and_run(push, ["-O1", "-Wall", "-Wextra", "-I" + os.path.join(ROOT, "gpu", "vk")], [])))
     return out, ([] if cxx else ["a C++ compiler"])
 
 
@@ -316,6 +454,61 @@ class Result:
         self.returncode, self.stdout = returncode, stdout
 
 
+# (--changed, the dev-loop proposal's D1) the checks that read what changed: most tests name the files they cut code from or run,
+# by path or by name, so a test whose text names a changed file is picked. A change to this runner, or to a shared .py of tests/
+# that is not a test, picks every check. Before a pull request the whole run is still the one that counts (docs/workflow.md)
+HOOKSHOT_REMOTE = "git.notrexed.dev/hookshot/hookshot"   # (Hookshot's own forge: a remote that points at it, whatever its name)
+
+
+def default_base():
+    """--changed's base when none is named: main on the remote that points at Hookshot's forge (a clone from GitHub's days
+    has another origin), else origin/main"""
+    r = subprocess.run(["git", "-C", ROOT, "remote", "-v"], capture_output=True, text=True)
+    for line in (r.stdout if r.returncode == 0 else "").splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and HOOKSHOT_REMOTE in parts[1].lower().replace(".git", ""):
+            return parts[0] + "/main"
+    return "origin/main"
+
+
+def changed_files(base):
+    """The files changed since base's merge base with HEAD, committed or not, and the untracked ones (git, repository paths)"""
+    def git(*args):
+        r = subprocess.run(["git", "-C", ROOT] + list(args), capture_output=True, text=True)
+        if r.returncode:
+            raise SystemExit("--changed: git %s: %s" % (" ".join(args), r.stderr.strip()))
+        return [line.strip() for line in r.stdout.splitlines() if line.strip()]
+    mb = git("merge-base", "HEAD", base)[0]
+    return sorted(set(git("diff", "--name-only", mb)) | set(git("ls-files", "--others", "--exclude-standard")))
+
+
+def reads_changed(tests, changed):
+    """(the tests to run, whether every check is to run) for these changed files"""
+    import re
+    if any(c == "tests/run_all.py" or (c.startswith("tests/") and c.endswith(".py") and not os.path.basename(c).startswith("test_"))
+           for c in changed):
+        return list(tests), True
+    names = []
+    for c in changed:
+        base = os.path.basename(c)
+        alts = [re.escape(c)]
+        if len(base) > 4 and "." in base:
+            alts.append(r"(?<![\w.-])" + re.escape(base) + r"(?![\w-])")
+        if base.endswith(".py"):   # (a module the test imports by its name: `import chunks`, `from chunks import ...`)
+            alts.append(r"\b(?:import|from)\s+" + re.escape(base[:-3]) + r"\b")
+        names.append(re.compile("|".join(alts)))
+    picked = []
+    for rel in tests:
+        if rel in changed:
+            picked.append(rel)
+            continue
+        with open(os.path.join(ROOT, rel), encoding="utf-8", errors="replace") as f:
+            text = f.read()
+        if any(n.search(text) for n in names):
+            picked.append(rel)
+    return picked, False
+
+
 def compile_all():
     """Every tracked .py file byte-compiled (in memory: nothing written), so a syntax error anywhere fails"""
     r = subprocess.run(["git", "ls-files", "-z", "--", "*.py"], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -333,7 +526,47 @@ def compile_all():
     return Result(1 if bad else 0, text.encode())
 
 
+def write_junit(path, checks, wall):
+    """The run's checks as JUnit XML (one testcase each, named and filed by its path; a failure carries its output, a
+    skip its reason), for a CI that shows test results from it"""
+    import xml.etree.ElementTree as ET
+    ran = [c for c in checks if not c.why_skip]
+    failed = sum(c.status != "pass" for c in ran)
+    suite = ET.Element("testsuite", name="run_all (%s)" % OS, tests=str(len(checks)), failures=str(failed),
+                       skipped=str(len(checks) - len(ran)), time="%.3f" % wall)
+    for c in checks:
+        case = ET.SubElement(suite, "testcase", name=c.name, classname=c.name, time="%.3f" % (0 if c.why_skip else c.secs))
+        if not c.name.startswith("("):
+            case.set("file", c.name)
+        if c.why_skip:
+            ET.SubElement(case, "skipped", message=c.why_skip)
+        elif c.status != "pass":
+            fail = ET.SubElement(case, "failure", message=c.status)
+            fail.text = "".join(ch for ch in c.output if ch in "\t\n\r" or ord(ch) >= 0x20)
+    folder = os.path.dirname(os.path.abspath(path))
+    os.makedirs(folder, exist_ok=True)
+    root = ET.Element("testsuites")
+    root.append(suite)
+    ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+
+
+def unicode_output():
+    """A failed check's output is printed whole, and compilers and tests write quotes, arrows and U+FFFD (from the
+    "replace" decode). Into a pipe (CI's log, an agent's tool, `| more`) Windows' Python writes the ANSI code page,
+    cp1252, which has none of them: the run stopped with a UnicodeEncodeError at the first such failure, before the
+    table, the summary and --write-times. A pipe gets UTF-8, as -X utf8 would give it; a console keeps its own encoding.
+    Either way a character it cannot show is replaced instead of ending the run."""
+    for stream in (sys.stdout, sys.stderr):
+        if not hasattr(stream, "reconfigure"):   # (a StringIO)
+            continue
+        if stream.isatty():
+            stream.reconfigure(errors="replace")
+        else:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main():
+    unicode_output()
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("names", nargs="*")
     p.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
@@ -343,10 +576,21 @@ def main():
     p.add_argument("--shard", type=shard_arg, metavar="K/N", help="run only the K-th of N parts (split by the times)")
     p.add_argument("--write-times", action="store_true",
                    help="write this run's times to tests/run_all_times.json for this OS (a full run only)")
+    p.add_argument("--list", action="store_true",
+                   help="print the name of each check a run would start, one a line, and run none")
+    p.add_argument("--junit", metavar="FILE", help="also write the results as JUnit XML to FILE")
+    p.add_argument("--exact", action="store_true",
+                   help="a name must be a check's whole path, and with names given and none matching, run nothing")
+    p.add_argument("--changed", nargs="?", const="", metavar="BASE",
+                   help="only the checks that read a file changed since BASE's merge base (default main on the remote that "
+                        "points at Hookshot's forge, else origin/main), or an untracked one")
     a = p.parse_args()
     if a.write_times and (a.names or a.shard):
         p.error("--write-times needs a full run: no names, no --shard")
+    if a.changed is not None and (a.names or a.write_times):
+        p.error("--changed picks the checks itself: no names, no --write-times")
     times = load_times()
+    bundled_mingw()
     tools = find_tools()
 
     checks = []
@@ -359,9 +603,20 @@ def main():
         for line in stale:
             print("  " + line, file=sys.stderr)
         return 2
+    def picked(name):
+        return name in a.names if a.exact else any(n in name for n in a.names)
+
     # (only the tests asked for: a bad declaration elsewhere does not stop a run of one named test)
     if a.names:
-        tests = [rel for rel in tests if any(n in rel for n in a.names)]
+        tests = [rel for rel in tests if picked(rel)]
+    changed, everything = None, True
+    if a.changed is not None:
+        a.changed = a.changed or default_base()
+        changed = changed_files(a.changed)
+        tests, everything = reads_changed(tests, changed)
+        print("--changed: %d files changed since %s, %s" % (
+            len(changed), a.changed, "every check (the runner or a shared test file changed)" if everything else
+            "%d checks read them; the whole run is still the one a pull request needs" % len(tests)), flush=True)
     decls, errors = {}, []
     for rel in tests:
         try:
@@ -379,7 +634,7 @@ def main():
         c = Check(rel, run)
         if decls[rel]["unparsed"]:   # (no skip to read: the same failure on every OS, not run)
             c.run = lambda why=decls[rel]["unparsed"]: Result(1, (why + "\n").encode())
-        elif reason and not a.no_skip and not any(n in rel for n in a.names):
+        elif reason and not a.no_skip and not picked(rel):
             c.why_skip = reason
         elif missing and not a.strict:
             c.why_skip = "not found here: " + ", ".join(missing)
@@ -387,6 +642,8 @@ def main():
             c.run = lambda m=missing: Result(1, ("not found: %s (--strict)\n" % ", ".join(m)).encode())
         checks.append(c)
     cpp, missing = cpp_checks(tools, a.timeout)
+    if not everything and not any(c.startswith("gpu/") for c in changed):
+        cpp = []   # (--changed: the C++ unit tests build gpu/vk's headers alone)
     for name, run in cpp:
         c = Check(name, run)
         if missing:
@@ -395,15 +652,23 @@ def main():
                 c.why_skip = None
                 c.run = lambda m=missing: Result(1, ("not found: %s (--strict)\n" % ", ".join(m)).encode())
         checks.append(c)
-    checks.append(Check("(byte-compile every tracked .py)", compile_all))
+    checks.append(Check(BYTE_COMPILE_ATOM, compile_all))
     if a.names:
-        checks = [c for c in checks if any(n in c.name for n in a.names)]
+        checks = [c for c in checks if picked(c.name)]
+        if a.exact and not checks:
+            print("run_all: --exact: no check matches %s, nothing run" % ", ".join(a.names), file=sys.stderr)
+            return 2
     part = ""
     if a.shard:
         k, n = a.shard
         mine = shard_of([c.name for c in checks], times, n)
         checks = [c for c in checks if mine[c.name] == k - 1]
         part = ", part %d/%d" % (k, n) if n > 1 else ""
+    if a.list:
+        for c in checks:
+            if not c.why_skip:
+                print(c.name)
+        return 0
     rank = {name: i for i, name in enumerate(by_time([c.name for c in checks], times))}
 
     def one(c):
@@ -463,6 +728,8 @@ def main():
             lines.append("| %s | %s | `%s` | %s |" % (mark[c.status], "" if c.why_skip else "%.1f s" % c.secs, c.name, note))
         with open(summary, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n\n")
+    if a.junit:
+        write_junit(a.junit, checks, wall)
     if a.write_times:
         write_times(to_run)
         print("times for %s written to %s" % (OS, os.path.relpath(TIMES, ROOT)))

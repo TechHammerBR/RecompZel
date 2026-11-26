@@ -15,6 +15,11 @@ struct NvnState {
     nvn_prog prog{};
     bool has_prog = false;
     nvn_p_bind_buf ubo[kNvnStages][16]{}, ssbo[kNvnStages][16]{};
+    // (Hookshot, HL_UBO_INLINE) a uniform slot bound by NOP_UBO_INLINE: its bytes in the recording (alive for the replay
+    // of the submission: the handle's copy outlives it), which its descriptor is served from; null: by address, as before.
+    // ubo[][] keeps the bind's address for the other readers of a slot
+    const uint8_t* ubo_bytes[kNvnStages][16]{};
+    uint32_t ubo_bytes_n[kNvnStages][16]{};
     uint64_t tex[kNvnStages][128]{}, samp[kNvnStages][128]{}, img[kNvnStages][32]{};
     nvn_blend_st blend[8]{};
     nvn_color_st color{};
@@ -46,6 +51,16 @@ struct NvnState {
     uint32_t cs_push_n = 0;
     uint32_t grid[3]{};          // the dispatch being made (compute programs read it from c0)
     uint64_t samples_passed = 0;
+    // (hookshot) real occlusion counts (vk_replay.cpp, RX_VK_OCC_QUERIES): the draws from a samples-passed reset to its report
+    // each get a query. They are numbered from one counter for every queue (occ_next_all, vk_replay.cpp): occ_next is this
+    // state's copy of it while one of its command buffers is replayed (occ_begin_buffer), so a parallel replay's dry pass and
+    // its workers, which start from copies of the state, agree on the numbers
+    uint64_t occ_next = 0, occ_first = 0;
+    uint64_t occ_limit = 0;      // (queries are taken below it: set before a command buffer's replay, when the ring has room)
+    bool occ_on = false;         // (a reset was seen and no report yet)
+    bool occ_overflow = false;   // (the run's count is not known: too many draws, a colour draw, or split by another queue's
+                                 // queries: its report stays "visible")
+    bool occ_color = false;      // (a draw of the run writes colour: the game counts a real draw, not a depth-only box)
 };
 
 // texture / sampler pool registrations (by handle id), as nvn_register_* keep them in the WebGPU renderer

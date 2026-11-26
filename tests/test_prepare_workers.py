@@ -73,10 +73,18 @@ def main():
     draw = (ROOT / "gpu/vk/vk_draw.cpp").read_text(encoding="utf-8")
     run = draw[draw.index("bool prepare_run(void (*progress)(size_t done, size_t total), bool background, bool refresh_states) {"):]
     run = run[:run.index("\n}\n")]
-    pool = run[run.index("const unsigned quarter"):run.index("threads.emplace_back(worker)")]
-    assert "background ? std::min(quarter, cpus) : prepare_cpus()" in pool, \
+    pool = run[run.index("const unsigned cpus = usable_cpus();"):run.index("threads.emplace_back(worker)")]
+    assert "background ? std::min(dev.policy.program_workers_in_play, cpus) : prepare_cpus()" in pool, \
         "prepare_run sizes its pool before the game with prepare_cpus, in play with its quarter"
-    cache = draw   # (RecompZel: in vk_draw.cpp, beside prepare_run)
+    # (the quarter is the PC's policy now, gpu/vk/device_policy.h: its rule, and the policy made from it. Its values:
+    # tests/test_device_policy.py)
+    policy = (ROOT / "gpu/vk/device_policy.h").read_text(encoding="utf-8")
+    rule = policy[policy.index("inline unsigned program_workers_in_play(unsigned cpus, unsigned usable) {"):]
+    assert "return std::min(std::clamp(std::max(1u, cpus) / 4, 2u, 4u), usable);" in rule[:rule.index("\n}\n")], \
+        "in play the pool is a quarter of the CPUs, two to four, and never more than the process may use"
+    assert "p.program_workers_in_play = program_workers_in_play(f.cpus_all, f.cpus_usable);" in policy, \
+        "the policy's workers in play are no longer its rule's, of the PC's CPUs"
+    cache = (ROOT / "gpu/vk/vk_progcache.cpp").read_text(encoding="utf-8")
     body = cache[cache.index("unsigned prepare_cpus() {"):]
     body = body[:body.index("\n}\n")]
     assert "prepare_workers::count(half_cpus(), usable_cpus()" in body and "segment_heap()" in body

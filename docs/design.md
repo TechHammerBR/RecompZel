@@ -1,6 +1,6 @@
-# Hookshot (oot-recomp): design
+# Hookshot: design
 
-A native x86-64 Windows and Linux build of the Switch 2 *The Legend of Zelda: Ocarina of Time* remake: the game's AArch64
+A native x86-64 Windows and Linux build of the game's Switch 2 remake: its AArch64
 code translated to C ahead of time from the user's own decrypted dump and compiled with clang, the Horizon OS and
 NVN2 implemented natively, and the GPU work replayed on Vulkan. No CPU or GPU emulation at any point: the same
 model as mkw-recomp (Mario Kart World), which this project forks.
@@ -49,7 +49,7 @@ git apply -3 mkw.patch
 ```
 
 which works because the base blobs are in this repository. Each sync names its new mkw-recomp base in its commit
-message. OoT-specific code goes into new files where it can, so the shared files stay easy to patch.
+message. Code specific to this game goes into new files where it can, so the shared files stay easy to patch.
 
 ## 3. Architecture
 
@@ -67,7 +67,7 @@ message. OoT-specific code goes into new files where it can, so the shared files
         │  clang (llvm-mingw, emsdk or the system's) -O1, the hot functions -O2 with the play profile, lld (nx2/build.py --standalone)
         ▼
  hookshot.exe = lifted game + host/ (Horizon: threads, SVCs, memory, fs, hid, audio, vi, gs, NVN2)
- hookshot_vk.dll = the Vulkan back end (gpu/vk), loaded by host/rx_backend.c unless RX_BACKEND names another renderer
+ hookshot_vk.dll = the Vulkan back end (gpu/vk), the only renderer, loaded by host/rx_backend.c
 ```
 
 - **Standalone from the start.** MKW went emulator-hosted first (Eglantine with a recompiled CPU backend), then
@@ -81,8 +81,20 @@ message. OoT-specific code goes into new files where it can, so the shared files
 - **GPU.** `host/nvn_native.c` implements the NVN2 procs over guest memory in place: objects live where the game
   puts them, command buffers record an op stream (`gpu/render/rx_nvn.h`), queue submits hand it to the back end.
   `gpu/vk` replays it on Vulkan 1.3: pools imported as host memory, SM86 programs through Eden's recompiler to
-  SPIR-V, mesh/task programs with `VK_EXT_mesh_shader`. The WebGPU renderer (`gpu/render`) stays in the Windows exe as the
-  fallback when Vulkan is missing, as in mkw-recomp, when the build has wgpu-native (`WGPU_NATIVE`).
+  SPIR-V, mesh/task programs with `VK_EXT_mesh_shader`. It is the only renderer: TOTKPort's WebGPU renderer
+  (`gpu/render`), which the Windows exe once fell back to when Vulkan was missing, as in mkw-recomp, is built no more
+  (2026-11-14); without a usable Vulkan nothing is drawn, as on Linux.
+
+### Graphics pipeline state
+
+The mesh compute fallback draws its generated records through a vertex shader without vertex buffers.
+Its graphics pipelines keep dynamic primitive topology and primitive restart, but do not require a
+dynamic vertex binding stride (#2494, tracked in #1001). Ordinary vertex-input pipelines still use
+dynamic stride; native mesh pipelines do not use these three input-assembly/vertex-input states.
+Binding the fallback's static-stride pipeline invalidates dynamic strides. The draw path drops both
+vertex-bind skip caches at that bind, so the next ordinary draw sets its strides again even if the
+buffers are unchanged. Resolved buffer references remain cached; buffer handles, offsets and sizes
+are not invalidated by pipeline binding. Runtime fallback programs do not use pipeline libraries.
 
 ## 4. The lessons from MKW, as rules here
 
@@ -91,13 +103,13 @@ second game.
 
 1. **Cross-queue `nvnCommandBufferWaitEvent` is honoured.** MKW's queues pass stages back and forth with events;
    replaying them in arrival order on one Vulkan queue flashed. `gpu/vk/vk_replay.cpp` `submit_job` replays each
-   submission as far as its waits allow, with per-queue state (`RX_VK_EVENT_WAITS=0` turns it off, for A/B only).
-   *Check early:* log OoT's queues and event waits on the first boot (which queues, how many waits per frame).
+   submission as far as its waits allow, with per-queue state (always on: the `RX_VK_EVENT_WAITS` switch is gone).
+   *Check early:* log the game's queues and event waits on the first boot (which queues, how many waits per frame).
 2. **Nothing the replay reads comes from live guest memory.** Games write per-frame data ahead of the GPU: every
    read is from submit-time captures, and pools are captured from their creation, not their first GPU use
    (`gpu/vk/vk_memory.cpp`, `RX_VK_CAPTURE_POOL_MB`). *Check:* the mirror sync log's live-sync count stays ~0.
 3. **Texture and sampler registrations are queued in order with the submits**, never applied out of band.
-4. **GPU timestamps drive dynamic resolution.** OoT is reported at 1080p-1440p docked, so it has a resolution
+4. **GPU timestamps drive dynamic resolution.** The game is reported at 1080p-1440p docked, so it has a resolution
    controller fed by timestamp reports: the fake GPU time (the counter reports the replay writes, `gpu/vk/vk_replay.cpp`
    `NOP_REPORT_COUNTER`: the 31.25 MHz tick clock since the frame's present, times `RX_VK_TS_SCALE`, 0.1 by default) must be
    scaled so the controller settles where the PC is, not at its floor. *Check:* the render size it picks over time.
@@ -111,15 +123,15 @@ second game.
    with `scripts/prof.py`).
 
 Also inherited, and game-specific in MKW: MKW's frame-pacer hooks at fixed guest addresses are gated on MKW's build
-id (`hos_game_is_mkw`); OoT gets its own once its pacer is found, never by address coincidence.
+id (`hos_game_is_mkw`); the game gets its own once its pacer is found, never by address coincidence.
 
-## 5. What OoT needs that MKW did not (checked on the dump, 2026-11-04)
+## 5. What the game needs that MKW did not (checked on the dump, 2026-11-04)
 
 | | Found | Plan |
 |---|---|---|
 | Dump format | one `.nup` package (base v65536 + update v131072, each an exefs/ and romfs/ tree, data stored as is) | `nx2/nup.py` extracts the newest title to `work/dump` |
 | NSO compression | `main` is ZBIC (NSO flags bit 7, firmware 22.0.0+: zstd with its own magic and BIC-coded tables); rtld, sdk, subsdk0 are LZ4 | `nx2/unpack.py` rewrites ZBIC NSOs as plain ones (hashes checked), decoder `third_party/zbic` |
-| SDK / NVN2 version | 22.2.8 (MKW: 21.4.0); same 46 services and 49 SVCs as MKW | 26 NVN proc names MKW never asked for, 14 not in `host/nvn_native.c` yet (stubs that stop the game only when called; DLSS parameter procs, window acquire timeout, HDR metadata, `nvnProgramBuilderGetShaders`, ...); the device limits in `nvn_native.c` are MKW sdk's (`devinfo[]`) and may need OoT's |
+| SDK / NVN2 version | 22.2.8 (MKW: 21.4.0); same 46 services and 49 SVCs as MKW | 26 NVN proc names MKW never asked for, 14 not in `host/nvn_native.c` yet (stubs that stop the game only when called; DLSS parameter procs, window acquire timeout, HDR metadata, `nvnProgramBuilderGetShaders`, ...); the device limits in `nvn_native.c` are MKW sdk's (`devinfo[]`) and may need the game's |
 | Instructions | 4 UDOT (FEAT_DotProd) sites, the only forms suyu's translator lacked | `nx2/insn.py` `dot()` |
 | Engine | romfs laid out like TOTK's (agl, gsys, Phive, Banc, Bake), Havok 2025.2, NintendoWare G3d2/Vfx3/Ui, SMAA, `.zs` (zstd) files | romfs read from `work/dump/romfs` |
 | Microphone (the ocarina by humming) | to check at runtime (nn::audio input; `audsmx:u`, `auddmg:u` are in the services, as in MKW) | first a stub that hears silence; then a host microphone (WASAPI) or a key that plays the note |
@@ -184,6 +196,8 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
 - **S2:** the standalone lift: 294,450 functions in 57 chunks (1.4 GB of C), 485 HLE functions, 243 OS imports
   stubbed, 22 sdk NVN functions routed to `host/nvn2.c`.
   The build links (`hookshot.exe`, 426 MB; ~25 min for a full build with 4 jobs, a few minutes after a relift).
+  On 2026-11-13 a player's build of nightly-56 compiled in about 5 minutes with 24 jobs, and took 13.5 to 14 minutes in all
+  ([build times](development.md#build-times)).
 - **S3 done (2026-11-04, boot13).** The title screen renders at 60 fps: black for ~23 s (~1,400 presents) while it
   loads, then the logo, smoke and the menu (New Game / Options / ZELDA NOTES Setting), through the Vulkan back end.
   It runs the 150 s out with no crash. What it took, in boot order:
@@ -214,11 +228,11 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
     128 bytes off Win64's frame pointer), and longjmp's BR comes back through a64_ijump_hook.
   - HMMA on the host's tensor cores: HMMA_nx2 → IR MatrixMulAddF16 → OpCooperativeMatrixMulAddKHR 16x8x16 f16.
     gpu/vk/vk_coopmat.cpp measures the device's element order (NVIDIA: A's registers 1 and 2 swapped) and checks
-    a multiply. OoT's networks (the movie upscaler, the gameplay TAAU) run at full speed (the movie at 60 fps).
+    a multiply. The game's networks (the movie upscaler, the gameplay TAAU) run at full speed (the movie at 60 fps).
   - Write-backs of GPU-written textures keep the pages the CPU wrote since (SceneLowPriority read texels as
     pointers). Storage buffer tables: GetCbuf(i, x*16 + base) addresses get a 16-entry descriptor array that the
     global memory fallbacks search (the froxel fog); the 32-bit global atomics got fallbacks too.
-  - Program variants remember the storage images' integer-ness too: OoT writes R11G11B10 and RGBA8 targets
+  - Program variants remember the storage images' integer-ness too: the game writes R11G11B10 and RGBA8 targets
     through R32UI views, and a variant made while the slot held a float texture wrote packed words as floats
     (the yellow cast: NaN scene before the TAAU).
   - Extended registers: programs using ~249 GPRs (vertex and mesh) keep their high GPRs in IR registers 256 + n
@@ -235,24 +249,38 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
   `GuardFragmentOutputs` keeps float colour outputs finite (RX_VK_NAN_GUARD=0: off). Where the NaN comes from is not known.
 - Discards: a nested early return after a demote wrote its colours (`structured_control_flow.cpp`, from Lichii). That was the box
   around Link (`1e26755d`, the per-character shadow projector, drawn as a box that discards outside) and most of the milky look.
-- The OoT fog (0.25) and exposure (0.65) factors are still needed: with them off the fog is far too thick. Fog's cause is open.
+- Fog and exposure come from the game's own values: no factor of Hookshot's scales them. The fog (0.25) and exposure (0.65) factors, from
+  Orchid's workaround, were off from 11-07 and removed in Hookshot #2042 (`RX_VK_OOT`, `RX_VK_OOT_EXPOSURE`, `RX_VK_OOT_FOG`,
+  `RX_VK_OOT_VISUAL` are now only logged as doing nothing, `removed_switch_notes()` in `host/hos_main.c`): they had been tuned
+  against bugs since fixed. The ground fog that vanished when the camera looked down was the game's early texel writes being
+  dropped (Hookshot #638).
 - Fps is CPU-bound: RX_VK_NO_WRITEBACK cut GPU time from 10 to 3.6 ms and left fps alone. HOS_PIN_BY_CORE 35 fps, HOS_SPIN_US=200
   slower, narrow barriers no change, RX_VK_WAIT_GPU no help.
 - Tools: RX_VK_FRAMELOG + scripts/framelog.py (every frame shown), RX_VK_PROBE=2 (the passes at speed), RX_VK_SLOW_LOG, HOS_WATCH.
 - A release build (`RX_RELEASE=1` at build time) precompiles before the game starts; test builds do not unless RX_VK_PRECOMPILE=1.
-  hookshot_programs.bin (with hookshot_programs.idx, the list of its records), hookshot_pipelines.bin and mkw_vk_pipelines.bin go
-  beside the executable.
+  hookshot_programs.bin (with hookshot_programs.idx, the list of its records), hookshot_pipelines.bin and hookshot_vk_pipelines.bin go
+  in the game folder's cache/ (gpu/vk/vk_paths.h cache_path; host/game_layout.c makes it), the logs in its logs/.
+- A program the driver's compiler faulted on (guarded_graphics) is never asked of the driver again (gpu/vk/driver_faults.h). On AMD's Windows
+  driver the caught fault left the program's compile unfinished inside it, and every later build of that program waited there
+  forever: the pause-menu freeze of issue 996, seen in a full dump. On AMD one program's builds also go to the driver one at a
+  time (RX_VK_DRIVER_FAULTS=2: on every driver); other drivers keep building a program's variants side by side.
+  The faults are kept per driver version in hookshot_driver_faults.txt in the game folder's cache/.
 
 ## 11. Findings, 2026-11-06, day
 
-- Builds: `nx2/split_hot.py` puts code_hot.c in eight files that compile side by side, 79 minutes to about 6. `RX_PGO=gen` counts branches
+- Builds: `nx2/split_hot.py` puts code_hot.c in eight files that compile side by side, 79 minutes to about 6
+  (a release shipped no hot list, so a player's build had no hot pieces: every lifted file was built at `-O1`; since the list was
+  committed, `assets/profiles/hot_funcs.txt`, every build has them). `RX_PGO=gen` counts branches
   (host/pgo_rt.c writes LLVM raw format 11, the toolchain has no compiler-rt profile library), `HOS_PGO=<path>` with `<path>.reset` and
   `<path>.dump` files drives a run, `nx2/pgo_pieces.py` fits the merged profile to the pieces, `RX_PGO=<file>` uses it. `RX_VK_ONLY=1`: the renderer alone.
+  (2026-11-14) The renderer module the same way, apart from the game's: `RX_VK_PGO=gen` counts in the back end's own
+  files with the module's own copy of host/pgo_rt.c (`RX_VK_PGO_FILE=<path>` drives a run; on Linux the writer reads the ELF sections
+  `__llvm_prf_*`), `llvm-profdata merge` makes `work/hookshot_vk.profdata`, `RX_VK_PGO=<file>` uses it (docs/development.md).
 - Dark frames, open: lit surfaces come out black for one frame, geometry and depth intact. 5% with `RX_VK_FRAMEGEN=0`, 2.9% with the menu's Off, about 0.1% at 4x.
   Not the cause: render conditions, clear flags, ClearBuffer order, GPU lag, write-back, the real-time step, the ambient cubemap.
   `HOS_COND_RECORD` and `RX_VK_COND_ALWAYS` look like fixes by count and are not: the picture goes white. Tools: the frame log's dark trap dumps probes, passes and conditions; `RX_VK_PROBE_MIN`, `RX_VK_PROBE_UBO_HEX`.
-  Also not the cause: colour write masks (`wm` in the pass trace: f on every lit pass), constants (`RX_VK_PROBE_UBO_HEX`), queue order (`RX_VK_EVENT_WAITS=0`), and the capture in
-  synchronous mode (`RX_VK_SYNC_CAPTURE=1`, which does take 380,000 pages per 600 submits). `RX_VK_QUEUE_STATE=0` stops the game at the Load menu, and `RX_VK_MIRROR=0` is 8 fps: neither says anything.
+  Also not the cause: colour write masks (`wm` in the pass trace: f on every lit pass), constants (`RX_VK_PROBE_UBO_HEX`), queue order, and the capture in
+  synchronous mode (which does take 380,000 pages per 600 submits). `RX_VK_MIRROR=0` is 8 fps, which says nothing.
   What holds: geometry and depth are right (black shapes against the fog), the prepass and the lit passes run with the same draw counts, and the lit passes output black.
   The lit materials' four storage buffers (c0+0x510..0x540) keep their addresses, sizes and non-zero counts in dark frames as seen in guest memory; the 720 KB one is all zeros in good
   frames too, so it is no cause, though its compute shader (4b03b304) runs every frame. Guest memory is not what the GPU reads, so these need comparing on the GPU's side.
@@ -260,6 +288,98 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
   repeat with a delay that keeps ~45 fps. The MKW session's mirror page skip fired 0 times here and was removed.
   Not an instrument's doing: with nothing attached, photographed from outside the window (37 s, ~2200 photographs): 16 with `RX_VK_FRAMEGEN=0`, none at the user's 4x. With
   `RX_VK_SUBMIT_DELAY_US`: 7 at 300, 0 at 1000; a repeat at 1000 with shots still had 7 events against 50-60. So it is a race with the game's threads: less overlap, fewer. The delay is a test, not a fix.
-- The builder's first full build: 43 minutes at below-normal priority, 0 failures; the folder starts from a double click and reaches the title at 60 fps.
+- The builder's first full build: 43 minutes at below-normal priority (13.5 to 14 minutes for nightly-56 on 2026-11-13:
+  [build times](development.md#build-times)), 0 failures; the folder starts from a double click and reaches the title at 60 fps.
 - Render conditions here gate single lights and read reports earlier in the same stream, so they cannot be read at record time.
 
+
+## 12. Findings, 2026-11-11: what a frame waits for
+
+- `HOS_CHAIN` + `scripts/chain.py` walk each frame back from its present (RTX 3090, Ryzen 9 7900X, Linux, NVIDIA 620.70, Kokiri
+  Forest standing, 2560x1440, ~1250 draws, recording on: 17.8 ms a frame). The frame is one loop through two threads, nothing else:
+  - the presentation thread, from the main thread's message to its present: 12.5 ms (the replay of the frame's commands);
+  - the present call, to the event that releases the main thread: 2.7 ms, ~2.4 of them inside `vkQueuePresentKHR` (in the driver,
+    in `poll`);
+  - the main thread, from that event to its next message: 2.6 ms, ~2 of them the renderer's work on its own submits (the submit's
+    capture copies, `memory_collect_written`, its replay).
+  The game's job threads (ModuleSystemWorker, BaseProcExecutor) and the background threads are on the path under 0.1 ms a frame;
+  waits for a virtual core 0.27 ms (the presentation thread taking one back after its present); hand-offs ~10 us each. The main
+  thread waits ~4.5 ms a frame on the presentation thread. So the game's own CPU work is not what holds the frame here: the
+  replay, the present and the submits on the game's threads are. ("Gameplay is CPU-bound: the game's threads next", section 9,
+  is answered: the renderer's work on them.)
+- The present's wait is the GPU finishing the frame: with `RX_VK_PRESENT_THREAD=1` the presenter thread waits 1.75-1.92 ms a
+  present for the copy's fence and then 0.18-0.22 ms in `vkQueuePresentKHR`. The game's present call then returns in 0.07-0.10 ms
+  (median) instead of 2.0-2.1, and the frame (recording on, alternating runs) took 20.1 and 19.0 ms against 22.1 and 22.9. With the
+  present off the path, the main thread's job waits (lr 0x80070bfc) start to show on it. (`RX_VK_NO_WRITEBACK=1`, the 1280x720
+  output, a 240 Hz compositor and `RX_VK_IMMEDIATE=1` left the wait as it was.)
+- Measuring on this PC: two runs of the same build vary by 10% and more (other work on the machine); fps differences under that
+  need many alternating runs. `chain.py`'s stretches are steadier: they say which part moved.
+
+## 13. Frame generation's presents, as rules
+
+Checked 2026-11-16 (Windows 11, RTX 5090, NVIDIA 621.24, 5120x2160 at 165 Hz with G-Sync, DLSS Frame Gen at 3x and 4x,
+PresentMon 2.3.0). Each fault these rules keep away looked like frame generation turned off: the FPS
+counter and the display thread's own counts said the frames were made and on time, and the screen showed the game's frame
+rate. `tests/test_framegen_fixed_pace.py` runs the timing functions through a model of the display loop.
+
+1. **Frame pacing is measured on the screen, not in the log.** The display thread's `frame interpolation: ... shown on time`
+   and `shown apart` counts are its present calls. After the call a present can still wait for the GPU: on 2026-11-16 the
+   log had no late frame while PresentMon showed 32% (3x) and 45% (4x) of the frames on the screen under 2 ms. Read
+   PresentMon's `DisplayedTime` (the share under 2 ms, its p10 to p90) and, for where a frame waited, `DisplayLatency` against
+   `CPUBusy` (the call) and `GPULatency` + `GPUTime` (its GPU work). The method: the measure skill,
+   `.claude/skills/measure/SKILL.md`.
+2. **A fixed multiplier's set is shown on the game's timeline, in every present mode** (`gpu/vk/vk_framegen.cpp`
+   `fixed_on_timeline`, `fixed_dues`, `pace_lead`), whatever Frame pacing says. An immediate (V-Sync Off) swapchain shows
+   each present at once: a set presented as it came (its made frames and the game's within a millisecond) showed the
+   game's frame and hardly the made ones. Evenly apart (the smoothed frame time over the set) the motion stutters as much
+   as the game's frame times vary; on the game's timeline each frame moves as far as its time. Under FIFO (V-Sync On) a VRR
+   display shows each present when it comes, one a refresh at most: as they came, a set's frames were a refresh apart and
+   its last one waited for the next set (3x at 60 fps on 240 Hz: 4.2, 4.2 and 8.3 ms), so there a frame goes at its time
+   but no sooner than a refresh after the one before was given (`fifo_slot`). `RX_VK_FG_TIMELINE=0` gives the old way
+   back, for an A/B.
+3. **The GPU's delay is fed back only from sets taken as they came** (`pace_delay`, `display_main`'s `as_came`). A set's
+   frames are done with the game frame's GPU work, so its times wait for that (`fg.late_ns`). A set whose copies went to the
+   GPU late for another reason (no swapchain image free, the display thread busy with the set before) would raise the delay
+   by its own lateness, which sends the next set's copies later still: at 4x it ran to a whole game frame.
+4. **A set presented ahead needs a frame slot per frame of both sets in flight, and two sets' spare swapchain images**
+   (`gpu/vk/vk_replay.cpp` `present_slots_for`, `gpu/vk/vk_main.cpp` `create_swapchain`, `present_ahead_wanted`). Each present
+   waits for the copy last made in its slot: with fewer slots than a set's frames, its 4th copy waited for its own first
+   copy, and with a slot per frame of one set the next set's copy k waited for the shown set's copy k, each so for all the
+   game's work queued before it, while frames of the shown set were due. The slot count is the swapchain's
+   (`dev.swap_slots`), set when it is made for its sets, in every present mode; `RX_VK_FG_TIMELINE=0` keeps 3. An app may hold at most
+   imageCount - minImageCount acquired images (an NVIDIA surface: 8 images, 6 spare): the next set's copies go as images
+   come free (`copy_up_to`), never all or none. The slots are also how many copies may still be on the GPU: what a copy
+   reads lives through `kPresentSlotsMax` presents after it (the overlays' staging buffers and old textures,
+   `gpu/vk/vk_imgui.cpp` `kFramesLater`; Dear ImGui's vertex buffers, `ImageCount`). At 4, frame generation at 3x and up
+   let them go while copies could still read them (a test-only log showed it on an RTX 5090; a likely cause of a
+   tester's lost device on an RTX 5080, not reproduced).
+5. **A present waits on the queue it is made on.** On the replay's graphics queue it waits behind the game's next frame (3 to
+   12 ms at 5120x2160), and a second queue of the graphics family takes turns with it on the GPU. A compute family's queue
+   runs beside it (`RX_VK_PRESENT_QUEUE`, `vk_main.cpp` `create_device`): 0.1% of the frames under 2 ms, on the screen 4.9
+   to 6.9 ms apart at 3x (p10 to p90), each present's call to the screen 1.3 ms instead of 6.6 (an RTX 5090). It is off
+   by default on every PC, `=1` turns it on: with frame generation it lost the GPU on a tester's RTX 5080 with NVIDIA's
+   621.24 (crashes at 2x and 3x that stopped with `=0`; another RTX 5080 looks the same), as it gave an RTX 4090
+   on 621.14 a black screen in Hookshot issue 1161, before the fork. The fault was never placed.
+6. **Under FIFO the made frames do not queue** (`gpu/vk/vk_framegen.cpp` `fifo_catch_up`, `fifo_pick`,
+   `gpu/vk/vk_reflex.cpp` `fifo_min_interval_us`). FIFO shows one frame a refresh: when the game's frame rate times the
+   multiplier passes the refresh, the frames queue in the sets taken ahead and their refresh slots, the game is held
+   back, and each game frame reaches the screen later and later (RTX 5090, 165 Hz: 3x, 40 to 51 ms after its hand-over
+   before the timeline under FIFO and 65 to 82 ms with it; at 2x under the refresh, 15 and 22 ms; 6x, the game held to
+   27.5 game frames a second (45.7 with V-Sync Off) and each game frame presented 138 ms after its hand-over). FIFO's catch-up (`display_main`'s `take`): a set
+   whose game frame, its last, would be shown over a refresh after its own time keeps the most frames that bring it
+   within one, the ones left out spread over the set so the picture moves in even steps (6x with 3 shown: the 2nd, 4th
+   and 6th), and their copies are not made, so no image is held for them. Past the refresh the screen then shows 160 to
+   165 frames a second at 165 Hz, each game frame within a refresh of its time, the game at its own rate (the model in
+   `tests/test_framegen_fixed_pace.py`: 3x, 4x and 6x at 33 to 60 game frames a second; in the game, 6x: the game at
+   52 to 55 frames a second and each game frame on screen 46 to 52 ms after its hand-over; these game runs had the presents
+   on their own queue, then the default with NVIDIA's 621.24, rule 5). At most all but one made frame is left out:
+   at 2x the one made frame stays, as a set of one frame is not presented ahead. The GPU's delay is fed back against
+   the set's first frame whichever frames are shown: a copy takes as long for any of them, and against the first one
+   shown 6x ran the delay down to 0, so its frames came due before their copies and a frame more a set was left out.
+   For a G-SYNC or
+   FreeSync display, `RX_VK_FG_FIFO_CAP=1` has NVIDIA Reflex's sleep, while frames are made, hold the game to the
+   multiplier's share of refresh - refresh²/3600 frames a second (157 at 165 Hz: 52.5 game frames at 3x), as NVIDIA's
+   own Reflex keeps a G-SYNC display under the refresh with V-Sync (with the first catch-up, 3x on 165 Hz: 29 ms on
+   screen with a 60 cap against main's 45 to 51 before the timeline under FIFO, and 39 uncapped against 33 to 40). It is off by default: a
+   display of a fixed refresh then has refreshes without a new frame (7 a second at 165 Hz), and the game cannot tell
+   the two apart.

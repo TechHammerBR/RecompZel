@@ -25,7 +25,7 @@ static std::mutex pools_mu;
 static std::atomic<uint64_t> pools_gen{1};
 static std::atomic<bool> par_active{false};
 static thread_local TlPool tl_pools[1024];
-static uint64_t mirror_epoch = 7, mem_rec_value = 21;
+static uint64_t mirror_epoch = 7, mem_rec_value = 21, mirror_bytes = 0;
 static bool mirrors = true, mirror_upload = true, have_pool = true, mapping_valid = true;
 static std::vector<Pool*> mirror_wanted;
 static std::vector<WriteBack> writebacks;
@@ -46,7 +46,9 @@ static bool wb_leave_out(uint64_t, uint64_t, std::vector<std::pair<uint64_t, uin
 static bool wb_skips_log() { return false; }
 static void wb_skip_note(uint64_t, uint64_t) {}
 static bool mirror_on() { return mirrors; }
+static uint64_t mirror_budget() { return 2048ull << 20; }
 static void note_in_place_read(bool = false) {}   // (the readback's part wait: tests/test_readback_part.py checks every such read is noted)
+static void early_in_place_write(uint64_t, uint64_t, uint64_t) {}   // (RX_VK_READBACK_EARLY: tests/test_readback_early.py)
 static Pool* pool_of(uint64_t guest, uint64_t size) {
     ++lookups;
     return have_pool && guest >= pool.lo && guest <= pool.hi && size <= pool.hi - guest ? &pool : nullptr;
@@ -85,18 +87,12 @@ static Host interface{gpu_ptr, gpu_guest};
 static Host* host = &interface;
 
 uint64_t memory_writeback_value(uint64_t guest, uint64_t size, bool* ever, uint64_t* part = nullptr, uint64_t* whole = nullptr);
-#include "../gpu/vk/compat/hookshot_env.h"   // (env_on: the switches' one rule, as vk_memory.cpp reads RX_VK_NO_READBACK_WAIT)
 #include "direct_write_actual.inc"
 
-static void readback_disabled(bool off) {
+static void authored_environment() {
 #ifdef _WIN32
-    require(_putenv_s("RX_VK_NO_READBACK_WAIT", off ? "1" : "") == 0, "authored environment failed");
-    _putenv_s("RX_VK_MIRROR_DEFER", "");
     _putenv_s("RX_VK_ASYNC_IMPORT", "");
 #else
-    require((off ? setenv("RX_VK_NO_READBACK_WAIT", "1", 1) : unsetenv("RX_VK_NO_READBACK_WAIT")) == 0,
-            "authored environment failed");
-    unsetenv("RX_VK_MIRROR_DEFER");
     unsetenv("RX_VK_ASYNC_IMPORT");
 #endif
 }
@@ -126,9 +122,9 @@ int main(int argc, char** argv) {
         const uint64_t pages = (pool.hi - pool.lo) >> kPageShift;
         pool.shadow_known.assign((pages + 63) / 64, UINT64_MAX);
         uint64_t guest = pool.lo + 4092, gpu = guest, size = 16;
-        readback_disabled(mode == "wait_disabled");
+        authored_environment();
         if (mode == "mirror_off" || mode == "virtual_write" || mode == "large_write" ||
-            mode == "no_recording" || mode == "wait_disabled" || mode == "readonly") mirrors = false;
+            mode == "no_recording" || mode == "readonly") mirrors = false;
         else if (mode == "upload_off") mirror_upload = false;
         else if (mode == "refused") pool.mstate = Pool::MIRROR_REFUSED, size = 1u << 20;
         else if (mode == "mirror_pending") pool.mstate = Pool::MIRROR_WANTED;
@@ -167,7 +163,7 @@ int main(int argc, char** argv) {
                         !pool.direct_write_epoch, "readonly TLS shortcut changed write bookkeeping");
                 page_state(guest, size, false);
             } else {
-                page_state(guest, size, size <= (1u << 20) && mem_rec_value && mode != "wait_disabled");
+                page_state(guest, size, size <= (1u << 20) && mem_rec_value);
                 require(pool.direct_write_epoch == mirror_epoch, "direct write epoch missing");
                 require(writebacks.empty() && !synced, "direct binding entered mirror writeback path");
             }

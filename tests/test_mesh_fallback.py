@@ -13,6 +13,15 @@ python -I -B tests/test_mesh_fallback.py
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def _with_cache(path):
+    """vk_shader.cpp with the program cache it held before (vk_progcache.cpp and .h beside it, outside the translator stamp): definitions first"""
+    parts = [path.read_text(encoding="utf-8")]
+    for name in ("vk_progcache.cpp", "vk_progcache.h"):
+        if (path.parent / name).exists():
+            parts.append((path.parent / name).read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
 VK = ROOT / "gpu" / "vk"
 SHADER = VK / "vk_shader.cpp"
 DRAW = VK / "vk_draw.cpp"
@@ -49,7 +58,7 @@ def main():
         if field not in program:
             raise SystemExit("Program has no %s" % field)
 
-    mesh_shader = SHADER.read_text(encoding="utf-8")
+    mesh_shader = _with_cache(SHADER)
     translate = block(mesh_shader, "void translate_mesh_into(")
     if "rt.mesh_fallback = fallback;" not in translate or "mrt.mesh_fallback = fallback;" not in translate:
         raise SystemExit("the task and mesh stages are not emitted as fallback stages")
@@ -103,6 +112,31 @@ def main():
         raise SystemExit("a mesh workgroup does not take its records and add them to the draw's count")
     if "MESH_FALLBACK_CAPACITY" not in epilogue:
         raise SystemExit("a mesh workgroup past the slots is not left out")
+    # (the records are written by one loop over their words, the threads side by side: unrolled, a primitive's corners and every
+    # line of each, 348 stores a thread of 6fcc901fbc8b73c7 took Mesa's Intel compiler 207 s and 3.8 GB. The loop's index is a
+    # function variable, declared in the entry block by the prologue)
+    if "Strided(" in epilogue or "OpLoopMerge(done, next, spv::LoopControlMask::DontUnroll)" not in epilogue:
+        raise SystemExit("the fallback epilogue writes its records unrolled, not in one loop over their words")
+    if "ctx.mesh_fallback_epilogue_word" not in epilogue or \
+            "ctx.mesh_fallback_epilogue_word = ctx.AddLocalVariable(" not in block(mesh, "void EmitMeshPrologue(EmitContext& ctx)"):
+        raise SystemExit("the epilogue's loop index is not declared in the entry block")
+    if "AddLocalVariable" in epilogue:
+        raise SystemExit("the epilogue declares a function variable mid-function (spirv-val rejects it)")
+    loop_head = epilogue[epilogue.index("ctx.OpLoopMerge(done, next"):]
+    if "ctx.OpBranchConditional(more, body, done);" not in loop_head.split("\n")[1]:
+        raise SystemExit("the epilogue loop's merge is not followed at once by its branch (spirv-val rejects anything between)")
+    # (the Soa layout's records, the default, the same: two loops, records then lines, not Strided's unrolled rounds)
+    lines = block(mesh, "void WriteFallbackLines(")
+    if "WriteFallbackLines(ctx, base, taken);" not in epilogue or "Strided(" in lines or \
+            "Loop(ctx, ctx.mesh_fallback_epilogue_word, LocalInvocation(ctx), taken" not in lines or \
+            "Loop(ctx, ctx.mesh_fallback_epilogue_line, ctx.u32_zero_value, ctx.Const(words), 1" not in lines:
+        raise SystemExit("the fallback's Soa records are written unrolled, not in a loop over records and one over their lines")
+    loop = block(mesh, "void Loop(")
+    if "spv::LoopControlMask::DontUnroll" not in loop or "AddLocalVariable" in loop or "AddLocalVariable" in lines or \
+            "ctx.mesh_fallback_epilogue_line = ctx.AddLocalVariable(" not in block(mesh, "void EmitMeshPrologue(EmitContext& ctx)"):
+        raise SystemExit("the Soa records' loops unroll, or their index is not declared in the entry block")
+    if "ctx.OpBranchConditional(more, block, done);" not in loop[loop.index("ctx.OpLoopMerge(done, next"):].split("\n")[1]:
+        raise SystemExit("the Soa loop's merge is not followed at once by its branch (spirv-val rejects anything between)")
     isbe = block(mesh, "Id EmitIsbeRead(")
     if "mesh_fallback_task_threads" not in isbe or "ctx.OpUMod" not in isbe:
         raise SystemExit("a fallback mesh workgroup takes its slot, not its meshlet within the task workgroup, as its index")
@@ -139,7 +173,7 @@ def main():
             "push_constants(cmd, p, nullptr, d.first_task);" not in draw or \
             "LoadWord(ctx, BufferWordAt(ctx, base, ctx.Const(1U)))" not in isbe:
         raise SystemExit("a task draw loses its direct or GPU-provided starting workgroup")
-    if "if (p.fallback && d.mesh && !fallback_record(cmd, p, d)) SKIP_HERE();" not in draw:
+    if "if (p.fallback && d.mesh && !fallback_record(cmd, p, d)) {" not in draw:
         raise SystemExit("the fallback dispatches do not run before the pass")
     if "vkCmdDrawIndirect(cmd, fallback_draw_records, 0, 1, sizeof(VkDrawIndirectCommand));" not in draw:
         raise SystemExit("the fallback is not drawn from the records' header as an indirect draw")
@@ -176,6 +210,10 @@ def main():
         raise SystemExit("the fallback buffers are still keyed by the program")
     if "(!p.fallback || dw().prog == &p)" not in draw or "out.prog = &p;" not in draw:
         raise SystemExit("a fallback draw reusing its descriptors after a dispatch pushes the dispatch's at the compute bind point")
+    # (the pair is shared by a recording thread's programs (#1383): its clears wait for the last fallback draw's reads)
+    shared = block(draw, "bool fallback_record(VkCommandBuffer cmd, Program& p, const DrawArgs& d) {")
+    if "full_barrier(cmd);" not in shared[shared.index("end_pass(cmd);"):shared.index("vkCmdFillBuffer(cmd, f->records")]:
+        raise SystemExit("a fallback draw clears the shared buffers before the last draw has read them")
     if "VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT" not in VMA.read_text(encoding="utf-8"):
         raise SystemExit("the allocator does not make the fallback's buffers addressable")
     if "st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT | VK_SHADER_STAGE_MESH_BIT_EXT)" \
@@ -188,7 +226,7 @@ def main():
     if "if (p.fallback && (st.vk_stage & (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_TASK_BIT_EXT |" \
             not in graphics:
         raise SystemExit("build_graphics leaves out the task and mesh stages of native mesh programs too")
-    if "dynamic_state(cmd, s, at, topo, d.mesh && !p.fallback);" not in draw:
+    if "dynamic_state(cmd, s, at, topo, d.mesh && !p.fallback, p);" not in draw:
         raise SystemExit("a fallback draw does not use the mesh program's topology")
     if "return p.fallback ? p.fallback_topology : drawn;" not in draw or "topo = pipeline_topology(p, topo);" not in draw:
         raise SystemExit("the fallback's points, lines or triangles are not used")
@@ -215,9 +253,9 @@ def main():
     precompile = block(draw, "void precompile_run(void (*progress)(size_t done, size_t total)) {")
     if "else if (p.fallback) fallbacks.push_back(&p);" not in precompile or "fallback_compute_pipelines(p);" not in precompile:
         raise SystemExit("the precompile leaves the mesh fallback's compute pipelines to play")
-    shader = (ROOT / "gpu" / "vk" / "vk_shader.cpp").read_text(encoding="utf-8")
+    shader = _with_cache(ROOT / "gpu" / "vk" / "vk_shader.cpp")
     if "(fallbacks && (it->second[0].kind & 4))" not in block(shader, "size_t program_cache_load_some(") or \
-            "}, all_computes, true);" not in precompile:
+            "}, plan.all, true);" not in precompile:
         raise SystemExit("the precompile loads only the mesh fallback programs play has drawn (white until compiled)")
     print("mesh shader fallback (compute records and a vertex stage) ok")
 

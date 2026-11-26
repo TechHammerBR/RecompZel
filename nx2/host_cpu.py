@@ -25,7 +25,7 @@ def host_march():
 
 
 def native_cpu(cc, flags):
-    """(issue 182) What clang makes of -march=native here, from `clang -###`: its -target-cpu, -tune-cpu and
+    """What clang makes of -march=native here, from `clang -###`: its -target-cpu, -tune-cpu and
     -target-feature list, as "<cpu>_<tune>_<sha1 of the features>" (e.g. "znver4_znver4_3f1c09a2b4"). The flag itself names
     no CPU, so an object key made from it would stay the same when the CPU changes (a new CPU, the disk in another PC);
     build.py puts this name in the flags instead. None if clang doesn't say."""

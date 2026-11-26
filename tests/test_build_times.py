@@ -140,5 +140,194 @@ class EstimateTests(unittest.TestCase):
             self.assertEqual(build.plan_jobs([job])[0], [])
 
 
+class PhaseTests(unittest.TestCase):
+    """Where a build's time went (PhaseClock): from the stages and the lines the steps print, in build_times.json"""
+
+    def clock(self):
+        self.t = [100.0]
+        return make_game.PhaseClock(100.0, now=lambda: self.t[0])
+
+    def test_a_build_is_cut_into_its_stages_and_their_parts(self):
+        c = self.clock()
+        self.t[0] = 102.0
+        c.enter("read")
+        self.t[0] = 112.0
+        c.enter("lift")
+        # (lift.py's and build.py's own lines, as they print them)
+        for line in ("image: rtld@0x80000000+0x20000, main@0x80020000+0x4ea0000; 295178 entries (7s)",
+                     "discovered 294522 functions (70s)",
+                     "lift: coverage in 39.5s (109s)",
+                     "lift: emit and write (1 processes) in 170.5s (280s)",
+                     "lift: patches (16 processes) in 7.9s (295s)"):
+            c.line(line)
+        self.t[0] = 443.0
+        c.enter("compile")
+        self.t[0] = 452.0
+        c.line("491 files, 24 jobs, -D_CRT_SECURE_NO_WARNINGS -O1 -DA64_POLLING -DA64_WRITE_TRACK")
+        c.line("compiled in 1282s, 0 failed")
+        c.line(r"linked E:\work\sa\build\hookshot.exe: 440 MB (3s)")
+        c.line("linked /home/me/work/sa/build/hookshot_vk.so: 11 MB (0s)")
+        self.t[0] = 1743.0
+        c.enter("finish")
+        self.t[0] = 1800.0
+        c.enter(None)
+        s = c.seconds
+        self.assertEqual((s["checks"], s["read"], s["lift"], s["compile"], s["finish"]), (2.0, 10.0, 331.0, 1300.0, 57.0))
+        self.assertEqual((s["lift: image and discovery"], s["lift: emit and write"], s["lift: patches"]), (70.0, 170.5, 7.9))
+        self.assertEqual((s["compile: planning"], s["compile: compiling"]), (9.0, 1282.0))
+        self.assertEqual((s["compile: linking hookshot.exe"], s["compile: linking hookshot_vk.so"]), (3.0, 0.0))
+        table = c.table()
+        self.assertEqual(table[0], "where the time went:")
+        self.assertTrue(any("emit and write" in row and "170 s" in row for row in table))
+        self.assertLess(next(i for i, r in enumerate(table) if r.split()[0] == "lift"),
+                        next(i for i, r in enumerate(table) if "emit and write" in r))
+
+    def test_a_stage_twice_adds_up(self):
+        c = self.clock()
+        c.enter("lift")
+        self.t[0] = 110.0
+        c.enter("compile")
+        self.t[0] = 115.0
+        c.enter("lift")
+        self.t[0] = 130.0
+        c.enter(None)
+        self.assertEqual((c.seconds["lift"], c.seconds["compile"]), (25.0, 5.0))
+
+    def test_the_finish_is_cut_into_its_parts(self):
+        """part(): the time since the stage began, or since its last part, under the stage, and shown under it"""
+        c = self.clock()
+        self.t[0] = 110.0
+        c.enter("finish")
+        self.t[0] = 112.0
+        c.part("copying the new files in")
+        self.t[0] = 142.0
+        c.part("button prompts")
+        self.t[0] = 143.0
+        c.enter(None)
+        s = c.seconds
+        self.assertEqual((s["finish"], s["finish: copying the new files in"], s["finish: button prompts"]), (33.0, 2.0, 30.0))
+        self.assertTrue(any("button prompts" in row and "30 s" in row for row in c.table()))
+
+    def test_the_planning_is_the_compile_stage_only(self):
+        c = self.clock()
+        c.enter("finish")
+        self.t[0] = 140.0
+        c.line("12 files, 4 jobs, -O1")
+        self.assertNotIn("compile: planning", c.seconds)
+
+    def test_the_phases_are_kept_with_the_build(self):
+        with tempfile.TemporaryDirectory(prefix="hookshot-phases-") as d:
+            make_game.record_times(d, {}, 10.0, 20.0, phases={"lift": 331.04, "compile: linking hookshot.exe": 3.0})
+            make_game.record_times(d, {}, 10.0, 20.0)
+            builds = json.loads((Path(d) / "build_times.json").read_text(encoding="utf-8"))["builds"]
+        self.assertEqual(builds[0]["phases"], {"lift": 331.0, "compile: linking hookshot.exe": 3.0})
+        self.assertNotIn("phases", builds[1])
+
+    def test_the_build_feeds_the_clock(self):
+        """run() gives it every line a step prints; say("stage") moves it on; the build stops it before recording"""
+        src = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
+        run = src[src.index("\ndef run("):src.index("\ndef ", src.index("\ndef run(") + 1)]
+        self.assertIn("PHASES.line(line)", run)
+        say = src[src.index("\ndef say("):src.index("\ndef ", src.index("\ndef say(") + 1)]
+        self.assertIn("PHASES.enter(str(words[1]))", say)
+        self.assertLess(src.index("PHASES.enter(None)"), src.index("phases=PHASES.seconds"))
+        self.assertNotIn("@@phase", src)   # (no new line for the builders to read: they parse @@stage, @@file, @@times ...)
+
+
+class LiftProgressTests(unittest.TestCase):
+    """Translate's progress: one '@@progress' as each of the lift's steps ends, weighted by what the steps took"""
+
+    # (the lines nx2/lift.py and nx2/chunks.py print, in their order)
+    LINES = ["discovered 412345 functions (47s)",
+             "lift: coverage in 24.6s (72s)",
+             "lift: emit and write (12 processes) in 99.6s (171s)",
+             "lift: big chunks split in 17.6s (189s)",
+             "lift: patches (12 processes) in 10.0s (199s)",
+             "lift: output size and page-mark groups in 37.5s (236s)",
+             "lift: runtime tables and standalone files in 11.5s (248s)"]
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="hookshot-lift-")
+        self.addCleanup(self.temporary.cleanup)
+        self.work = str(Path(self.temporary.name))
+
+    def said(self, lines):
+        got = []
+        on_line = make_game.lift_progress(self.work, got.append)
+        for line in lines:
+            on_line(line)
+        return got
+
+    def test_each_step_moves_the_bar_up_to_the_end(self):
+        got = self.said(["standalone: 12 HLE functions in host/, 3 OS-facing imports stubbed"] + self.LINES + ["wrote 85 files"])
+        self.assertEqual(len(got), len(self.LINES))
+        self.assertEqual(got, sorted(got))
+        self.assertAlmostEqual(got[-1], 1.0)
+        self.assertAlmostEqual(got[0], 47.0 / sum(w for _, w in make_game.LIFT_STEPS), places=6)
+
+    def test_lines_that_are_no_step_say_nothing(self):
+        self.assertEqual(self.said(["lift: something new in 3.0s (3s)", "compiled in 12s, 0 failed", ""]), [])
+
+    def test_a_step_said_twice_counts_once(self):
+        self.assertEqual(len(self.said(self.LINES[:2] + self.LINES[1:2])), 2)
+
+    def test_this_pcs_last_lift_sets_the_weights(self):
+        phases = {"lift: " + n: 10.0 for n, _ in make_game.LIFT_STEPS}
+        phases["lift: emit and write"] = 40.0
+        make_game.save_times(self.work, {"format": make_game.TIMES_FORMAT, "seconds": {},
+                                         "builds": [{"total_seconds": 1.0, "phases": phases}]})
+        got = self.said(self.LINES[:3])
+        self.assertAlmostEqual(got[1], 20.0 / 100.0)
+        self.assertAlmostEqual(got[2], 60.0 / 100.0)
+
+    def test_a_record_without_every_step_is_not_used(self):
+        make_game.save_times(self.work, {"format": make_game.TIMES_FORMAT, "seconds": {},
+                                         "builds": [{"total_seconds": 1.0, "phases": {"lift: coverage": 500.0}}]})
+        self.assertEqual(make_game.lift_weights(self.work), list(make_game.LIFT_STEPS))
+
+    def test_the_lift_is_run_with_it(self):
+        text = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
+        self.assertIn('"--work", work], env, lift_progress(work))', text)
+
+
+class StartOrderTests(unittest.TestCase):
+    """The back end's files start the longest first; the jobs' lists, which the link follows, stay as they were"""
+    def jobs(self, d, sizes):
+        out = []
+        for name, size in sizes:
+            src = Path(d) / name
+            src.write_bytes(b"x" * size)
+            out.append(("cc", str(src), str(Path(d) / (name + ".o")), [], b""))
+        return out
+
+    def test_the_back_end_starts_its_biggest_file_first(self):
+        with tempfile.TemporaryDirectory() as d:
+            game = self.jobs(d, [("code_hot.c", 10), ("code_001.c", 4000), ("host_main.c", 1)])
+            vk = self.jobs(d, [("imgui.cpp", 300), ("vk_bank.cpp", 50), ("vk_draw.cpp", 900), ("vk_menu.cpp", 300)])
+            jobs = game + vk
+            before, vk_before = list(jobs), list(vk)
+            order = build.start_order(jobs, vk, {})
+            self.assertEqual(order[:3], game)
+            self.assertEqual([Path(j[1]).name for j in order[3:]], ["vk_draw.cpp", "imgui.cpp", "vk_menu.cpp", "vk_bank.cpp"])
+            self.assertEqual((jobs, vk), (before, vk_before))
+
+    def test_measured_seconds_order_the_back_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            vk = self.jobs(d, [("ui_fonts.cpp", 5000), ("vk_draw.cpp", 900), ("vk_main.cpp", 100)])
+            order = build.start_order(vk, vk, {"ui_fonts.cpp": 2.0, "vk_draw.cpp": 47.0, "vk_main.cpp": 9.0})
+            self.assertEqual([Path(j[1]).name for j in order], ["vk_draw.cpp", "vk_main.cpp", "ui_fonts.cpp"])
+
+    def test_a_history_without_the_back_end_orders_it_by_size(self):
+        with tempfile.TemporaryDirectory() as d:
+            vk = self.jobs(d, [("imgui.cpp", 300), ("vk_bank.cpp", 50), ("vk_draw.cpp", 900)])
+            order = build.start_order(vk, vk, {"code_001.c": 40.0})
+            self.assertEqual([Path(j[1]).name for j in order], ["vk_draw.cpp", "imgui.cpp", "vk_bank.cpp"])
+
+    def test_the_compile_starts_in_that_order(self):
+        main = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8").split("\ndef main(")[1]
+        self.assertIn("order = start_order(jobs, vk_jobs, history)", main)
+        self.assertIn("ex.submit(compile_one, job): job for job in order}", main)
+
+
 if __name__ == "__main__":
     raise SystemExit(unittest.main(verbosity=1))

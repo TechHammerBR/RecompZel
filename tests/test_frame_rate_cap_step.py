@@ -3,7 +3,7 @@
 The engine's rate is a whole number of display intervals, 60 at most, and it puts 60 back over a higher one: with only the
 rate raised, every frame above 60 fps still stepped 1/60 s. nx2/oot_patches.py puts the host's measured frame time
 (hos_frame_seconds_bits) at the engine's two step divides, and host/nn_vi.c realtime_step publishes it while the cap is above
-60 and the hook is in the build; Uncapped (frame_rate_cap=6) is a cap of 1000, whose frames step by their own time down to
+60 or is 30 and the hook is in the build; Uncapped (frame_rate_cap=6) is a cap of 1000, whose frames step by their own time down to
 1 ms, so the game keeps real time past 240 fps. At a cap of 60 the bits stay 0 and the lifted code runs as shipped; a game version whose
 code differs keeps its own code and the build goes on with a warning.
 
@@ -24,6 +24,9 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "nx2"))
 import oot_patches  # noqa: E402
+
+# (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/hookshot_env.h)
+ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "hookshot_env.h")
 
 # (the shape of the two lifted functions: a float divide whose result goes to v8 in the frame's step and to v0 in the global one)
 DIVIDE = ("    {uint64_t _a=0,_b=0,_z,_v;memcpy(&_a,c->vreg[1],4);memcpy(&_b,c->vreg[0],4);_z=(_a^_b)&0x80000000ULL;\n"
@@ -50,22 +53,40 @@ FIXTURE = r'''#define _CRT_SECURE_NO_WARNINGS
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); exit(1); } } while (0)
 static uint8_t guest[0x4000];
 #define GP(a) ((void *)(guest + (a)))
 #define MOD 0x1000u
-static void hos_log(const char *fmt, ...) { (void)fmt; }
-int rx_option(int id, int otherwise) { (void)id; return otherwise; }
+static int clock_logs;
+static long long clock_now;
+static int64_t now = 1000000000LL;   /* (the presents' clock; hos_now_ns below reads it) */
+static void hos_log(const char *fmt, ...) {
+    char text[256];
+    va_list args; va_start(args, fmt); vsnprintf(text, sizeof text, fmt, args); va_end(args);
+    if (!strncmp(text, "vi: game clock ", 15)) {
+        const char *stamp = strstr(text, "; now_ns=");
+        CHECK(stamp && sscanf(stamp, "; now_ns=%lld", &clock_now) == 1);
+        clock_logs++;
+    }
+}
+int rx_option(int id, int otherwise) { return id == 0 && getenv("T_PER_FRAME") ? 0 : otherwise; }
+typedef struct { int unused; } Ctx;
+static volatile int present_interval = 1;
 int hos_ini_option(const char *key, int otherwise) {   /* (frame_rate_cap=: the test's T_CAP_INDEX) */
     const char *e = getenv("T_CAP_INDEX");
     return !strcmp(key, "frame_rate_cap") && e ? atoi(e) : otherwise;
 }
 volatile uint64_t hos_gfx_module = MOD;
-volatile int hos_fixed_resolution, hos_dynres_runs;
+volatile int hos_fixed_resolution, hos_dynres_runs, hos_scene_rgba16f;
 volatile uint32_t hos_fixed_scale_bits;
-volatile float hos_text_scale;
+volatile float hos_text_scale, hos_camera_scale;
+@OPTS@
 volatile uint64_t hos_step_probe, hos_res_module;
 volatile uint32_t hos_frame_seconds_bits;
+/* (the host clock the extracted cap code reads for the movie pacing; movie_seen_at itself comes with the
+   extracted block, which starts at the cap's enum) */
+static int64_t hos_now_ns(void) { return now; }
 @HOST@
 static uint64_t a64_fpx_div32_div32(void *c, uint64_t a, uint64_t b) {
     float x, y; uint32_t w;
@@ -80,7 +101,6 @@ static float lifted_step(float base, float nominal) {
     memcpy(&r, &_v, 4);
     return r;
 }
-static int64_t now = 1000000000LL;
 static float frames(int n, double seconds) {   /* (n presents that far apart: the seconds the hook is given, 0 when off) */
     float f;
     uint32_t bits;
@@ -94,9 +114,45 @@ int main(int argc, char **argv) {
     int *limit = (int *)GP(MOD + 0xfc), *rate = (int *)GP(MOD + 0x2c8);
     const char *mode = argc > 1 ? argv[1] : "";
     *limit = 60, *rate = 60;
-    hos_step_probe = strcmp(mode, "no hook") ? 0x2000 : 0;   /* (the lifted code sets it when the hook is in the build) */
+    if (getenv("T_EXPECT_CAP")) CHECK(fps_max() == atoi(getenv("T_EXPECT_CAP")));
+    hos_step_probe = strcmp(mode, "no hook") && !getenv("T_NO_HOOK") ? 0x2000 : 0;
     realtime_step(now);
-    if (!strcmp(mode, "cap 120")) {
+    if (!strcmp(mode, "interval")) {
+        for (int request = 1; request <= 4; request++) {
+            CHECK(hos_vi_native_interval(NULL, request) == request);
+            const int expected = getenv("HOS_GAME_INTERVAL") ||
+                (getenv("T_PER_FRAME") && fps_max() == 60) ? request : 1;
+            CHECK(present_interval == expected);
+        }
+    } else if (!strcmp(mode, "cap 30")) {
+        /* The guest starts at nominal 60, and may write that back on every update. */
+        CHECK(hos_vi_native_interval(NULL, 2) == 2 && present_interval == 1);
+        for (int i = 0; i < 30; i++) {
+            *rate = 60;
+            CHECK(near(frames(1, 1.0 / 30), 1.0 / 30) && *rate == 30 && *limit == 30);
+        }
+        CHECK(near(lifted_step(60.0f, (float)*rate), 2.0));
+        double elapsed = 0;
+        for (int i = 0; i < 300; i++) {
+            const float secs = frames(1, 1.0 / 30);
+            elapsed += lifted_step(60.0f, (float)*rate) / 60.0;
+            CHECK(near(secs, 1.0 / 30));
+        }
+        CHECK(near((float)elapsed, 10.0));
+        CHECK(near(frames(10, 1.0 / 20), 1.0 / 20) && *rate == 20);
+        CHECK(near(frames(10, 0.2), 4.0 / 60));
+    } else if (!strcmp(mode, "30 fallback")) {
+        CHECK(frames(10, 1.0 / 30) == 0.0f && *rate == 30 && *limit == 30);
+        CHECK(lifted_step(60.0f, (float)*rate) == 2.0f);
+    } else if (!strcmp(mode, "clock log")) {
+        CHECK(clock_logs == 0);
+        frames(299, 1.0 / 60);
+        CHECK(clock_logs == 0);
+        frames(1, 1.0 / 60);
+        CHECK(clock_logs == 1 && clock_now == now);
+        frames(1, 1.0 / 60);
+        CHECK(clock_logs == 1);
+    } else if (!strcmp(mode, "cap 120")) {
         CHECK(near(frames(72000, 1.0 / 120), 1.0 / 120) && *rate == 60 && *limit == 120);   /* (the rate stays the engine's) */
         CHECK(near(lifted_step(60.0f, (float)*rate), 0.5) && near(lifted_step(30.0f, (float)*rate), 0.25));   /* (half a 60th a frame) */
         CHECK(near(frames(10, 1.0 / 40), 1.0 / 40) && *rate == 40 && near(lifted_step(60.0f, (float)*rate), 1.5));
@@ -118,6 +174,17 @@ int main(int argc, char **argv) {
             if (*rate == 40) { recovered = 1; break; }
         }
         CHECK(recovered && lifted_step(60.0f, (float)*rate) == 1.5f);
+    } else if (!strcmp(mode, "movie pace")) {   /* (at the console's cap a movie's player pacing goes to 240 while it updates, back to 60 after) */
+        CHECK(frames(3, 1.0 / 60) == 0.0f && *limit == 60 && *rate == 60);   /* (no movie seen: nothing changes) */
+        movie_seen_at = (uint64_t)now;   /* (the movie's player just updated: the lift's hook stamps this in the host) */
+        CHECK(near(frames(10, 1.0 / 120), 1.0 / 120) && *limit == 240 && *rate == 60);   /* (paced and stepped: the frames' own time, the limiter raised) */
+        CHECK(near(frames(10, 1.0 / 240), 1.0 / 240) && *limit == 240);   /* (kept while the window holds) */
+        CHECK(frames(16, 1.0 / 60) == 0.0f && *limit == 60 && *rate == 60);   /* (the window passed with no new updates (16 x 1/60 = 266 ms > 250 ms): the game's limiter and step back) */
+        movie_seen_at = (uint64_t)now;   /* (another movie: up again, and the first movie's game_limit is not lost) */
+        CHECK(near(frames(5, 1.0 / 120), 1.0 / 120) && *limit == 240);
+    } else if (!strcmp(mode, "movie pace off")) {   /* (HOS_MOVIE_PACE=0: even a fresh movie stamp leaves the game's cap) */
+        movie_seen_at = (uint64_t)now;
+        CHECK(frames(10, 1.0 / 60) == 0.0f && *limit == 60 && *rate == 60);
     } else {   /* (HOS_FPS_STEP=0, or a lift without the hook: the rate up to the cap, as before) */
         CHECK(frames(10, 1.0 / 120) == 0.0f && *rate == 120 && *limit == 120);
         CHECK(lifted_step(60.0f, 60.0f) == 1.0f);
@@ -176,26 +243,44 @@ def main():
         check("none patched" in log.getvalue() and files[0].read_text(encoding="utf-8") == LIFTED[:two],
               "a second run left one divide's hook from the first")
 
-    # (the menu's row: Uncapped is its 6, after the six caps, so a saved 0 to 5 means what it did)
+    # (30 is appended at 7: every previous saved value, including Uncapped at 6, keeps its meaning)
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-    check('"60 (the console\'s)", "90", "120", "144", "165", "240", "Uncapped"}' in menu, "tx_fps_cap does not end with Uncapped")
+    check('"60 (the console\'s)", "90", "120", "144", "165", "240", "Uncapped", "30"}' in menu, "30 changed the saved cap indices")
     row = menu[menu.index('{TAB_GRAPHICS, "Game frame rate cap"'):]
     row = row[:row.index("},") + 2]
-    check("&opts.fps_cap, 0, 6, 1, tx_fps_cap," in row, "the Game frame rate cap row does not reach Uncapped")
+    check("&opts.fps_cap, 0, 7, 1, tx_fps_cap," in row, "the Game frame rate cap row does not reach 30")
     check("V-Sync" in row and "real time" in row, "the row's help does not say Uncapped keeps real time and V-Sync limits it")
 
     vi = (ROOT / "host" / "nn_vi.c").read_text(encoding="utf-8")
-    host = "volatile int64_t hos_menu_shown_ns;\n" + "\n".join(block(vi, m) for m in ("static float text_scale(", "static int fps_max(void) {", "static int menu_hold(", "static int fps_now(int64_t now) {", "static int realtime_rate(", "static void realtime_step("))
-    fixture = FIXTURE.replace("@HOST@", host).replace("@HOOK@", "\n".join(oot_patches.STEP_HOOK.split("\n")[:2]))
+    # (the cap's one-line pieces, then the functions: fps_refresh reads the row at each present, fps_max answers from it)
+    line = lambda marker: next(l for l in vi.split("\n") if l.startswith(marker))
+    host = "\n".join([line("enum { FPS_UNCAPPED"), line("static volatile uint64_t movie_seen_at;"),
+                      line("static const int64_t MOVIE_STALE_NS"), line("static volatile int fps_now;"),
+                      line("static int fps_of(")] +
+                     [block(vi, m) for m in ("static float text_scale(", "static float camera_scale(", "static void fps_refresh(",
+                                             "static int fps_max(void) {", "int hos_vi_native_interval(", "static int realtime_rate(",
+                                             "static void realtime_step(")])
+    # (the option ids realtime_step names: vk_api.h's HOS_OPT_* enums)
+    opts = "\n".join(re.findall(r"enum \{ HOS_OPT_[^}]*\};", (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")))
+    fixture = FIXTURE.replace("@OPTS@", opts).replace("@HOST@", host).replace(
+        "@HOOK@", "\n".join(oot_patches.STEP_HOOK.split("\n")[:2]))
     with tempfile.TemporaryDirectory(prefix="cap-step-") as tmp:
         c = Path(tmp) / "fixture.c"
         exe = Path(tmp) / "fixture.exe"
         c.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
+        subprocess.run([a.cc, "-std=c11", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
         for mode, cap, step, index in (("cap 120", "120", None, None), ("cap 60", None, None, None), ("step off", "120", "0", None),
                                        ("no hook", "120", None, None), ("uncapped", None, None, "6"), ("uncapped", "1000", None, None),
-                                       ("unknown index", None, None, "7"), ("cap 120", None, None, "2")):
-            env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_") and k != "T_CAP_INDEX"}
+                                       ("unknown index", None, None, "8"), ("cap 120", None, None, "2"), ("clock log", "60", None, None),
+                                       ("cap 30", None, None, "7"), ("cap 30", "30", None, None),
+                                       ("30 fallback", "30", "0", None), ("cap 60", "29", None, "7"),
+                                       ("cap 120", "120", None, "7"),
+                                       ("movie pace", None, None, None), ("movie pace off", None, None, None)):
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("HOS_", "T_"))}
+            if mode == "clock log":
+                env["HOS_FPS_LOG"] = "1"
+            if mode == "movie pace off":
+                env["HOS_MOVIE_PACE"] = "0"
             if cap:
                 env["HOS_FPS_MAX"] = cap
             if step:
@@ -203,6 +288,28 @@ def main():
             if index:
                 env["T_CAP_INDEX"] = index   # (frame_rate_cap= in the options file)
             subprocess.run([str(exe), mode], env=env, check=True)
+            if mode == "cap 30":
+                # A saved Per frame choice must not halve 30 FPS or its game clock.
+                env["T_PER_FRAME"] = "1"
+                subprocess.run([str(exe), mode], env=env, check=True)
+            if mode == "30 fallback":
+                env.pop("HOS_FPS_STEP")
+                env["T_NO_HOOK"] = "1"
+                subprocess.run([str(exe), mode], env=env, check=True)
+        for index, expected in enumerate((60, 90, 120, 144, 165, 240, 1000, 30)):
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("HOS_", "T_"))}
+            env.update(T_CAP_INDEX=str(index), T_EXPECT_CAP=str(expected), HOS_FPS_LOG="1")
+            subprocess.run([str(exe), "clock log"], env=env, check=True)
+        for cap in ("30", "60", "120"):
+            for per_frame in (False, True):
+                for game_interval in (False, True):
+                    env = {k: v for k, v in os.environ.items() if not k.startswith(("HOS_", "T_"))}
+                    env["HOS_FPS_MAX"] = cap
+                    if per_frame:
+                        env["T_PER_FRAME"] = "1"
+                    if game_interval:
+                        env["HOS_GAME_INTERVAL"] = "1"
+                    subprocess.run([str(exe), "interval"], env=env, check=True)
 
 
 if __name__ == "__main__":

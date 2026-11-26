@@ -3,20 +3,16 @@ import argparse
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
+
+# (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/hookshot_env.h)
+ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "hookshot_env.h")
 
 RUN_ALL_ARGS = ['--cxx', '{cxx}', '--headers', '{vulkan_headers}']
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
 
 
 def main():
@@ -35,7 +31,7 @@ def main():
     assert state.count("std::map<") == 2
     state = state.replace("std::map<", "FaultMap<")
     eviction = block(memory, "void imports_give_back()")
-    eviction = eviction[:eviction.index("    // (hookshot) Off by default")] + "}\n"
+    eviction = eviction[:eviction.index("    // (hookshot) Default by OS and vendor")] + "}\n"
     actual = "\n".join([
         state,
         block(texture, "void release_texel_buffer_views("),
@@ -46,22 +42,22 @@ def main():
         eviction,
     ])
     # Rollback, prefetch drops, a trim's rollback (mirrors_trim) and both published-import reapers must share the same
-    # owner-release point.
-    # (Triforce: a mirror in pieces destroys its own sparse buffer, a mirror's and not an import's: those two apart)
-    pieces = memory.count("vkDestroyBuffer(dev.device, dead_mirrors.front().buffer, nullptr);") + memory.count("vkDestroyBuffer(dev.device, sb, nullptr);")
-    assert memory.count("vkDestroyBuffer(") - pieces == 1
-    assert memory.count("destroy_import_buffer(") == 10
+    # owner-release point. (11: bg_drain also drops a chunk imported ahead that an import made since overlaps in part,
+    # which keeps the pools disjoint; it releases as the redundant chunk above it does)
+    assert memory.count("vkDestroyBuffer(") == 1
+    assert memory.count("destroy_import_buffer(") == 11
     fixture = (ROOT / "tests/texel_buffer_ownership_test.cpp").read_text(encoding="utf-8")
     fixture = fixture.replace("/* DEAD IMPORT */", block(memory, "struct DeadImport {") + ";")
     fixture = fixture.replace("/* ACTUAL */", actual)
     cases = ["healthy", "remap", "offset", "format", "range", "liveness", "late-map",
              "host-oom", "device-oom", "other-error", "registry-commit", "view-commit",
-             "cached-after-failure", "independent", "retirement", "eviction", "reuse-handle",
-             "storage", "alignment", "zero-limit", "clamped-range", "invalid", "concurrent"]
+             "cached-after-failure", "independent", "retirement", "mirror", "eviction", "reuse-handle",
+             "storage", "alignment", "zero-limit", "clamped-range", "invalid", "unsupported", "unsupported-dummy",
+             "concurrent"]
     with tempfile.TemporaryDirectory(prefix="texel-buffer-ownership-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror",
+        subprocess.run([a.cxx, "-std=c++20", "-include", ENV_ON_H, "-O1", "-Wall", "-Wextra", "-Werror",
                         "-Wno-missing-field-initializers", "-pthread", "-I" + str(a.headers),
                         *(["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"] if a.sanitize else []),
                         str(cpp), "-o", str(exe)], check=True)

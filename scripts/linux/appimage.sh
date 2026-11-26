@@ -8,7 +8,11 @@
 #
 # Built on the oldest system it is for (CI: Ubuntu 22.04): the sysroot it carries is that system's C library, so the
 # game it builds runs on glibc 2.35 and newer. work/ (hot_funcs.txt, hot_order.txt, hookshot_pieces.prof,
-# image/chunks.txt: addresses and counts from playing, no game code) is carried along when it is there.
+# image/chunks.txt: addresses and counts from playing, no game code; hookshot_vk.profdata: a developer's own renderer
+# profile, used in place of the committed assets/profiles/ one) is carried along when it is there. assets/profiles/ carries the
+# committed hot list too, whose functions every player's build compiles at -O2 (nx2/make_game.py hot_list_for). No Vulkan back end is
+# built here: every player's build compiles it from the sources carried below, for that PC's CPU and with the renderer's
+# play profile, with or without DLSS and FSR 4 (one way to build it).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT=$PWD
@@ -20,13 +24,6 @@ APPDIR=$B/AppDir
 VERSION=${HOOKSHOT_VERSION:-$(git describe --tags --long --always --match "v[0-9]*" 2>/dev/null || echo dev)}
 export EMSDK=$DEPS/emsdk RX_CPM=$DEPS/cpm
 PY=$DEPS/python/bin/python3
-
-# ---- the Vulkan back end, built here once (it needs no game) ----
-VKW=$B/vk-work
-rm -rf "$VKW/sa/build/hookshot_vk.so"
-OOT_WORK=$VKW RX_MARCH=x86-64-v3 RX_VK_ONLY=1 RX_RELEASE=1 "$PY" -I nx2/build.py --standalone --jobs "${JOBS:-$(nproc)}"
-VK=$VKW/sa/build/hookshot_vk.so
-[ -f "$VK" ] || { echo "hookshot_vk.so was not built"; exit 1; }
 
 # ---- the tools' native helpers, built now: the AppImage is read-only. a64emit with its C++ runtime inside (the one this system
 # builds with is newer than older systems have), and the stamp build_emit.py checks, so it is not built again ----
@@ -40,10 +37,10 @@ E=third_party/a64-kit/lift
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/share/hookshot" "$APPDIR/usr/lib/hookshot"
 T=$APPDIR/usr/share/hookshot
-L=$APPDIR/usr/lib/hookshot
+L=$APPDIR/usr/lib/hookshot   # (what the image builds with: emsdk's clang, FFmpeg, SDL2, the sysroot; AppRun points there)
 
 # ---- the tools (the sources the player's build compiles, and the scripts) ----
-cp -a nx2 host scripts LICENSE readme.md assets "$T/"
+cp -a nx2 host scripts LICENSE readme.md assets native "$T/"
 printf '%s
 ' "$VERSION" > "$T/VERSION"   # (no git history in here: nx2/version.py reads the release name from it)
 mkdir -p "$T/builder" "$T/gpu/render" "$T/gpu/vk" "$T/third_party"
@@ -52,20 +49,41 @@ cp -a gpu/render/*.h "$T/gpu/render/"
 # (every gpu/vk header the host's sources include: v2.0.6 shipped without oot_cheat_items.h and no Linux build finished, issue 990.
 # tests/test_appimage_headers.py checks that this covers what host/ includes)
 for h in $(grep -rhoE 'gpu/vk/[A-Za-z0-9_/]+[.]h' host | sort -u); do if [ -f "$h" ]; then mkdir -p "$T/$(dirname "$h")" && cp -a "$h" "$T/$h"; fi; done
+# (RenHDrum's C header: host/rumble_renhdrum.c, which every player's build compiles, includes it)
+mkdir -p "$T/third_party/renhdrum/include"
+cp third_party/renhdrum/include/renhdrum.h "$T/third_party/renhdrum/include/"
 cp -a third_party/opus "$T/third_party/"
+# (RenHDrum, which some controllers' vibration plays through (host/rumble_renhdrum.c): renhdrum.so, built by the workflow
+# (scripts/renhdrum.py build --target linux) and named by RENHDRUM_SO; a player's build puts it beside the game. Without it
+# every controller keeps its motors or its own HD rumble)
+if [ -n "${RENHDRUM_SO:-}" ]; then
+    mkdir -p "$T/licenses/renhdrum"
+    cp "$RENHDRUM_SO" "$T/third_party/renhdrum/renhdrum.so"
+    cp third_party/renhdrum/LICENSE-MIT third_party/renhdrum/LICENSE-APACHE third_party/renhdrum/NOTICE \
+       third_party/renhdrum/PROVENANCE.md "$T/licenses/renhdrum/"
+fi
 cp -a third_party/kenney_input "$T/third_party/"
-# (NVIDIA DLSS, when ticked in the builder: scripts/ngx_sdk.py and the Vulkan back end's sources, compiled with HOOKSHOT_NGX_SDK)
+cp -a third_party/kenney_input_keyboard "$T/third_party/"
+# (the Vulkan back end's sources, which every player's build compiles (nx2/build.py), and, for NVIDIA DLSS when ticked in the
+# builder, scripts/ngx_sdk.py, compiled with HOOKSHOT_NGX_SDK. assets/ above carries its play profile and the hot list,
+# assets/profiles/)
 mkdir -p "$T/scripts"
 cp scripts/ngx_sdk.py "$T/scripts/"
 cp -a gpu/vk gpu/compat gpu/third_party "$T/gpu/"
 cp -a third_party/imgui third_party/zstd third_party/fonts "$T/third_party/"
 mkdir -p "$T/third_party/zbic" "$T/third_party/a64-kit"
-cp -a third_party/zbic/zbic.so third_party/zbic/LICENSE third_party/zbic/PROVENANCE.md "$T/third_party/zbic/"
+# (the whole folder, not only its prebuilt helper: the player's build compiles the back end from the sources inside the
+# read-only image and reads third_party/zbic's zstd.c, zstd.h and zstd_errors.h for its vk_zstd.o; shipping only zbic.so
+# stopped those builds at FileNotFoundError on third_party/zbic/zstd.h)
+cp -a third_party/zbic "$T/third_party/"
+# (AMD FSR 4, when chosen: AMD's MIT FSR API headers, which the player's Vulkan back end builds with (make_game.py --fsr,
+# nx2/build.py). AMD's runtime is not among them: on Linux the player's own amd_fidelityfx_upscaler_vk.so, the readme)
+cp -a third_party/fidelityfx "$T/third_party/"
 cp -a third_party/a64-kit/* "$T/third_party/a64-kit/"
 rm -f "$T/third_party/a64-kit/tools/lld-link.exe"
 if [ -d work ]; then
     mkdir -p "$T/work/image"
-    for f in hot_funcs.txt hot_order.txt hookshot_pieces.prof; do [ -f "work/$f" ] && cp "work/$f" "$T/work/"; done
+    for f in hot_funcs.txt hot_order.txt hookshot_pieces.prof hookshot_vk.profdata; do [ -f "work/$f" ] && cp "work/$f" "$T/work/"; done
     [ -f work/image/chunks.txt ] && cp work/image/chunks.txt "$T/work/image/"
 fi
 # (the pipeline state list's sources, assets/pipeline_states/, came with assets/ above, and are required: nx2/make_game.py merges
@@ -80,7 +98,6 @@ cp "$DEPS/tk/libtcl9tk9.0.so" "$DEPS/tk/libXft.so.2" "$DEPS/tk/libXrender.so.1" 
 mkdir -p "$L/emsdk"
 cp -a "$DEPS/emsdk/upstream" "$L/emsdk/"
 cp -a "$DEPS/ffmpeg" "$L/ffmpeg"
-cp "$VK" "$L/hookshot_vk.so"
 cp "$DEPS/sdl2/libSDL2-2.0.so.0" "$L/libSDL2-2.0.so.0"
 for d in "$DEPS"/cpm/*/*; do
     mkdir -p "$T/cpm/${d#"$DEPS/cpm/"}"
@@ -88,10 +105,13 @@ for d in "$DEPS"/cpm/*/*; do
 done
 cp -a "$DEPS/licenses" "$T/licenses"   # (LLVM, FFmpeg, dav1d, SDL2: what this AppImage carries besides Hookshot)
 # ---- the licences of the third-party parts compiled into hookshot_vk.so (tests/test_appimage_licenses.py) ----
-mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus"
+mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus" "$T/licenses/fidelityfx" "$T/licenses/fidelityfx-sdk"
 cp third_party/imgui/LICENSE.txt third_party/imgui/PROVENANCE.md "$T/licenses/imgui/"
 cp third_party/zstd/LICENSE third_party/zstd/PROVENANCE.md "$T/licenses/zstd/"
 cp third_party/fonts/libertinus/OFL.txt third_party/fonts/PROVENANCE.md "$T/licenses/libertinus/"
+cp third_party/fidelityfx/LICENSE.md third_party/fidelityfx/PROVENANCE.md "$T/licenses/fidelityfx/"   # (with AMD FSR 4)
+# (AMD's FidelityFX SDK shaders, compiled into gpu/vk/shaders' FSR 3.1 headers that every build has: scripts/fsr3_shaders.py)
+cp third_party/fidelityfx-sdk/LICENSE.txt third_party/fidelityfx-sdk/PROVENANCE.md "$T/licenses/fidelityfx-sdk/"
 # ---- end of the licences ----
 
 # the sysroot: this system's C library (headers, start files, the libraries to link against) and GCC's runtime pieces
@@ -99,7 +119,15 @@ S=$L/sysroot
 mkdir -p "$S/usr/lib/x86_64-linux-gnu" "$S/usr/lib/gcc/x86_64-linux-gnu" "$S/lib64"
 ln -s usr/lib "$S/lib"
 cp -a /usr/include "$S/usr/"
-rm -rf "$S/usr/include/c++" "$S/usr/include/x86_64-linux-gnu/c++" "$S/usr/include/llvm"* "$S/usr/include/clang"*
+# (GCC's C++ headers stay, its newest version only: engine/native's C++ (hl/stream, hl/jobs...) is compiled at the player's
+# build since the native engine came in, and the bundled clang finds them through the sysroot's GCC install below: without
+# them a player's build stops at "'cstddef' file not found")
+rm -rf "$S/usr/include/llvm"* "$S/usr/include/clang"*
+CXXV=$(basename "$(ls -d /usr/lib/gcc/x86_64-linux-gnu/*/ | sort -V | tail -1)")   # (the GCC whose runtime is carried below)
+[ -d "/usr/include/c++/$CXXV" ] || { echo "no C++ headers for GCC $CXXV (g++-$CXXV / libstdc++-$CXXV-dev)"; exit 1; }
+for d in "$S/usr/include/c++" "$S/usr/include/x86_64-linux-gnu/c++"; do
+    [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 1 ! -name "$CXXV" -exec rm -rf {} +
+done
 M=/usr/lib/x86_64-linux-gnu
 for f in crt1.o crti.o crtn.o Scrt1.o rcrt1.o libc.so libc.so.6 libc_nonshared.a libm.so libm.so.6 libm.a libmvec.so libmvec.so.1 \
          libmvec.a libpthread.so.0 libpthread.a libdl.so.2 libdl.a librt.so.1 librt.a libutil.a libgcc_s.so.1 ld-linux-x86-64.so.2; do
@@ -114,10 +142,18 @@ G=$S/usr/lib/gcc/x86_64-linux-gnu/$GV
 mkdir -p "$G" "$S/usr/include/c++" "$S/usr/include/x86_64-linux-gnu/c++"
 cp -aL "/usr/include/c++/$GV" "$S/usr/include/c++/"
 cp -aL "/usr/include/x86_64-linux-gnu/c++/$GV" "$S/usr/include/x86_64-linux-gnu/c++/"
-for f in crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o libgcc.a libgcc_eh.a libgcc_s.so libstdc++.a libstdc++fs.a libstdc++exp.a; do
+for f in crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o libgcc.a libgcc_eh.a libgcc_s.so libstdc++.a libstdc++fs.a libstdc++exp.a libsupc++.a; do
     [ -e "$GCC/$f" ] && cp -aL "$GCC/$f" "$G/" || true
 done
 # (libgcc_s.so is a linker script naming /lib/x86_64-linux-gnu/libgcc_s.so.1: found in the sysroot through lib -> usr/lib)
+
+# ---- the third-party code's objects, compiled here with the build tools every player's build uses (tools.lock's clang,
+# sysroot and CPM headers), so a player's build links them instead of compiling them: Eden's shader recompiler, sirit, Dear
+# ImGui, zstd, libopus. Their sources are in the image too (above); nothing of the game's, and none of the renderer's own
+# files, which every build compiles. A build whose keys differ (another compiler, other headers, another CPU level) compiles
+# them as before (nx2/third_party_objects.py); scripts/linux/check_player_build.sh checks that a player's build finds them all.
+# (After the sysroot, which they are compiled against: a merge took this out with the sysroot moved below the licences) ----
+HOOKSHOT_SYSROOT=$S "$PY" -I -B nx2/third_party_objects.py make "$T/third_party_objects" --jobs "$(nproc)"
 
 # ---- check: the bundled compiler builds and links a program against the sysroot, and it runs ----
 cat > "$B/t.c" <<'EOF'
@@ -129,6 +165,28 @@ int main(void) { pthread_t t; pthread_create(&t, 0, f, 0); pthread_join(t, 0); p
 EOF
 "$L/emsdk/upstream/bin/clang" --sysroot="$S" -fuse-ld=lld -O2 -march=x86-64-v3 "$B/t.c" -o "$B/t" -lpthread -lm
 "$B/t"
+# (and C++20 the way nx2/build.py compiles and links engine/native: the headers its sources include, libstdc++ linked in)
+cat > "$B/t.cpp" <<'EOF'
+#include <algorithm>
+#include <atomic>
+#include <bit>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <functional>
+#include <span>
+#include <vector>
+int main() {
+    std::atomic<uint64_t> a{1}; std::vector<int> v{3, 1, 2}; std::sort(v.begin(), v.end());
+    std::function<int(int)> f = [](int x) { return x + 1; }; std::span<int> s(v);
+    std::printf("ok %d %d %d\n", (int)a.fetch_add(1), f(s[0]), std::popcount(7u));
+    return 0;
+}
+EOF
+"$L/emsdk/upstream/bin/clang" --sysroot="$S" -fuse-ld=lld -std=c++20 -O2 -march=x86-64-v3 -c "$B/t.cpp" -o "$B/tcpp.o"
+"$L/emsdk/upstream/bin/clang" --sysroot="$S" -fuse-ld=lld -O2 "$B/tcpp.o" -o "$B/tcpp" -l:libstdc++.a -lpthread -lm
+"$B/tcpp"
 cat > "$B/t.cpp" <<'EOF'
 #include <algorithm>
 #include <filesystem>
@@ -153,13 +211,15 @@ cp assets/hookshot.png "$APPDIR/usr/share/icons/hicolor/256x256/apps/hookshot.pn
 # scripts/linux/publish_parts.sh uploads them: without --base the list named NotRexed/Hookshot's release, which a fork's
 # CI does not upload to, so a fork's update list named parts that were not there)
 python3 scripts/linux/make_parts.py "$APPDIR" "$VERSION" "$B/parts" \
-    --base "https://github.com/${GITHUB_REPOSITORY:-NotRexed/Hookshot}/releases/download/linux-parts"
+    --base "https://git.notrexed.dev/${HOOKSHOT_REPOSITORY:-Hookshot/Hookshot}/releases/download/linux-parts"
 
 # The update information AppImageUpdate and Gear Lever read: the newest .zsync of this repository's latest release (or of
 # the release HOOKSHOT_UPDATE_RELEASE names). appimagetool writes it into the image and makes the .zsync beside it with
 # its bundled zsyncmake, which names the AppImage by its file name, next to the .zsync on the same release.
-UPDATE_REPO=${GITHUB_REPOSITORY:-NotRexed/Hookshot}
-UPDATE_INFO=${HOOKSHOT_UPDATE_INFO:-"gh-releases-zsync|${UPDATE_REPO%%/*}|${UPDATE_REPO#*/}|${HOOKSHOT_UPDATE_RELEASE:-latest}|Hookshot-*-x86_64.AppImage.zsync"}
+UPDATE_REPO=${HOOKSHOT_REPOSITORY:-Hookshot/Hookshot}
+UPDATE_RELEASE=${HOOKSHOT_UPDATE_RELEASE:-latest}
+[ "$UPDATE_RELEASE" = latest ] && UPDATE_PATH=latest/download || UPDATE_PATH=download/$UPDATE_RELEASE
+UPDATE_INFO=${HOOKSHOT_UPDATE_INFO:-"zsync|https://git.notrexed.dev/$UPDATE_REPO/releases/$UPDATE_PATH/Hookshot-x86_64.AppImage.zsync"}
 OUT=$B/Hookshot-$VERSION-x86_64.AppImage
 rm -f "$OUT" "$OUT.zsync"
 # (from build-linux/: appimagetool writes the .zsync into the current folder)

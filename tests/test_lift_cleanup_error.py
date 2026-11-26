@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -21,7 +22,7 @@ SOURCE = ROOT / "nx2/make_game.py"
 
 def production():
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"), filename=str(SOURCE))
-    helpers = {"say", "fail", "gen_print", "write_lift_key", "lifted_before"}
+    helpers = {"say", "fail", "gen_print", "write_lift_key", "lifted_before", "kept_before", "kept_list_fits"}
     definitions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in helpers]
     assert {node.name for node in definitions} == helpers
     key = next(node for node in tree.body if isinstance(node, ast.Assign) and
@@ -31,7 +32,9 @@ def production():
                 isinstance(node.test.func, ast.Name) and node.test.func.id == "lifted_before"]
     assert len(branches) == 1
     # (PREPARE: the module global say() reads since --prepare for RecompLauncher; off, as make_game starts)
-    namespace = dict(os=os, sys=sys, hashlib=hashlib, PREPARE=False)
+    # (_lift_store: no store, HOOKSHOT_LIFT_STORE unset, as for a player: the folder lifts itself)
+    namespace = dict(os=os, sys=sys, hashlib=hashlib, PREPARE=False, _lift_store=types.SimpleNamespace(root=lambda: None),
+                     lift_share_key=lambda *a: None)
     exec(compile(ast.Module(body=[key, *definitions], type_ignores=[]), str(SOURCE), "exec"), namespace)
     return namespace, compile(ast.Module(body=branches, type_ignores=[]), str(SOURCE), "exec")
 
@@ -48,14 +51,19 @@ class LiftCleanupErrorTests(unittest.TestCase):
         self.key = self.gen / ".lift_key"
         self.events = []
         self.namespace, self.branch = production()
-        self.namespace.update(work=str(self.work), exefs=str(self.root / "exefs"), env={}, key="b" * 40, PY=["authored-python"])
+        self.namespace.update(work=str(self.work), exefs=str(self.root / "exefs"), env={}, key="b" * 40, PY=["authored-python"],
+                              gen_dir=str(self.gen), KEPT_LIST="lifted_objects.txt", KEPT_SCHEME=1,
+                              kept_lift=[], contextlib=contextlib,
+                              # (HOOKSHOT_LIFT_STORE unset: no lift shared with another work folder, nx2/lift_store.py)
+                              _lift_store=types.SimpleNamespace(root=lambda: None))
         self.actual_write = self.namespace["write_lift_key"]
 
         def write_key(work, key):
             self.events.append("key")
             self.actual_write(work, key)
 
-        def run(command, environment):
+        def run(command, environment, on_line=None):
+            self.assertEqual(on_line, "lift progress")   # (Translate's progress, lift_progress: make_game's own, not this branch's)
             self.assertEqual(command, ["authored-python", "nx2/lift.py", "--standalone", "--write", "--exefs",
                                        str(self.root / "exefs"), "--work", str(self.work)])
             self.assertEqual(environment, {})
@@ -66,7 +74,16 @@ class LiftCleanupErrorTests(unittest.TestCase):
             (self.gen / "a64_table.c").write_text("/* authored table */\n", encoding="utf-8")
             (self.image / "image.bin").write_bytes(b"authored image sentinel")
 
-        self.namespace.update(run=run, write_lift_key=write_key)
+        self.inputs = ["i" * 40]   # (lift_key(planning=False) as the lift starts, then after it: unchanged unless a test says)
+
+        def rekey(exefs, work, env, planning=True):   # (the key taken again after the lift, from what the next build reads)
+            self.assertEqual((exefs, work, env), (str(self.root / "exefs"), str(self.work), {}))
+            if not planning:
+                return self.inputs[0] if len(self.inputs) == 1 else self.inputs.pop(0)
+            self.events.append("rekey")
+            return "c" * 40
+
+        self.namespace.update(run=run, write_lift_key=write_key, lift_key=rekey, lift_progress=lambda work: "lift progress")
 
     def seed(self, same_key=False):
         self.gen.mkdir(parents=True)
@@ -132,16 +149,16 @@ class LiftCleanupErrorTests(unittest.TestCase):
             path.write_bytes(data)
         child = self.namespace["run"]
 
-        def run(command, environment):
+        def run(command, environment, on_line=None):
             self.assertFalse((self.gen / "code_obsolete.c").exists())
             self.assertFalse((self.gen / "code_obsolete.c.whole").exists())
             self.assertFalse(self.key.exists())
-            child(command, environment)
+            child(command, environment, on_line)
 
         self.namespace["run"] = run
         self.exercise()
-        self.assertEqual(self.events, ["lift", "key"])
-        self.assertTrue(self.namespace["lifted_before"](str(self.work), "b" * 40))
+        self.assertEqual(self.events, ["lift", "rekey", "key"])
+        self.assertTrue(self.namespace["lifted_before"](str(self.work), "c" * 40))
         for path, data in protected.items():
             self.assertEqual(path.read_bytes(), data)
 
@@ -158,8 +175,8 @@ class LiftCleanupErrorTests(unittest.TestCase):
 
         with mock.patch.object(os, "remove", side_effect=delete):
             self.exercise()
-        self.assertEqual(self.events, ["lift", "key"])
-        self.assertTrue(self.namespace["lifted_before"](str(self.work), "b" * 40))
+        self.assertEqual(self.events, ["lift", "rekey", "key"])
+        self.assertTrue(self.namespace["lifted_before"](str(self.work), "c" * 40))
 
     def test_matching_cached_lift_is_not_cleared(self):
         self.seed(same_key=True)
@@ -171,13 +188,21 @@ class LiftCleanupErrorTests(unittest.TestCase):
 
     def test_first_lift_without_generated_directory(self):
         self.exercise()
-        self.assertEqual(self.events, ["lift", "key"])
+        self.assertEqual(self.events, ["lift", "rekey", "key"])
+        self.assertTrue(self.namespace["lifted_before"](str(self.work), "c" * 40))
+
+    def test_an_input_changed_during_the_lift_keeps_the_key_from_before(self):
+        """A translator file edited while the lift ran: its C is from the old file, so the new key must not vouch for it"""
+        self.inputs = ["i" * 40, "j" * 40]
+        self.exercise()
+        self.assertEqual(self.events, ["lift", "rekey", "key"])   # (taken, then not kept: the comparison came after it)
         self.assertTrue(self.namespace["lifted_before"](str(self.work), "b" * 40))
+        self.assertFalse(self.namespace["lifted_before"](str(self.work), "c" * 40))
 
     def test_failed_lift_leaves_no_fresh_key(self):
         self.seed()
 
-        def stopped(command, environment):
+        def stopped(command, environment, on_line=None):
             self.events.append("lift")
             raise SystemExit(37)
 

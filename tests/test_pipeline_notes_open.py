@@ -10,18 +10,11 @@ python -I -B tests/test_pipeline_notes_open.py
 """
 from pathlib import Path
 import unittest
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
 
 
 class PipelineNotesOpenTests(unittest.TestCase):
@@ -30,7 +23,7 @@ class PipelineNotesOpenTests(unittest.TestCase):
         cls.draw = (ROOT / "gpu" / "vk" / "vk_draw.cpp").read_text(encoding="utf-8")
 
     def test_pipeline_note_opens_through_the_shared_function(self):
-        note = block(self.draw, "void pipeline_note(uint64_t key")
+        note = block(self.draw, "bool pipeline_note(uint64_t key")
         self.assertIn("if (!note_file) notes_open_locked(nullptr);", note)
         self.assertNotIn("_fseeki64", note)
 
@@ -59,8 +52,8 @@ class PipelineNotesOpenTests(unittest.TestCase):
         self.assertLess(read, notes)
         self.assertLess(notes, run.index("program_cache_load_some("))
         self.assertLess(states, run.index("program_cache_load_some("))
-        self.assertIn('if (!getenv("RX_VK_NO_PROGRAM_CACHE"))', run[read:notes])
-        self.assertIn('if (!getenv("RX_VK_NO_STATE_LIST"))', run[notes:states])
+        self.assertIn('if (!env_on("RX_VK_NO_PROGRAM_CACHE"))', run[read:notes])
+        self.assertIn('if (!env_on("RX_VK_NO_STATE_LIST"))', run[notes:states])
         self.assertIn("std::lock_guard lk(note_mu);", run[read:notes])
         self.assertIn("std::lock_guard lk(state_mu);", run[notes:states])
 

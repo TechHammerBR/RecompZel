@@ -2,26 +2,22 @@
 
 Catch missing low-budget trimming, ignored overrides, stale preset defaults and
 on/off spellings that accidentally keep the automatic quality reduction enabled.
+Custom with no memory_budget (0: an options file from before it, or Custom chosen on
+the preset row) goes by Auto (this PC)'s tier for this PC, as the Shadow resolution's
+Auto does: a Steam Deck on such a file got the terrain's 1365x1365x90 arrays at full size.
 """
 import argparse
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
 
 
 def main():
@@ -33,6 +29,13 @@ def main():
     source = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8-sig")
     mip = block(source, "{   // huge textures leave out their top levels:")
     policy = block(source, "bool low_vram_texture_mips(") if "bool low_vram_texture_mips(" in source else ""
+    menu = (ROOT / "gpu/vk/vk_menu.cpp").read_text(encoding="utf-8-sig")
+    tier = block(menu, "int menu_memory_tier() {") if "int menu_memory_tier() {" in menu else ""
+    helpers = "\n".join(block(source, marker) for marker in (
+        "bool is_bc(VkFormat f)", "bool is_astc(VkFormat f)", "uint64_t texture_level_units("))
+    # (the Texture detail row's sizes, texture_detail_dims, and their struct)
+    policy = ("struct DetailDims { uint32_t max_dim; uint64_t skip_from_mb; };\n" + block(source, "DetailDims texture_detail_dims(") +
+              "\n" + policy)
     fixture = r'''
 #include <algorithm>
 #include <cstdint>
@@ -49,16 +52,19 @@ struct Texture {
     VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
     VkImageType type = VK_IMAGE_TYPE_2D;
 };
-struct { bool sparse_images = false; VkPhysicalDevice physical{}; } dev;
-struct { int preset = 1; } opts;
-bool pool_pressed = false;   // (recompzel: VRAM pressure, vk_texture.cpp texture_frame; off here)
-uint64_t allowed;
+struct { bool sparse_images = false; VkPhysicalDevice physical{}; VkPhysicalDeviceProperties props{}; } dev;
+struct { int preset = 1, budget = 1, texture_detail = 0; } opts;
+constexpr int kAutoPreset = 6;   // (gpu/vk/vk_menu.h: the Quality preset Auto (this PC), its tier's budgets in budget)
+struct { int tier = 0; } auto_choice;   // (vk_menu.cpp: Auto (this PC)'s choice for this PC, made at the start)
+@TIER@
+uint64_t allowed, ram;
 bool query_ok;
+uint64_t system_ram_bytes() { return ram; }
 bool vram_usage(uint64_t* used, uint64_t* budget, uint64_t* = nullptr) {
     *used = 2000ull << 20; *budget = allowed; return query_ok;
 }
 void logf(const char*, ...) {}
-bool is_bc(VkFormat f) { return f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_BC7_SRGB_BLOCK; }
+@HELPERS@
 extern "C" VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceSparseImageFormatProperties(
         VkPhysicalDevice, VkFormat, VkImageType, VkSampleCountFlagBits, VkImageUsageFlags, VkImageTiling,
         uint32_t* n, VkSparseImageFormatProperties*) { *n = 0; }
@@ -74,8 +80,13 @@ void check_image(const Texture& x, int skip, int width, int levels) {
     CHECK(x.levels == (uint32_t)levels);
 }
 int main(int argc, char** argv) {
-    CHECK(argc == 12);
+    CHECK(argc == 16);
+    auto_choice.tier = std::atoi(argv[15]);
     opts.preset = std::atoi(argv[1]);
+    opts.budget = std::atoi(argv[12]);
+    if (const char* e = std::getenv("TEST_TEXTURE_DETAIL")) opts.texture_detail = std::atoi(e);
+    dev.props.deviceType = std::atoi(argv[13]) ? VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU : VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+    ram = std::strtoull(argv[14], nullptr, 10) << 20;
     allowed = std::strtoull(argv[2], nullptr, 10) << 20;
     query_ok = std::atoi(argv[3]) != 0;
     nvn_tex t{}; t.d.samples = 1;
@@ -91,14 +102,16 @@ int main(int argc, char** argv) {
     if (std::atoi(argv[10])) {
         // The budget is cached, but choosing Minimum in the menu must still
         // change defaults for textures made afterwards, and switching back too.
-        opts.preset = 1;
+        opts.preset = 1, opts.budget = 1;
         Texture minimum{3072,3072,1,12}; trim(minimum,&t); check_image(minimum,2,768,10);
-        opts.preset = 2;
+        opts.preset = 2, opts.budget = 2;
         Texture low{3072,3072,1,12}; trim(low,&t); check_image(low,0,3072,12);
     }
     std::printf("PASS %s\n",argv[11]);
 }
-'''.replace("@POLICY@", policy).replace("@MIP@", mip)
+'''.replace("@HELPERS@", helpers).replace("@TIER@", tier).replace("@POLICY@", policy).replace("@MIP@", mip)
+    # The preset: a number, its budget the same (as a preset sets it); or (preset, budget): Auto (this PC) with its tier's budgets,
+    # or Custom with the budgets of the preset it was turned from (kept, as the Debug tab's Set up for a weak laptop leaves them).
     # Literal outcomes: (skip, width, levels) for a 3072-square image and a
     # 1365-square, 90-layer image. No expected result calls the production policy.
     original = (0, 3072, 12, 0, 1365, 11)
@@ -110,8 +123,13 @@ int main(int argc, char** argv) {
         ("large-budget", 1, 7500, 1, {}, original, 0),
         ("zero-budget", 1, 0, 1, {}, original, 0),
         ("failed-budget-query", 1, 3674, 0, {}, original, 0),
-        ("custom-preset", 0, 3674, 1, {}, minimum, 0),
-        ("custom-preset-large-budget", 0, 7500, 1, {}, original, 0),
+        ("custom-preset", 0, 3674, 1, {}, original, 0),
+        ("custom-with-minimums-budgets", (0, 1), 3674, 1, {}, minimum, 0),
+        ("custom-with-lows-budgets", (0, 2), 3674, 1, {}, original, 0),
+        ("auto-at-minimum-tier", (6, 1), 3674, 1, {}, minimum, 0),
+        ("auto-at-minimum-tier-large-budget", (6, 1), 7500, 1, {}, original, 0),
+        ("auto-at-balanced-tier", (6, 3), 3674, 1, {}, original, 0),
+        ("auto-with-the-players-vram-budget", (6, 0), 3674, 1, {}, original, 0),
         ("low-preset-and-menu-changes", 2, 3674, 1, {}, original, 1),
         ("dimension-override", 1, 3674, 1, {"RX_VK_TEX_MAX_DIM": "2048"},
          (1, 1536, 11, 0, 1365, 11), 0),
@@ -123,6 +141,57 @@ int main(int argc, char** argv) {
          {"RX_VK_TEX_MAX_DIM": "512", "RX_VK_TEX_SKIP_MB": "2"}, (3, 384, 9, 2, 341, 9), 0),
         ("threshold-without-dimension-override", 2, 3674, 1,
          {"RX_VK_TEX_SKIP_MB": "2"}, (1, 1536, 11, 0, 1365, 11), 0),
+    ]
+    # (the Texture detail row: Full keeps the game's size on a small card, Medium and Low trim on any card)
+    cases += [
+        ("detail-full-small-budget", 1, 3674, 1, {"TEST_TEXTURE_DETAIL": "1"}, original, 0),
+        ("detail-medium-large-budget", 2, 7500, 1, {"TEST_TEXTURE_DETAIL": "2"}, minimum, 0),
+        ("detail-low-large-budget", 2, 7500, 1, {"TEST_TEXTURE_DETAIL": "3"}, (2, 768, 10, 2, 341, 9), 0),   # (768: under 8 MB, kept)
+        ("detail-auto-large-budget", 2, 7500, 1, {"TEST_TEXTURE_DETAIL": "0"}, original, 0),
+        ("detail-medium-dimension-override", 2, 7500, 1, {"TEST_TEXTURE_DETAIL": "2", "RX_VK_TEX_MAX_DIM": "2048"},
+         (1, 1536, 11, 0, 1365, 11), 0),
+    ]
+    # Integrated GPUs: (name, preset, driver budget, query, overrides, expected, switch, integrated, RAM in MB). An i3-1115G4's
+    # UHD Graphics with 16 GB of RAM reported 16122 MB and was allowed 7402 MB.
+    shared = [
+        ("integrated-16gb-large-budget", 1, 7402, 1, {}, minimum, 0, 1, 16122),
+        ("integrated-16gb-failed-budget-query", 1, 0, 0, {}, minimum, 0, 1, 16122),
+        ("integrated-16gb-auto-at-minimum-tier", (6, 1), 7402, 1, {}, minimum, 0, 1, 16122),
+        ("integrated-8gb-large-budget", 1, 4900, 1, {}, minimum, 0, 1, 7900),
+        ("integrated-16gb-low-preset", 2, 7402, 1, {}, original, 0, 1, 16122),
+        ("integrated-16gb-weak-laptop-button", (0, 1), 7402, 1, {}, minimum, 0, 1, 16122),
+        ("integrated-16gb-custom-no-budget", (0, 0), 7402, 1, {}, original, 0, 1, 16122),
+        ("integrated-16gb-disabled", 1, 7402, 1, {"RX_VK_LOW_VRAM_MIPS": "0"}, original, 0, 1, 16122),
+        ("integrated-32gb-large-budget", 1, 15000, 1, {}, original, 0, 1, 32500),
+        ("integrated-unknown-ram", 1, 7402, 1, {}, original, 0, 1, 0),
+        ("discrete-16gb-large-budget", 1, 7402, 1, {}, original, 0, 0, 16122),
+    ]
+    # Auto (this PC)'s tier for this PC, which Custom with no memory_budget goes by: (name, preset, overrides, expected,
+    # (driver budget, integrated, RAM in MB, Auto's tier)). A Steam Deck OLED: 14798 MB of RAM, the driver allowed 5872 MB,
+    # Auto's tier Minimum (an integrated GPU is always Minimum: auto_settings.h tier_of). Every preset saves its own number as
+    # memory_budget (apply_preset), so only Custom chosen on the row, or a file from before memory_budget, has 0.
+    deck = (5872, 1, 14798, 1)
+    tiers = [
+        ("deck-custom-no-budget", (0, 0), {}, minimum, deck),
+        ("deck-custom-after-minimum", (0, 1), {}, minimum, deck),
+        ("deck-custom-after-low", (0, 2), {}, original, deck),
+        ("deck-custom-after-balanced", (0, 3), {}, original, deck),
+        ("deck-custom-after-high", (0, 4), {}, original, deck),
+        ("deck-custom-after-ultra", (0, 5), {}, original, deck),
+        ("deck-minimum", 1, {}, minimum, deck),
+        ("deck-low", 2, {}, original, deck),
+        ("deck-balanced", 3, {}, original, deck),
+        ("deck-high", 4, {}, original, deck),
+        ("deck-ultra", 5, {}, original, deck),
+        ("deck-auto", (6, 1), {}, minimum, deck),
+        ("deck-balanced-file-with-budget-0", (3, 0), {}, original, deck),
+        ("deck-custom-no-budget-switch-off", (0, 0), {"RX_VK_LOW_VRAM_MIPS": "0"}, original, deck),
+        ("deck-custom-no-budget-auto-not-known", (0, 0), {}, original, (5872, 1, 14798, 0)),
+        ("integrated-32gb-custom-no-budget", (0, 0), {}, original, (15000, 1, 32500, 1)),
+        ("discrete-8gb-custom-no-budget", (0, 0), {}, original, (7500, 0, 32500, 3)),
+        ("discrete-8gb-16gb-ram-custom-no-budget", (0, 0), {}, original, (7500, 0, 16122, 3)),
+        ("discrete-4gb-custom-no-budget", (0, 0), {}, minimum, (3674, 0, 16122, 1)),
+        ("discrete-4gb-custom-after-low", (0, 2), {}, original, (3674, 0, 16122, 1)),
     ]
     for value in ("0", "off", "false", "no", "OFF", "FaLsE", " no \t", ""):
         cases.append(("disabled-" + repr(value), 1, 3674, 1,
@@ -140,14 +209,23 @@ int main(int argc, char** argv) {
         if a.sanitize:
             cmd += ["-fsanitize=" + a.sanitize, "-fno-omit-frame-pointer"]
         subprocess.run(cmd + [str(cpp), "-o", str(exe)], check=True)
-        for name, preset, budget, query, overrides, expected, switch in cases:
+        failed = []
+        # (the cases before Auto's tier: none known, 0, so they check the rule as memory_budget and the preset have it)
+        for name, preset, budget, query, overrides, expected, switch, integrated, ram, auto_tier in \
+                [c + (0, 32500, 0) for c in cases] + [c + (0,) for c in shared] + \
+                [(n, p, b, 1, o, e, 0, i, r, t) for n, p, o, e, (b, i, r, t) in tiers]:
             env = os.environ.copy()
             for key in ("RX_VK_LOW_VRAM_MIPS", "RX_VK_TEX_MAX_DIM", "RX_VK_TEX_MAX_MB", "RX_VK_TEX_SKIP_MB"):
                 env.pop(key, None)
             env.update(overrides)
-            args = [preset, budget, query, *expected, switch, name]
-            subprocess.run([str(exe), *map(str, args)], env=env, check=True)
-    print("PASS %d mip-policy configurations" % len(cases))
+            preset, memory_budget = preset if isinstance(preset, tuple) else (preset, preset)
+            args = [preset, budget, query, *expected, switch, name, memory_budget, integrated, ram, auto_tier]
+            if subprocess.run([str(exe), *map(str, args)], env=env).returncode:
+                failed.append(name)
+    if failed:
+        sys.exit("FAIL %d of %d mip-policy configurations: %s" % (
+            len(failed), len(cases) + len(shared) + len(tiers), ", ".join(failed)))
+    print("PASS %d mip-policy configurations" % (len(cases) + len(shared) + len(tiers)))
 
 
 if __name__ == "__main__":

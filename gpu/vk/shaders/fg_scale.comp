@@ -1,15 +1,61 @@
 #version 450
-// the frame to the window's size (the Insert menu's Upscaling, Sharpness): Catmull-Rom or Lanczos 2, or the linear filter, then
+// the frame to the window's size (the Insert menu's Upscaling, Sharpness): Catmull-Rom or Lanczos 2, or the linear filter (each
+// stretched over the picture's pixels one window pixel covers when the picture is the larger), then
 // a contrast-adaptive sharpen in the manner of AMD FidelityFX RCAS that cannot go past the light around the pixel, so it adds no halos,
 // no clipping and no flashes
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D src;
+// (FG_SCALE_PQ, compiled into fg_scale_pq_comp_spv.h: the game's own HDR10 picture (Native HDR, PQ codes) into RGB10A2, which
+// keeps the codes' 10 bits; vk_framegen.cpp framegen_scale's pq)
+#ifdef FG_SCALE_PQ
+layout(binding = 1, rgb10_a2) uniform writeonly image2D dst;
+const float kSteps = 1023.0;   // (the destination's steps: the dither below)
+#else
 layout(binding = 1, rgba8) uniform writeonly image2D dst;
+const float kSteps = 255.0;
+#endif
 // (and ultrawide's menus: while a menu shows, the picture's sides outside the middle 16:9, x0..x1 of its width, out of focus
 // (side 1) or black (side 2), with a short soft edge; vk_framegen.cpp wide_sides. Side 3: this dispatch makes the picture at
 // 1/8 for side 1's blur instead, into dst; side 1 then reads it as small)
 layout(binding = 2) uniform sampler2D small;
-layout(push_constant) uniform P { int mode; float sharp; float x0; float x1; int side; } pc;
+layout(push_constant) uniform P { int mode; float sharp; float x0; float x1; int side; float cover; } pc;
+// (and the loading cover between two areas, which the game draws in that middle too: pc.cover, 0 open to 1 closed, closes the
+// sides by as much. The game blends its cover over the picture's light, before the picture is coded for the screen (measured:
+// under a half-open cover a pixel's light is the same fraction of its light without it at every brightness, its code is
+// not), so the sides' light is scaled the same way: the code to light, times 1 - cover, back to the code)
+#ifdef FG_SCALE_PQ
+// (SMPTE ST 2084, light as a fraction of its 10,000 nits)
+float to_light(float c) {
+    const float p = pow(max(c, 0.0), 1.0 / 78.84375);
+    return pow(max(p - 0.8359375, 0.0) / (18.8515625 - 18.6875 * p), 1.0 / 0.1593017578125);
+}
+float to_code(float l) {
+    const float y = pow(max(l, 0.0), 0.1593017578125);
+    return pow((0.8359375 + 18.8515625 * y) / (1.0 + 18.6875 * y), 78.84375);
+}
+#else
+// (sRGB)
+float to_light(float c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4); }
+float to_code(float l) { return l <= 0.0031308 ? l * 12.92 : 1.055 * pow(l, 1.0 / 2.4) - 0.055; }
+#endif
+vec3 dimmed(vec3 c, float k) { return vec3(to_code(to_light(c.r) * k), to_code(to_light(c.g) * k), to_code(to_light(c.b) * k)); }
+// (a pixel of the picture outside the middle is darkened as it is read, before the filter and the sharpen, so the seam stays
+// where the game's cover ends at any window size and no side pixel's light is filtered into the middle)
+vec3 pixel(ivec2 t, ivec2 size) {
+    t = clamp(t, ivec2(0), size - 1);
+    const vec3 c = texelFetch(src, t, 0).rgb;
+    const float u = (float(t.x) + 0.5) / float(size.x);
+    return pc.cover > 0.0 && (u < pc.x0 || u > pc.x1) ? dimmed(c, 1.0 - pc.cover) : c;
+}
+// the picture at uv through the linear filter: the sampler's, or while the cover shows the same four pixels, each darkened first
+vec3 bilinear(vec2 uv) {
+    if (pc.cover <= 0.0) return textureLod(src, uv, 0.0).rgb;
+    const ivec2 size = textureSize(src, 0);
+    const vec2 p = uv * vec2(size) - 0.5;
+    const ivec2 b = ivec2(floor(p));
+    const vec2 f = p - vec2(b);
+    return mix(mix(pixel(b, size), pixel(b + ivec2(1, 0), size), f.x), mix(pixel(b + ivec2(0, 1), size), pixel(b + ivec2(1, 1), size), f.x), f.y);
+}
 const float PI = 3.14159265;
 float lanczos2(float x) {
     x = abs(x);
@@ -24,21 +70,32 @@ float catmull(float x) {
     if (x < 2.0) return -0.5 * x * x * x + 2.5 * x * x - 4.0 * x + 2.0;
     return 0.0;
 }
+float tent(float x) { return max(1.0 - abs(x), 0.0); }
+// The filter's weight at d picture pixels, and how far it reaches (in picture pixels at stretch 1)
+float kernel(float d) { return pc.mode == 2 ? lanczos2(d) : pc.mode == 1 ? catmull(d) : tent(d); }
+float reach() { return pc.mode == 0 ? 1.0 : 2.0; }
+// Shrinking, the filter is stretched by the picture's pixels per window pixel: at the picture's own spacing its taps skip
+// most of the picture (4 x 4 of the 6 x 6 one window pixel's Lanczos needs at 3840 x 2160 to 2560 x 1440), and fine detail
+// came out as shimmer and moire, worse than the plain linear copy. shortcut: up to 4 (16 x 16 taps); a smaller window aliases
+// again past that, a mip chain first if anyone plays a 5K picture in a quarter-size window
+const float kMaxStretch = 4.0;
 vec3 filtered(vec2 uv) {
-    if (pc.mode == 0) return textureLod(src, uv, 0.0).rgb;
     const vec2 size = vec2(textureSize(src, 0));
+    const vec2 s = clamp(size / vec2(imageSize(dst)), vec2(1.0), vec2(kMaxStretch));
+    if (pc.mode == 0 && s == vec2(1.0)) return bilinear(uv);
     const vec2 p = uv * size - 0.5;
-    const ivec2 b = ivec2(floor(p));
-    const vec2 f = p - vec2(b);
+    // (at stretch 1: the 4 x 4 around p for Catmull-Rom and Lanczos, as before)
+    const ivec2 lo = ivec2(floor(p - reach() * s)) + 1, hi = ivec2(floor(p + reach() * s));
     vec3 sum = vec3(0.0);
     float weight = 0.0;
-    for (int y = -1; y <= 2; y++)
-        for (int x = -1; x <= 2; x++) {
-            const vec2 d = vec2(x, y) - f;
-            const float w = pc.mode == 2 ? lanczos2(d.x) * lanczos2(d.y) : catmull(d.x) * catmull(d.y);
-            sum += w * texelFetch(src, clamp(b + ivec2(x, y), ivec2(0), ivec2(size) - 1), 0).rgb;
+    for (int y = lo.y; y <= hi.y; y++) {
+        const float wy = kernel((float(y) - p.y) / s.y);
+        for (int x = lo.x; x <= hi.x; x++) {
+            const float w = kernel((float(x) - p.x) / s.x) * wy;
+            sum += w * pixel(ivec2(x, y), ivec2(size));   // (darkened under the loading cover, as bilinear())
             weight += w;
         }
+    }
     return sum / weight;
 }
 // The Sharpness slider (pc.sharp 0 to 1) is RCAS's strength: 0 the picture as filtered, 1 its strongest lobe.
@@ -72,10 +129,11 @@ vec3 side_fill(vec2 uv) {
             sum += w * textureLod(small, clamp(uv + vec2(i, y) * step, vec2(0.0), vec2(1.0)), 0.0).rgb;
             weight += w;
         }
-    return sum / weight * 0.75;
+    const vec3 fill = sum / weight * 0.75;
+    return pc.cover > 0.0 ? dimmed(fill, 1.0 - pc.cover) : fill;   // (under the loading cover, as pixel())
 }
-// (and less than one step of 8 bits of noise over it: the dim, smooth sides showed 8-bit steps as contour lines)
-float dither(ivec2 g) { return (fract(52.9829189 * fract(0.06711056 * float(g.x) + 0.00583715 * float(g.y))) - 0.5) / 255.0; }
+// (and less than one of the destination's steps of noise over it, kSteps: the dim, smooth sides showed 8-bit steps as contour lines)
+float dither(ivec2 g) { return (fract(52.9829189 * fract(0.06711056 * float(g.x) + 0.00583715 * float(g.y))) - 0.5) / kSteps; }
 void main() {
     const ivec2 g = ivec2(gl_GlobalInvocationID.xy);
     const ivec2 d = imageSize(dst);
@@ -105,8 +163,8 @@ void main() {
         // pixel away, a fraction of a picture pixel when the window is larger (0.53 for 2048 x 1152 on a 3840 x 2160
         // screen): what the slider did then hung on the window's size, not on the picture.
         const vec2 e = max(1.0 / vec2(textureSize(src, 0)), 1.0 / vec2(d));
-        const vec3 n = textureLod(src, uv + vec2(0.0, -e.y), 0.0).rgb, s = textureLod(src, uv + vec2(0.0, e.y), 0.0).rgb;
-        const vec3 w = textureLod(src, uv + vec2(-e.x, 0.0), 0.0).rgb, r = textureLod(src, uv + vec2(e.x, 0.0), 0.0).rgb;
+        const vec3 n = bilinear(uv + vec2(0.0, -e.y)), s = bilinear(uv + vec2(0.0, e.y));
+        const vec3 w = bilinear(uv + vec2(-e.x, 0.0)), r = bilinear(uv + vec2(e.x, 0.0));
         c = sharpen(c, n, s, w, r, pc.sharp);
     }
     if (outside > 0.0) c = mix(c, pc.side == 2 ? vec3(0.0) : side_fill(uv) + dither(g), outside);

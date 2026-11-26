@@ -26,8 +26,17 @@ def main():
     present = text[text.index("void present_image("):]
     present = present[:present.index("\nnamespace {")]
     lines = present.splitlines()
+    # (the present's submit goes through submit_or_retry: its vkQueueSubmit2, made again only while the driver
+    # refuses it for want of memory (submit_retry.h), and the result returned as it came)
+    calls = CALLS
+    if not re.search(r"\bvkQueueSubmit2\(", present) and re.search(r"\bsubmit_or_retry\(", present):
+        retry = re.search(r"^VkResult submit_or_retry\(const VkSubmitInfo2& si, VkFence fence\) \{$.*?^\}$", text, re.M | re.S)
+        if not retry or not re.search(r"\bvkQueueSubmit2\(dev\.queue, 1, &si, fence\)", retry.group(0)) \
+                or "    return res;\n}" not in retry.group(0):
+            raise SystemExit("FAIL: submit_or_retry does not return its vkQueueSubmit2's result")
+        calls = tuple("submit_or_retry" if call == "vkQueueSubmit2" else call for call in CALLS)
     sites = []
-    for call in CALLS:
+    for call in calls:
         found = [i for i, line in enumerate(lines) if re.search(r"\b" + call + r"\(", line)]
         if len(found) != (2 if call == "vkQueuePresentKHR" else 1):
             raise SystemExit("FAIL: presentation call sites changed: " + call)
@@ -51,15 +60,16 @@ def main():
 using VkResult = int;
 enum { VK_SUCCESS=0, VK_ERROR_DEVICE_LOST=-4, VK_TRUE=1, VK_NULL_HANDLE=0 };
 struct { int device=1, queue=2, present_queue=3, swapchain=4; } dev;
-struct { int done=5, acquired=6, pool=7, cmd=8; } f;
+struct { int done=5, pool=7, cmd=8; } f;
+bool was_held=false; int acquire_fence=6;   // (#1376: the acquire's fence, and no image held from an earlier present)
 int bi=0, si=0, pi=0, index=0;
 uint64_t acquire_timeout=UINT64_MAX;
 int result=VK_SUCCESS, calls=0, reports=0, continued=0;
 struct Lost {};
 [[noreturn]] void device_lost() { ++reports; throw Lost{}; }
 '''
-    for call in CALLS:
-        fixture += "template<class... A> VkResult " + call + "(A...) { ++calls; return result; }\n"
+    for call in calls:
+        fixture +="template<class... A> VkResult " + call + "(A...) { ++calls; return result; }\n"
     for i, (_, snippet) in enumerate(sites):
         fixture += "void site_%d() {\n%s\n(void)res; ++continued;\n}\n" % (i, snippet)
     fixture += "int main() {\nint failed=0;\n"

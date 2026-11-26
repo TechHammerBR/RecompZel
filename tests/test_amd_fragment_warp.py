@@ -14,26 +14,55 @@ python -I -B tests/test_amd_fragment_warp.py
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def _with_cache(path):
+    """vk_shader.cpp with the program cache it held before (vk_progcache.cpp and .h beside it, outside the translator stamp): definitions first"""
+    parts = [path.read_text(encoding="utf-8")]
+    for name in ("vk_progcache.cpp", "vk_progcache.h"):
+        if (path.parent / name).exists():
+            parts.append((path.parent / name).read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
 VK = ROOT / "gpu" / "vk"
 SPIRV = VK / "eden" / "shader_recompiler" / "backend" / "spirv"
 
 
 def main():
-    shader = (VK / "vk_shader.cpp").read_text(encoding="utf-8")
+    shader = _with_cache(VK / "vk_shader.cpp")
     profile = shader[shader.index("Shader::Profile make_profile()"):shader.index("Shader::HostTranslateInfo host_info()")]
+    # (the two rules are the device policy's, gpu/vk/device_policy.h, which tests/test_device_policy.py runs on made-up PCs;
+    # make_profile reads them there)
+    policy = (VK / "device_policy.h").read_text(encoding="utf-8")
+    policy = policy[policy.index("inline DevicePolicy device_policy(const DeviceFacts& f) {"):]
+    policy = policy[:policy.index("\n}\n")]
     for needle, why in (
-        ("p.warp_size_potentially_larger_than_guest = dev.subgroup_max > 32",
+        ("p.warp64 = f.subgroup_max > 32;",
+         "an unpinned stage's maximum subgroup width is not told to the translator"),
+        ("p.frag_shuffle_fallback = f.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY || f.driver_id == VK_DRIVER_ID_MESA_RADV;",
+         "AMD's proprietary driver or RADV keeps native fragment-stage shuffles"),
+    ):
+        if needle not in policy:
+            raise SystemExit(why)
+    main_cpp = (VK / "vk_main.cpp").read_text(encoding="utf-8")
+    for needle, why in (
+        ("pf.subgroup_size = dev.subgroup_size, pf.subgroup_max = dev.subgroup_max;", "the policy is not told the device's lanes"),
+        ("pf.driver_id = dev.driver.driverID;", "the policy is not told the device's driver"),
+    ):
+        if needle not in main_cpp:
+            raise SystemExit(why)
+    for needle, why in (
+        ("p.warp_size_potentially_larger_than_guest = dev.policy.warp64;",
          "an unpinned stage's maximum subgroup width is not told to the translator"),
         ("p.max_subgroup_size = p.warp_size_potentially_larger_than_guest ? dev.subgroup_max : 32",
          "the broadcast fallbacks do not walk the host's upper lanes"),
-        ("p.has_broken_spirv_fragment_shuffle = dev.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY",
-         "AMD's proprietary driver keeps native fragment-stage shuffles"),
+        ("p.has_broken_spirv_fragment_shuffle = dev.policy.frag_shuffle_fallback;",
+         "the fragment-stage shuffle fallback is not read from the device policy"),
     ):
         if needle not in profile:
             raise SystemExit(why)
     # (stages pinned to 32 lanes keep the short path: the long one in every compute program was new, longer SPIR-V that AMD
     # compiled for hours, and they need none of it)
-    if "EmitSPIRV(profile_pinned(), rt, t->program, bindings)" not in shader:
+    if "EmitSPIRV(profile_pinned(uint64_t(wg[0]) * wg[1] * wg[2]), rt, t->program, bindings)" not in shader:
         raise SystemExit("compute programs take the long warp path though they are pinned to 32 lanes")
     if shader.count("EmitSPIRV(fallback ? profile_pinned() : profile_graphics(") != 2:
         raise SystemExit("the mesh fallback's compute stages take the long warp path though they are pinned to 32 lanes")
@@ -42,7 +71,7 @@ def main():
     graphics = graphics[:graphics.index("\n}\n")]
     for needle, why in (
         ("q.warp_size_potentially_larger_than_guest = false, q.max_subgroup_size = 32", "a pinned graphics stage takes the long path"),
-        ("!forced && (dev.sg32_stages & stage) ? pinned : profile()", "the stage's pinning does not pick its path"),
+        ("!forced && pins_32(stage) ? pinned : profile()", "the stage's pinning does not pick its path"),
         ('getenv("RX_VK_WARP64")', "RX_VK_WARP64 no longer sets every graphics stage"),
     ):
         if needle not in graphics:
@@ -53,7 +82,7 @@ def main():
                      ("VK_SHADER_STAGE_MESH_BIT_EXT", 1)):
         if shader.count("profile_graphics(%s)" % stage) != n:
             raise SystemExit("the %s programs do not take their stage's profile" % stage)
-    stamp = shader[shader.index("uint64_t disk_stamp()"):]
+    stamp = shader[shader.index("uint64_t translator_stamp()"):]
     if "profile().warp_size_potentially_larger_than_guest" not in stamp.split("return")[0]:
         raise SystemExit("programs translated for another GPU's warps are kept in the program cache")
     if "(uint32_t)dev.sg32_stages" not in stamp.split("return")[0]:

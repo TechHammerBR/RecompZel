@@ -1,19 +1,19 @@
-"""A program's descriptor counts are kept with it, packed in one word (gpu/vk/vk_draw.cpp desc_counts_pack, build_descriptors).
+"""A program's descriptor counts are kept with it, packed in one word (gpu/vk/draw_key.h desc_counts_pack, vk_draw.cpp build_descriptors).
 
-The two packing functions are cut out of the source and compiled alone: every count comes back as it went in, the three
+The two packing functions (draw_key.h, which vk_draw.cpp includes) are run: every count comes back as it went in, the three
 do not overlap, and counts that do not fit give the "not counted" word, never another count's. The source is then read
 for the rules the build keeps: the kept word is used only when it is not ~0, the counts are kept only for a program
-that is ready (its stages are final), the switch RX_VK_DESC_COUNTS=0 counts every time, and the reserve that keeps the
-writes' pointers stable is made from the counts either way.
+that is ready (its stages are final), and the reserve that keeps the writes' pointers stable is made from the counts
+either way.
 
-python -I -B tests/test_desc_counts.py [--cxx g++]
+python -I -B tests/test_desc_counts.py [--cxx g++] [--headers <Vulkan headers>]
 """
 import argparse
 import subprocess
 import tempfile
 from pathlib import Path
 
-RUN_ALL_ARGS = ["--cxx", "g++"]
+RUN_ALL_ARGS = ["--cxx", "g++", "--headers", "{vulkan_headers}"]   # (draw_key.h includes Vulkan's, for its types)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,8 +22,8 @@ FIXTURE = r"""
 #include <cstdint>
 #include <cstdio>
 
-@PACK@
-@UNPACK@
+#include "draw_key.h"
+using namespace mkwvk;
 
 int main() {
     const size_t most = (1u << 21) - 1;
@@ -60,6 +60,7 @@ def block(text, marker):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cxx", default="g++")
+    p.add_argument("--headers", type=Path, help="the Vulkan headers, where the compiler does not find them itself")
     a = p.parse_args()
     src = (ROOT / "gpu" / "vk" / "vk_draw.cpp").read_text(encoding="utf-8")
     build = block(src, "void build_descriptors(const NvnState& s, const Program& p) {")
@@ -67,7 +68,6 @@ def main():
         ("if (kept != ~0ull) {", "the kept word is used only when the program has one"),
         ("p.ready.load(std::memory_order_acquire)", "the counts are kept only for a program that is ready"),
         ("if (packed != ~0ull) p.desc_counts.store(", "counts that do not fit are not kept"),
-        ('getenv("RX_VK_DESC_COUNTS")', "the switch is read"),
         ("out.bufs.reserve(nbuf), out.imgs.reserve(nimg), out.views.reserve(nview);", "the reserve is made from the counts"),
     ):
         if needle not in build:
@@ -77,13 +77,20 @@ def main():
     header = (ROOT / "gpu" / "vk" / "vk_shader.h").read_text(encoding="utf-8")
     if "mutable std::atomic<uint64_t> desc_counts{~0ull};" not in header:
         raise SystemExit("vk_shader.h: Program::desc_counts must start as ~0 (not counted)")
-    fixture = (FIXTURE.replace("@PACK@", block(src, "uint64_t desc_counts_pack("))
-               .replace("@UNPACK@", block(src, "void desc_counts_unpack(")))
+    # (the functions run below are draw_key.h's, which vk_draw.cpp includes: they were cut out of vk_draw.cpp by their text)
+    key = (ROOT / "gpu" / "vk" / "draw_key.h").read_text(encoding="utf-8")
+    if '#include "draw_key.h"' not in src:
+        raise SystemExit("vk_draw.cpp does not include draw_key.h: what runs below is not what a draw runs")
+    for fn in ("uint64_t desc_counts_pack(", "void desc_counts_unpack("):
+        if fn in src or fn not in key:
+            raise SystemExit("draw_key.h is not the one place that defines " + fn)
+    fixture = FIXTURE
     with tempfile.TemporaryDirectory(prefix="desc-counts-") as tmp:
         c = Path(tmp) / "fixture.cpp"
         exe = Path(tmp) / "fixture"
         c.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
+        subprocess.run([a.cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "gpu" / "vk"),
+                        *(["-I", str(a.headers)] if a.headers else []), str(c), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
     print("ok: a program's descriptor counts, kept and read back")
 

@@ -6,17 +6,21 @@
    hos_romfs_dir and hos_user_dir are set by hos_main.c. Reads are positional (ReadFile with an offset), so any number
    of guest threads can read one file at once. Results: switchbrew "Error codes" (module 2 = fs). */
 #include "hos.h"
+#include "save_backup.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 
 /* (hookshot, #1468) A game folder whose deepest file passes 260 characters (MAX_PATH: "E:\Games\...\romfs\Event\EventSetting\
    Ev..." at 262) is read too. The host paths here are up to HOS_FS_PATH bytes, and on Windows each file call goes through
    its wide function: the path converted from the game's UTF-8 strings and, when it is
-   long and absolute, given the extended-length prefix \\?\ (with its / made \), which Windows takes without its long-paths
-   setting. Short paths are as they were. */
+   long and absolute, given the extended-length prefix \\?\ (with its / made \ and a doubled separator made one), which
+   Windows takes without its long-paths setting. Short paths are as they were. */
 #define HOS_FS_PATH 1024
 #ifdef _WIN32
 static const wchar_t *fs_wide(const char *p, wchar_t *w, size_t cap) {
@@ -32,9 +36,19 @@ static const wchar_t *fs_wide(const char *p, wchar_t *w, size_t cap) {
         if (unc) p++;   /* (\\server\share -> \\?\UNC\server\share) */
     }
     if (MultiByteToWideChar(CP_UTF8, 0, p, -1, w + at, (int)(cap - at)) <= 0) w[0] = 0;
-    if (extended)
-        for (wchar_t *q = w; *q; q++)
-            if (*q == L'/') *q = L'\\';
+    if (extended) {
+        /* (under the prefix Windows takes a path as it is: a / is no separator, and a doubled one is an invalid name
+           (ERROR_INVALID_NAME), where a short path has both tidied. The game doubles one itself, in its streamed
+           voices' "Voice/Resource//Stream/...": in a game folder long enough their files were "not found" and the
+           cutscenes silent. So here every / is a \, and a run of them one) */
+        wchar_t *d = w + at;
+        for (const wchar_t *q = w + at; *q; q++) {
+            const wchar_t c = *q == L'/' ? L'\\' : *q;
+            if (c == L'\\' && d > w + at && d[-1] == L'\\') continue;
+            *d++ = c;
+        }
+        *d = 0;
+    }
     return w;
 }
 #define FS_W(p) fs_wide((p), (wchar_t[HOS_FS_PATH + 8]){0}, HOS_FS_PATH + 8)
@@ -112,6 +126,56 @@ static int mount(const char *name, const char *root, int writable) {   /* 0: the
     ReleaseSRWLockExclusive(&mount_lock);
     if (writable) CreateDirectoryA(root, NULL);
     hos_log("fs: mounted %s: -> %s", name, root);
+#ifdef _WIN32   /* (a Windows path pattern: the log line would mislead elsewhere) */
+    if (!writable && !strcmp(name, "content")) {
+        /* (hookshot) Which version the RomFS is, by its resource size table's name (the supported build's says
+           Product.111): a game that died in its first second gave no other trace of the files it read */
+        char pattern[MAX_PATH];
+        WIN32_FIND_DATAA fd;
+        /* (hookshot) and said to the player: the game reads that table first and dies in its first second without it
+           (a null from its allocator), and a romfs from another PC port's install (a few packed .bin files) had none. Not
+           stopped here: only said, the game goes on as before */
+        const char *expected = "ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs";
+        /* (hookshot) The supported version's table is looked for by its own name first. The folder's first
+           ResourceSizeTable file was taken as the version: a dump of the updated game that keeps the first version's table
+           beside the update's (Product.100 sorts before Product.111) was called another version at every start, with the
+           right files in it. Another version's table beside the supported one is only noted in the log */
+        WIN32_FIND_DATAA other;
+        int found = 0, others = 0;   /* (found: fd holds a table, the supported one when it is there) */
+        snprintf(pattern, sizeof pattern, "%s\\System\\Resource\\%s", root, expected);
+        HANDLE f = FindFirstFileA(pattern, &fd);
+        if (f != INVALID_HANDLE_VALUE) found = 1, FindClose(f);
+        snprintf(pattern, sizeof pattern, "%s\\System\\Resource\\ResourceSizeTable*", root);
+        f = FindFirstFileA(pattern, &other);
+        if (f != INVALID_HANDLE_VALUE) {
+            do {
+                if (!_stricmp(other.cFileName, expected)) continue;
+                if (!found) { fd = other, found = 2; break; }   /* (no supported table: the first other one is the version) */
+                if (others++ < 4)
+                    hos_log("fs: another version's table is beside the supported one and is not read: %s", other.cFileName);
+            } while (FindNextFileA(f, &other));
+            FindClose(f);
+        }
+        char text[1024] = "";
+        if (!found) {
+            hos_log("fs: the RomFS has no System\\Resource\\ResourceSizeTable file: the game files are incomplete");
+            snprintf(text, sizeof text, "The game files in %s are not the game's own RomFS: its System\\Resource folder has no "
+                     "ResourceSizeTable file, and the game will most likely close at once.\n\nA romfs folder taken from another PC "
+                     "port or tool holds the game in its own format and does not work with Hookshot. Install again from your own dump "
+                     "of the game (the .nup file, or the romfs and exefs folders dumped from it).", root);
+        } else {
+            hos_log("fs: RomFS resource table %s (%lu bytes)", fd.cFileName, (unsigned long)fd.nFileSizeLow);
+            if (found == 2) {
+                hos_log("fs: that is not the supported version's (%s): the game files are from another version", expected);
+                snprintf(text, sizeof text, "The game files in %s are from another version of the game (%s; Hookshot supports the "
+                         "one with %s), and the game may close or misbehave.\n\nInstall again from a dump of the game with its "
+                         "update applied, its romfs and exefs from the same dump.", root, fd.cFileName, expected);
+            }
+        }
+        if (text[0] && !env_on("HOS_HEADLESS"))
+            MessageBoxA(NULL, text, "Hookshot: game files", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+    }
+#endif
     return 1;
 }
 
@@ -231,6 +295,24 @@ static void free_handle(uint64_t id) {
     ReleaseSRWLockExclusive(&handle_lock);
 }
 
+/* (hookshot) Whether the game is writing a file now: one is open for writing and
+   was written in the last second. Commit is nothing here, so a save goes straight into its files; every close
+   (hos_relaunch.c hos_close_finish) waits up to 3 s for such a write to end before the process exits. The game's threads
+   go on meanwhile */
+static int writes_open;
+static int64_t last_write_ns;
+static void wrote_now(void) { __atomic_store_n(&last_write_ns, hos_now_ns(), __ATOMIC_RELAXED); }
+static int fs_writing(void) {
+    return __atomic_load_n(&writes_open, __ATOMIC_RELAXED) > 0 &&
+           hos_now_ns() - __atomic_load_n(&last_write_ns, __ATOMIC_RELAXED) < 1000000000LL;
+}
+void hos_fs_wait_writes(void) {
+    const int64_t t0 = hos_now_ns();
+    int waited = 0;
+    while (fs_writing() && hos_now_ns() - t0 < 3000000000LL) waited = 1, hos_sleep_ns(10000000);
+    if (waited) hos_log("stop: the game was writing a file: waited %.0f ms for it", (double)(hos_now_ns() - t0) / 1e6);
+}
+
 /* ---- mounts --------------------------------------------------------------------------------------------------- */
 HLE(_ZN2nn2fs22QueryMountRomCacheSizeEPm) { G64(ARG(0)) = 0x10000; RET(0); }
 HLE(_ZN2nn2fs8MountRomEPKcPvm) {
@@ -244,12 +326,28 @@ HLE(_ZN2nn2fs8MountRomEPKc) {
     RET(mount(gstr(ARG(0)), hos_romfs_dir, 0) ? 0 : R_NOT_MOUNTED);
 }
 
+/* (hookshot) the folder the game's saves are mounted from, for the control bridge's saves (host/control.c) */
+static char save_root[HOS_FS_PATH];
+int hos_fs_save_root(char *out, size_t cap) {
+    AcquireSRWLockShared(&mount_lock);
+    const int have = save_root[0] != 0;
+    if (have) snprintf(out, cap, "%s", save_root);
+    ReleaseSRWLockShared(&mount_lock);
+    return have;
+}
+
 static int user_mount(const char *name, const char *sub) {
     char root[HOS_FS_PATH];
     snprintf(root, sizeof root, "%s\\%s", hos_user_dir, sub);
     make_dirs(root);
     CreateDirectoryA(root, NULL);
-    return mount(name, root, 1);
+    const int ok = mount(name, root, 1);
+    if (ok && !strncmp(sub, "save\\", 5)) {
+        AcquireSRWLockExclusive(&mount_lock);
+        snprintf(save_root, sizeof save_root, "%s", root);
+        ReleaseSRWLockExclusive(&mount_lock);
+    }
+    return ok;
 }
 
 /* nn::fs::IsSaveDataExisting(ApplicationId, account::Uid const&) -> bool */
@@ -310,7 +408,18 @@ HLE(_ZN2nn2fs7UnmountEPKc) {
         if (!strcmp(mounts[i].name, gstr(ARG(0)))) { mounts[i] = mounts[--nmounts]; break; }
     ReleaseSRWLockExclusive(&mount_lock);
 }
-HLE(_ZN2nn2fs6CommitEPKc) { RET(0); }
+/* nn::fs::Commit(mount name): the game's save data written. A save mount's commit backs the saves up outside the game folder
+   (host/save_backup.c, at most every 20 s) */
+HLE(_ZN2nn2fs6CommitEPKc) {
+    int is_save = 0;
+    const char *name = gstr(ARG(0));
+    AcquireSRWLockShared(&mount_lock);
+    for (int i = 0; i < nmounts; i++)
+        if (!strcmp(mounts[i].name, name)) { is_save = mounts[i].writable && strstr(mounts[i].root, "\\save\\") != NULL; break; }
+    ReleaseSRWLockShared(&mount_lock);
+    if (is_save) hos_save_backup_on_commit(hos_user_dir);
+    RET(0);
+}
 HLE(_ZN2nn2fs26SetPriorityOnCurrentThreadENS0_8PriorityE) {}
 
 /* ---- files ---------------------------------------------------------------------------------------------------- */
@@ -318,24 +427,67 @@ int hos_blank_cached_icon(const char *guest, const char *host);   /* (totk_icon_
 /* HOS_FS_TRACE=1: every file opened (or not found) is logged */
 static int fs_trace(void) {
     static int on = -1;
-    if (on < 0) on = getenv("HOS_FS_TRACE") != NULL;
+    if (on < 0) on = env_on("HOS_FS_TRACE");
     return on;
+}
+
+/* Use the same UTF-8 and long-path handling as OpenFile for the damaged-texture probe. */
+HANDLE hos_fs_open_read(const char *path) {
+    return CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+}
+
+static void fs_overlay_path(const char *guest, char *path, size_t cap) {
+    static const char *overlay = "";
+    const char *ov = __atomic_load_n(&overlay, __ATOMIC_RELAXED);
+    if (ov && !*ov) {
+        ov = getenv("HOS_FS_OVERLAY");
+        if (ov && !*ov) ov = NULL;
+        __atomic_store_n(&overlay, ov, __ATOMIC_RELAXED);
+    }
+    const char *rel = ov ? strstr(guest, ":/") : NULL;
+    if (rel) {
+        char alt[HOS_FS_PATH];
+        if ((size_t)snprintf(alt, sizeof alt, "%s/%s", ov, rel + 2) < sizeof alt &&
+            GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES) {
+            hos_log("fs: OpenFile(%s): from the overlay", guest);
+            snprintf(path, cap, "%s", alt);
+        }
+    }
+}
+
+/* Resolve a stand-in with the same mod, overlay and mounted game-file precedence. */
+int hos_fs_resolve_read(const char *guest, char *path, size_t cap) {
+    if (!host_path(guest, path, cap, NULL)) return 0;
+    fs_overlay_path(guest, path, cap);
+    return 1;
 }
 /* OpenFile(FileHandle*, char const* path, int mode): mode bit 0 read, bit 1 write, bit 2 append */
 HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     char path[HOS_FS_PATH];
     int writable = 0;
     const char *g = gstr(ARG(1));
-    if (!host_path(g, path, sizeof path, &writable)) { hos_log("fs: OpenFile(%s): unknown mount", g); RET(R_PATH_NOT_FOUND); return; }
+    /* (mkw-recomp 16bc3bc: the host's file calls block, so the virtual core goes to another thread meanwhile, as
+       Horizon would run another while this one waits for the file system. OoT's ARes loaders held it up to 250 ms.)
+       (hookshot, #1929) From before host_path: the first open of a button-prompt file builds it there (prompts.c,
+       251-357 ms on Linux), and other threads that open it meanwhile wait in there for the build; with the core held
+       through that, four threads waiting for the core ran without one within 50 ms */
+    const int away = hos_vcore_away();
+    if (!host_path(g, path, sizeof path, &writable)) {
+        if (away) hos_vcore_back();
+        hos_log("fs: OpenFile(%s): unknown mount", g);
+        RET(R_PATH_NOT_FOUND);
+        return;
+    }
     int want_write = (ARG(2) & 6) != 0;
-    if (want_write && !writable) { RET(R_PATH_NOT_FOUND); return; }
+    if (want_write && !writable) { if (away) hos_vcore_back(); RET(R_PATH_NOT_FOUND); return; }
     /* (mkw-recomp) HOS_NO_MOVIES=1: MKW's WebM movies (cup openings, billboards, emblems) are not found, and the
        game goes on without them (decoded by nn_video.c otherwise) */
-    if (!want_write && getenv("HOS_NO_MOVIES")) {
+    if (!want_write && env_on("HOS_NO_MOVIES")) {
         const size_t n = strlen(g);
         if (n > 5 && !_stricmp(g + n - 5, ".webm")) {
             static int logged;
             if (!logged++) hos_log("fs: OpenFile(%s): movies are left out (HOS_NO_MOVIES)", g);
+            if (away) hos_vcore_back();
             RET(R_PATH_NOT_FOUND);
             return;
         }
@@ -343,30 +495,10 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     { int hos_ultrawide_redirect(const char *guest, char *out, size_t cap);   /* (totk_ultrawide_ui.c: the HUD) */
       char alt[HOS_FS_PATH];
       if (!want_write && hos_ultrawide_redirect(g, alt, sizeof alt)) snprintf(path, sizeof path, "%s", alt); }
-    if (!want_write && hos_blank_cached_icon(g, path)) { RET(R_PATH_NOT_FOUND); return; }
-    {   /* HOS_FS_OVERLAY=<folder> (a test): a file of the game's data found there is read in place of the game's own */
-        /* (read once: every OpenFile asked the environment; one atomic pointer, "" until read, so a thread sees the
-           value or reads it itself) */
-        static const char *overlay = "";
-        const char *ov = __atomic_load_n(&overlay, __ATOMIC_RELAXED);
-        if (ov && !*ov) {
-            ov = getenv("HOS_FS_OVERLAY");
-            if (ov && !*ov) ov = NULL;   /* (set but empty: no overlay, as before) */
-            __atomic_store_n(&overlay, ov, __ATOMIC_RELAXED);
-        }
-        const char *rel = !want_write && ov ? strstr(g, ":/") : NULL;
-        if (rel) {
-            char alt[HOS_FS_PATH];
-            snprintf(alt, sizeof alt, "%s/%s", ov, rel + 2);
-            if (GetFileAttributesA(alt) != INVALID_FILE_ATTRIBUTES) {
-                hos_log("fs: OpenFile(%s): from the overlay", g);
-                snprintf(path, sizeof path, "%s", alt);
-            }
-        }
-    }
-    /* (mkw-recomp 16bc3bc: the host's file calls block, so the virtual core goes to another thread meanwhile, as
-       Horizon would run another while this one waits for the file system. OoT's ARes loaders held it up to 250 ms) */
-    const int away = hos_vcore_away();
+    if (!want_write && hos_blank_cached_icon(g, path)) { if (away) hos_vcore_back(); RET(R_PATH_NOT_FOUND); return; }
+    if (!want_write) fs_overlay_path(g, path, sizeof path);
+    { int hos_stand_in_damaged(const char *guest, char *path, size_t cap);   /* (oot_damaged_files.c: an incomplete dump) */
+      if (!want_write) hos_stand_in_damaged(g, path, sizeof path); }
     HANDLE h = CreateFileA(path, GENERIC_READ | (want_write ? GENERIC_WRITE : 0), FILE_SHARE_READ | FILE_SHARE_WRITE,
                            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (away) hos_vcore_back();
@@ -378,6 +510,7 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
     Handle *fh = (Handle *)calloc(1, sizeof *fh);
     fh->h = h;
     fh->writable = want_write;
+    if (want_write) __atomic_add_fetch(&writes_open, 1, __ATOMIC_RELAXED);
     snprintf(fh->path, sizeof fh->path, "%s", g);
     G64(ARG(0)) = new_handle(fh);
     if (hos_trace || fs_trace()) hos_log("fs: OpenFile(%s)", g);
@@ -468,7 +601,11 @@ HLE(_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE) {
             RET(R_OUT_OF_MEMORY);
             return;
         }
+        wrote_now();
+        const int away = hos_vcore_away();   /* (as the reads: a write can wait for the disk, the dirty pages' writeback) */
         WriteFile(fh->h, GP(ARG(2)), (DWORD)ARG(3), &put, &ov);
+        if (away) hos_vcore_back();
+        wrote_now();
     }
     RET(put == ARG(3) ? 0 : 0x2EE202);
 }
@@ -476,14 +613,24 @@ HLE(_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl) {
     Handle *fh = get_handle(c, ARG(0));
     LARGE_INTEGER sz;
     sz.QuadPart = (LONGLONG)ARG(1);
+    wrote_now();
     SetFilePointerEx(fh->h, sz, NULL, FILE_BEGIN);
     SetEndOfFile(fh->h);
     RET(0);
 }
-HLE(_ZN2nn2fs9FlushFileENS0_10FileHandleE) { FlushFileBuffers(get_handle(c, ARG(0))->h); RET(0); }
+/* (the save's flush is an fdatasync on Linux, FlushFileBuffers on Windows: tens of ms or more on a busy disk, no core
+   held meanwhile) */
+HLE(_ZN2nn2fs9FlushFileENS0_10FileHandleE) {
+    Handle *fh = get_handle(c, ARG(0));
+    const int away = hos_vcore_away();
+    FlushFileBuffers(fh->h);
+    if (away) hos_vcore_back();
+    RET(0);
+}
 HLE(_ZN2nn2fs9CloseFileENS0_10FileHandleE) {
     Handle *fh = get_handle(c, ARG(0));
     CloseHandle(fh->h);
+    if (fh->writable) __atomic_sub_fetch(&writes_open, 1, __ATOMIC_RELAXED);
     free_handle(ARG(0));
     free(fh);
 }
@@ -620,8 +767,12 @@ HLE(_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci) {
     G64(ARG(0)) = new_handle(dh);
     RET(0);
 }
+/* (hookshot) A directory's listing is read, counted and closed under one lock: a CloseDirectory on another guest thread freed
+   the handle (and its find handle) while a ReadDirectory or GetDirectoryEntryCount still walked it */
+static SRWLOCK dir_lock = SRWLOCK_INIT;
 /* ReadDirectory(long* count, DirectoryEntry* entries, DirectoryHandle, long max) */
 HLE(_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl) {
+    AcquireSRWLockExclusive(&dir_lock);
     Handle *dh = get_handle(c, ARG(2));
     int64_t n = 0, max = (int64_t)ARG(3);
     while (n < max && !dh->find_done) {
@@ -648,11 +799,13 @@ HLE(_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandleEl) {
         G64(e + 0x308) = x->size;
         n++;
     }
+    ReleaseSRWLockExclusive(&dir_lock);
     G64(ARG(0)) = (uint64_t)n;
     RET(0);
 }
 /* (hookshot) GetDirectoryEntryCount(long* count, DirectoryHandle): every entry the open mode lists, read or not */
 HLE(_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE) {
+    AcquireSRWLockExclusive(&dir_lock);
     Handle *dh = get_handle(c, ARG(1));
     int64_t n = 0;
     WIN32_FIND_DATAA fd;
@@ -668,13 +821,16 @@ HLE(_ZN2nn2fs22GetDirectoryEntryCountEPlNS0_15DirectoryHandleE) {
     }
     for (int i = 0; i < dh->nextras; i++)
         n += (dh->extras[i].is_dir && (dh->is_dir & 1)) || (!dh->extras[i].is_dir && (dh->is_dir & 2));
+    ReleaseSRWLockExclusive(&dir_lock);
     G64(ARG(0)) = (uint64_t)n;
     RET(0);
 }
 HLE(_ZN2nn2fs14CloseDirectoryENS0_15DirectoryHandleE) {
+    AcquireSRWLockExclusive(&dir_lock);
     Handle *dh = get_handle(c, ARG(0));
     if (dh->find != INVALID_HANDLE_VALUE) FindClose(dh->find);
     free_handle(ARG(0));
+    ReleaseSRWLockExclusive(&dir_lock);
     free(dh->extras);
     free(dh);
 }

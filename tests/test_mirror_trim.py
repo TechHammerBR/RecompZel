@@ -2,7 +2,7 @@
 them: a mirrored import mostly outside every game pool for long enough is retired and its live parts imported again with a
 mirror wanted at once, each taking its part of the old mirror; nothing is trimmed unless the new mirrors fit the budget beside
 the old one and the mirrors already wanted; the old mirror waits to be inherited until every live part has its own (a part
-refused its mirror keeps it: trims_settle, compiled and run here); RX_VK_MIRROR_TRIM=0 (off, false, no) turns it off.
+refused its mirror keeps it: trims_settle, compiled and run here).
 
 python -I -B tests/test_mirror_trim.py [--cxx g++]
 """
@@ -46,7 +46,7 @@ def check_source():
     need("vk_memory.cpp", mem, ['#include "mirror_trim.h"'])
     trim = block(mem, "bool mirrors_trim()")
     need("vk_memory.cpp: mirrors_trim()", trim,
-         ['getenv("RX_VK_MIRROR_TRIM")', "return !v || !env_value_off(v);", "mirror_trim::pressed(used, allowed)",
+         ["mirror_trim::pressed(used, allowed)",
           "mirror_trim::live(p.lo, p.hi, chunk, mirror_trim::kJoin, guest_pools)", "mirror_trim::worth(p.hi - p.lo, parts)",
           "mirror_trim::counted(p.trims, mirror_epoch - p.trim_epoch)", "mirror_trim::wait(trims)",
           "mirror_trim::counted(pick->trims, mirror_epoch - pick->trim_epoch) + 1",
@@ -55,8 +55,6 @@ def check_source():
           # (room for the new mirrors beside the old one, which stays until the GPU is done with it)
           "for (const Pool* w : mirror_wanted) wanted += w->hi - w->lo;",
           "if (mirror_bytes + wanted + kept > mirror_budget() || (tight_rule && used > allowed / 100 * 90)) return false;"])
-    if "atoi(" in trim:
-        raise SystemExit("vk_memory.cpp: mirrors_trim() reads RX_VK_MIRROR_TRIM with atoi again: on/true/yes would turn it off")
     # (every live part is imported before anything is retired: a failed import leaves the old one as it was; then the old one is
     # retired, marked, and each part gets its flags, its page table entries and a mirror wanted now)
     order("vk_memory.cpp: mirrors_trim()", trim,

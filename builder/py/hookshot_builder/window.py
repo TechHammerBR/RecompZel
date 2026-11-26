@@ -31,13 +31,23 @@ WITHOUT_SHADERS = {"download": (0, 0.04), "read": (0.04, 0.04), "lift": (0.08, 0
 WITH_SHADERS = {"download": (0, 0.04), "read": (0.04, 0.04), "lift": (0.08, 0.14), "compile": (0.22, 0.68), "finish": (0.90, 0.02),
                 "shaders": (0.92, 0.08)}
 SHADERS_LATER = "--no-prepare-shaders"
-NOT_PREPARED = re.compile(r"^the shaders were not prepared now \((.*)\): ")   # (make_game.py NOT_PREPARED)
+NOT_PREPARED = re.compile(r"^the shaders were not prepared now \((.*)\): (.*)$")   # (make_game.py NOT_PREPARED)
+FIRST_START = "the game prepares them at its first start"   # (make_game.py FIRST_START)
+
+
+def shaders_note(m):
+    """The shaders row's line for make_game's not-prepared line: left to the first start and why, or (the GPU driver stopped
+    responding) why and what happens instead"""
+    why, then = m.groups()
+    return ("Left to the game's first start: %s" % why if then == FIRST_START
+            else "Not prepared: %s. %s" % (why, then[:1].upper() + then[1:]))
 
 DLSS_LICENSE = (
     "NVIDIA DLSS is NVIDIA's, not Hookshot's. With it ticked, the build downloads NVIDIA's DLSS SDK (release v310.9.16) from "
     "github.com/NVIDIA/DLSS, under NVIDIA's own license, the NVIDIA RTX SDKs license:\n\n"
     "https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt\n\n"
-    "Its files stay on this PC (in the builder's ngx-sdk folder, and nvngx_dlss.dll in the game folder's ngx folder). "
+    "Its files stay on this PC (in the builder's ngx-sdk folder, and nvngx_dlss.dll and nvngx_dlssg.dll in the game "
+    "folder's ngx folder). "
     "Hookshot never includes or shares them: never share a game folder built with them.\n\nDo you accept NVIDIA's license?")
 
 
@@ -553,6 +563,9 @@ class Window(QWidget):
         self.chosen_nup = self.romfs = self.exefs = None
         self.folders_note = None
         self.updating = self.checking = self.source_picked = False
+        # (the first page has its game files and saved choices: a start with --update or --launch goes past that. back)
+        self.files_ready = False
+        self.kept_folder = ""
         self.compiled = 0.0
         self.files_done = self.files_of = 0
         self.files_changed, self.files_compiled = -1, 0
@@ -899,7 +912,10 @@ class Window(QWidget):
         import threading
 
         def run():
-            found = core.find_dumps()
+            try:
+                found = core.find_dumps()
+            except Exception:   # (the page goes on without them: the file can still be picked or dropped)
+                found = []
             self.post(self.found_files, found)
         threading.Thread(target=run, daemon=True).start()
 
@@ -912,7 +928,10 @@ class Window(QWidget):
 
     def found_go(self):
         self.apply_settings()
+        if self.kept_folder:   # (back from an update that stopped: its folder, the saved one is the last build's)
+            self.out_path.setText(self.kept_folder)
         self.fill_dumps()
+        self.files_ready = True
         self.show_main()
         if os.environ.get("HOOKSHOT_UI_PREVIEW"):
             self.preview(os.environ["HOOKSHOT_UI_PREVIEW"])
@@ -1058,6 +1077,7 @@ class Window(QWidget):
         if s.get("Out"):
             self.out_path.setText(s["Out"])
         self.dlss_tick.setChecked(bool(s.get("Dlss")))
+        self.dlss_license = bool(s.get("DlssLicense"))
         self.prepare_tick.setChecked(not s.get("PrepareLater"))
         r, x, n = s.get("Romfs"), s.get("Exefs"), s.get("Nup")
         if r and x and os.path.isdir(r) and os.path.isfile(os.path.join(x, "main")):
@@ -1072,6 +1092,7 @@ class Window(QWidget):
     def save_settings(self):
         core.save_settings({"Out": self.out_path.text(), "Nup": None if self.romfs else self.chosen_nup, "Romfs": self.romfs,
                             "Exefs": self.exefs, "Dlss": self.dlss_tick.isChecked(),
+                            "DlssLicense": getattr(self, "dlss_license", False) or bool(core.load_settings().get("DlssLicense")),
                             "PrepareLater": not self.prepare_tick.isChecked()})
 
     def preview(self, what):
@@ -1116,7 +1137,7 @@ class Window(QWidget):
             self.folders_label = l
             self.dump_list.addWidget(l)
         if not self.dumps:
-            l = note("No .nup files in Downloads, Desktop, Documents or the top folders of your drives. Browse to yours, or drop it on "
+            l = note("No .nup or .nx files in Downloads, Desktop, Documents or the top folders of your drives. Browse to yours, or drop it on "
                      "this window.")
             l.setContentsMargins(16, 14, 16, 14)
             self.dump_list.addWidget(l)
@@ -1239,13 +1260,13 @@ class Window(QWidget):
     def dropEvent(self, e):
         for u in e.mimeData().urls():
             p = u.toLocalFile()
-            if p.lower().endswith(".nup") and os.path.isfile(p):
+            if p.lower().endswith(core.GAME_FILES) and os.path.isfile(p):
                 self.add_dump(p, "Dropped")
             elif os.path.isdir(os.path.join(p, "romfs")) and os.path.isdir(os.path.join(p, "exefs")):
                 self.use_folders(os.path.join(p, "romfs"), os.path.join(p, "exefs"))
 
     def browse_nup(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Choose your game file", "", "Game file (*.nup)")
+        f, _ = QFileDialog.getOpenFileName(self, "Choose your game file", "", "Game file (*.nup *.nx)")
         if f:
             self.add_dump(os.path.normpath(f), "Chosen")
 
@@ -1350,6 +1371,8 @@ class Window(QWidget):
             b = QMessageBox.question(self, "NVIDIA DLSS", DLSS_LICENSE, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if b != QMessageBox.StandardButton.Yes:
                 self.dlss_tick.setChecked(False)
+            else:
+                self.dlss_license = True   # (kept in the settings, DlssLicense: an update keeps DLSS by it, not the SDK's files)
         self.save_settings()   # (kept at once: ticked and closed, it is still ticked next time)
 
     def make_rows(self, update, shaders=False):
@@ -1400,6 +1423,7 @@ class Window(QWidget):
         self.files_changed, self.files_compiled, self.compile_eta = -1, 0, -1.0
         self.this_compile, self.previous_total = 0, -1
         self.shaders_began, self.shaders_later, self.built_in = False, None, None
+        self.shader0, self.shader_fraction, self.shader_said, self.shader_said_at = None, 0.0, -1.0, 0.0
         self.show_page(self.build_page)
         self.cancel_button.show()
         self.set_progress(self.weight["read"][0] if self.updating else 0)
@@ -1429,6 +1453,7 @@ class Window(QWidget):
                 self.compile0 = time.monotonic()
             if sid == "shaders":
                 self.shaders_began = True
+                self.shader0 = time.monotonic()   # (its countdown: core.shader_left)
             if sid in self.weight:
                 self.set_progress(self.weight[sid][0])
         elif line.startswith("@@progress "):
@@ -1439,6 +1464,8 @@ class Window(QWidget):
             if self.current in self.weight:
                 if self.current == "compile":
                     self.compiled = f
+                if self.current == "shaders":
+                    self.shader_fraction = f
                 w = self.weight[self.current]
                 self.set_progress(w[0] + w[1] * max(0.0, min(1.0, f)))
             return
@@ -1448,7 +1475,9 @@ class Window(QWidget):
         elif line.startswith("@@done "):
             self.finished = line[7:]
         elif NOT_PREPARED.match(line):
-            self.shaders_later = NOT_PREPARED.match(line).group(1)
+            self.shaders_later = shaders_note(NOT_PREPARED.match(line))
+        elif core.pipelines_left_in(line) >= 0:
+            self.shader_said, self.shader_said_at = core.pipelines_left_in(line), time.monotonic()
         elif self.FILES_LINE.match(line):
             self.files_of = int(self.FILES_LINE.match(line).group(1))
         elif self.FILE_LINE.match(line):
@@ -1508,14 +1537,22 @@ class Window(QWidget):
                     time_left(el / self.compiled * (1 - self.compiled) + 60) if self.compiled > 0.03 else "Estimating…")
             self.build_note.setText("Compiling %s · %s%s" % (clock(el), left, tail))
             return
-        self.build_note.setText(("Working…" if self.updating else "Usually about 45 minutes") + tail)
+        if self.current == "shaders" and getattr(self, "shader0", None):
+            # (the shaders' own countdown: on a slow PC this step alone can take an hour, and the line said "about 45 minutes")
+            now = time.monotonic()
+            s = core.shader_left(self.shader_said, now - self.shader_said_at if self.shader_said >= 0 else -1,
+                                 self.shader_fraction, now - self.shader0)
+            self.build_note.setText("Preparing shaders %s · %s%s" % (clock(now - self.shader0),
+                                                                     time_left(s) if s >= 0 else "Estimating…", tail))
+            return
+        self.build_note.setText(("Working…" if self.updating else "About 45 minutes on a fast PC, longer on a slower one") + tail)
 
     def ended(self, failure):
         self.clock.stop()
         self.runner = None
         if self.finished:
             for sid, r in self.rows.items():
-                why = None if sid != "shaders" else ("Left to the game's first start: %s" % self.shaders_later if self.shaders_later else
+                why = None if sid != "shaders" else (self.shaders_later if self.shaders_later else
                                                     None if self.shaders_began else "Left to the game's first start")
                 if why:
                     r.skipped()
@@ -1526,8 +1563,7 @@ class Window(QWidget):
             self.show_ready()
             return
         if failure == "cancelled":
-            self.set_step(0)
-            self.show_page(self.files_page)
+            self.back()
             return
         if self.current in self.rows:
             self.rows[self.current].stopped()
@@ -1679,8 +1715,22 @@ class Window(QWidget):
         self.copy_report.setText("Copied")
 
     def back(self):
+        """The first page again, from a build or an update that stopped or was cancelled. refresh_mode leaves the button alone
+        while an update runs, and one that stopped left it so for good: the page kept the button it had before. After a start
+        with --update that was a grey "Build the game" over a page with no game files and no saved choices, and the Update
+        button only came back when the app was closed and opened again (#2129). The update is over here: the page is set up if
+        it never was, for the update's folder, and its button says what that needs"""
         self.set_step(0)
         self.show_page(self.files_page)
+        if not self.updating:
+            return
+        self.updating = False
+        if self.files_ready:
+            self.refresh()
+        else:
+            self.files_ready = True
+            self.kept_folder = self.out_path.text()
+            self.find_files()
 
     def repair(self):
         """The build tools checked against their checksums and downloaded again, after this window closes"""
@@ -1734,7 +1784,11 @@ class Window(QWidget):
         if "download" in self.rows:
             self.rows["download"].done()
             self.rows["download"].small_text("Build tools checked")
-        dlss = os.path.isfile(os.path.join(folder, "ngx", "nvngx_dlss.dll")) and os.path.isfile(os.path.join(core.ngx_sdk(), "LICENSE.txt"))
+        # (a folder built with DLSS keeps it: NVIDIA's license accepted, as the settings record it (DlssLicense, the WPF builder's
+        # too), or for one accepted before the record, the SDK's LICENSE.txt. The SDK's files alone were the record, and with them
+        # gone (deleted, a new builder folder) the update built without DLSS and its runtime went)
+        dlss = os.path.isfile(os.path.join(folder, "ngx", "nvngx_dlss.dll")) and (
+            bool(core.load_settings().get("DlssLicense")) or os.path.isfile(os.path.join(core.ngx_sdk(), "LICENSE.txt")))
         self.run(tools, ["--update", folder] + ([] if self.prepare_now else [SHADERS_LATER]), keep_rows=True, dlss=dlss)
 
     def quit_app(self):

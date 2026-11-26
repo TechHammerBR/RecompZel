@@ -19,6 +19,10 @@ WANT = {
     "licenses/zstd/PROVENANCE.md": "third_party/zstd/PROVENANCE.md",
     "licenses/libertinus/OFL.txt": "third_party/fonts/libertinus/OFL.txt",
     "licenses/libertinus/PROVENANCE.md": "third_party/fonts/PROVENANCE.md",
+    "licenses/fidelityfx/LICENSE.md": "third_party/fidelityfx/LICENSE.md",
+    "licenses/fidelityfx/PROVENANCE.md": "third_party/fidelityfx/PROVENANCE.md",
+    "licenses/fidelityfx-sdk/LICENSE.txt": "third_party/fidelityfx-sdk/LICENSE.txt",
+    "licenses/fidelityfx-sdk/PROVENANCE.md": "third_party/fidelityfx-sdk/PROVENANCE.md",
 }
 
 
@@ -49,6 +53,22 @@ class AppImageLicences(unittest.TestCase):
         for part, licence in (("imgui", "licenses/imgui/"), ("zstd", "licenses/zstd/"), ("fonts", "licenses/libertinus/")):
             if '"third_party", "%s"' % part in build:
                 self.assertTrue(any(k.startswith(licence) for k in WANT), part)
+        # (and AMD's FidelityFX SDK: its shaders are compiled into the SPIR-V headers under gpu/vk/shaders, which the image
+        # carries and every player's hookshot_vk.so is built with (scripts/fsr3_shaders.py: FSR 3.1 and its frame generation))
+        compiled_in = (ROOT / "scripts/fsr3_shaders.py").read_text(encoding="utf-8")
+        script = (ROOT / "scripts/linux/appimage.sh").read_text(encoding="utf-8")
+        if "third_party/fidelityfx-sdk" in compiled_in and "cp -a gpu/vk" in script:
+            self.assertTrue(any(k.startswith("licenses/fidelityfx-sdk/") for k in WANT), "fidelityfx-sdk")
+
+    def test_fsr_headers_carried(self):
+        # (AMD FSR 4 on Linux: the back end compiled in the player's build reads AMD's FSR API headers from the image, where
+        # nx2/build.py looks for them, and stops with a sentence when an older image has none)
+        script = (ROOT / "scripts/linux/appimage.sh").read_text(encoding="utf-8")
+        build = (ROOT / "nx2/build.py").read_text(encoding="utf-8")
+        self.assertIn('cp -a third_party/fidelityfx "$T/third_party/"', script)
+        self.assertIn('FSR_HEADERS = os.path.join(kit.HERE, "..", "third_party", "fidelityfx")', build)
+        self.assertNotIn("HOOKSHOT_VK_PREBUILT", build)   # (every build compiles the back end: no prebuilt one to fall back on)
+        self.assertTrue((ROOT / "third_party/fidelityfx/api/include/ffx_api.h").is_file())
 
 
 if __name__ == "__main__":

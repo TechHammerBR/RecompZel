@@ -18,8 +18,18 @@ struct PipeNote {
     uint32_t color_format[8];
     NvnState s;
 };
+/// (vk_predict.cpp) What the prediction left out: pipelines whose vertex layout or targets have types the program was not made for
+/// (no draw asks for them), and the program variants left with none; and the notes whose own types do not fit (0: else the rule
+/// that leaves them out is wrong)
+struct PredictCounts {
+    size_t vertex_types = 0, output_types = 0, variants_unfit = 0, notes_unfit = 0;
+    size_t refit = 0;   // (program variants whose signature fallback took a less common class, the most common not fitting)
+};
 /// (vk_predict.cpp) The pipelines the notes predict for the kept graphics program variants no note names (key 0: not made yet)
-std::vector<std::unique_ptr<PipeNote>> predict_pipelines(const std::vector<std::unique_ptr<PipeNote>>& notes, size_t* programs);
+std::vector<std::unique_ptr<PipeNote>> predict_pipelines(const std::vector<std::unique_ptr<PipeNote>>& notes, size_t* programs,
+                                                         PredictCounts* left_out = nullptr);
+/// The colour output types a note's targets give a program (Shader::AttributeType, as a draw's: color_types_of)
+void note_color_types(const PipeNote& n, uint8_t types[8]);
 }
 
 #include <functional>
@@ -42,6 +52,9 @@ struct DrawArgs {
     bool mesh = false;
     int groups[3] = {0, 1, 1};
     uint32_t first_task = 0;   // (hookshot: a direct mesh draw's first task workgroup, NVN's DrawMeshTasks(first, count))
+    // (hookshot) an occlusion query around the draw, inside its pass (vk_replay.cpp, RX_VK_OCC_QUERIES); none when null
+    VkQueryPool occ_pool = VK_NULL_HANDLE;
+    uint32_t occ_query = 0;
 };
 
 /// A recording starts (its slot's descriptor pool and upload stream are reset); value: the timeline value it signals
@@ -53,6 +66,9 @@ bool stream_holds(const uint8_t* base, uint64_t at, uint64_t n);
 /// The open render pass ends (before transfers, clears, barriers and the recording's end)
 void end_pass(VkCommandBuffer cmd);
 void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d);
+/// (hookshot) the occlusion queries draw() left unbegun since the last call, by why: the draw returned before drawing, its
+/// vertex input was not all bound, a mesh fallback's task batches (vk_replay.cpp's RX_VK_OCC_LOG line)
+void occ_draw_counts(uint64_t out[3]);
 /// Clears of the bound targets, inside the open pass (NOP_CLEAR_COLOR, NOP_CLEAR_DS)
 void clear_color_target(VkCommandBuffer cmd, NvnState& s, int index, const float rgba[4], uint32_t mask);
 void clear_depth_stencil(VkCommandBuffer cmd, NvnState& s, float depth, bool depth_mask, uint32_t stencil,
@@ -65,33 +81,74 @@ void dry_marks_begin();   // (at the start of each dry pass: the last targets it
 void draw_stats(int64_t* draws, int64_t* skipped, int64_t* dispatches, int64_t* pipelines);
 void draw_stats2(int64_t* passes, int64_t* mesh, double* pipeline_ms);
 void draw_stats3(int64_t* pending_skips, int64_t* waits, double* wait_ms);
+double draw_shader_wait_ms();   // (the part of draw_stats3's wait_ms spent on programs still being translated, not pipelines)
+int64_t draw_pipe_fresh_skips();   // draws left out for a pipeline in the building, into targets made this frame
 /// (hookshot) pipelines linked from stage libraries in the draw, and the libraries asked of the driver for them: had, and cold;
 /// of the cold, those a worker has built since, and the workers' time in them. False: no stage libraries (RX_VK_GPL)
 bool draw_stats4(int64_t* links, double* link_ms, int64_t* lib_hits, int64_t* lib_cold, int64_t* lib_built, double* lib_build_ms);
 void draw_skip_report(double frames);   // (hookshot) skips by the line that made them
 int64_t draw_desc_reused();
-/// (RX_VK_DESC_SLOTGEN) Of those, the reuses the global registrations' generation check would have rebuilt for
+/// (Descriptor reuse) Of those, the reuses the global registrations' generation check would have rebuilt for
 int64_t draw_slotgen_saves();
 /// RX_VK_FLASH_RECORD=<key>,...: the last frames' draws of those programs, written to the log for frames around a flash
 void draw_records_log(uint64_t frame_lo, uint64_t frame_hi);
 void pass_traces_log(uint64_t frame_lo, uint64_t frame_hi);   // (RX_VK_PASS_TRACE=1)
+/// (hookshot) The latest Linux memory-pressure shortfall (bytes) and sample number from texture_frame() without holding pools_mu
+uint64_t linux_pressure_shortfall(uint64_t* seq = nullptr);
 /// Changes with every uniform update the stream makes (vk_replay.cpp): descriptors bound before may be stale
 uint64_t ub_generation();
+/// (HL_UBO_MEMO) the update list as this thread sees it: its epoch (returned) and this thread's place in it. Whether an update overlaps
+/// a range is a function of these two, and of the range
+uint64_t ub_view(uint64_t* limit);
 /// A background thread (shader translation, pipeline builds) reads guest memory from the captures only, never the stream's
 /// uniform updates: that list is the replay's, which grows and is pruned while such a thread runs
 void ub_thread_off();
 /// The pipeline cache to disk (force: whatever was built since the last save; else only after a few new ones)
 void pipeline_cache_save(bool force);
+void shader_key_commit();   // (RX_VK_SHADER_KEY: what the driver built so far goes to hookshot_compiled.bin)
+/// (hookshot) the serial builds' thread between two builds: a save put off for builds under way, run there (vk_jobs.cpp)
+void pipeline_cache_between_builds();
+/// (hookshot) the serial builds' thread between two builds: a save put off for builds under way, run there (vk_jobs.cpp)
+void pipeline_cache_between_builds();
+/// (hookshot) the Debug tab's Descriptor reuse and Sampler cache rows as the menu has them: they apply in play
+void menu_debug_rows(int descriptor_reuse, int sampler_cache);
+void pipeline_cache_save_play();   // what play made since the last save, into a play file now
 // (the window closed: what play made since the last save, a few ms; the start's cache is not written there, as before)
 void pipeline_cache_close();
 void pipeline_cache_play();   // (the start-up done: what play makes goes into play files of its own)
+/// (hookshot) hookshot_pipeline_states.bin's bytes now, no record half written (the menu's Save my pipeline list); *present: it is there
+std::string state_list_snapshot(bool* present);
 
 /// The stream's uniform updates (UPDATE_UB, vk_replay.cpp) that overlap [addr, addr + n) and may not be in guest
-/// memory yet when the GPU reads it: a copy of the range with them applied, at the offset alloc returns in the
-/// recording's stream (mapped at base), or UINT64_MAX when none overlaps
-uint64_t ub_overlay(uint64_t addr, uint64_t n, uint8_t* base, const std::function<uint64_t(uint64_t)>& alloc);
+/// memory yet when the GPU reads it: a copy of the range with them applied, at the offset alloc(n, align) returns in
+/// the recording's stream (mapped at base), or UINT64_MAX when none overlaps
+uint64_t ub_overlay(uint64_t addr, uint64_t n, uint8_t* base, uint64_t (*alloc)(uint64_t n, uint64_t align), uint64_t align);
+/// (HL_UBO_INLINE) those updates copied onto p, the bytes an inline bind carried for [addr, addr + n)
+void ub_overlay_onto(uint64_t addr, uint64_t n, uint8_t* p);
 /// Guest memory as the stream's place sees it: as submitted, the stream's uniform updates before it over it
 bool ub_read(uint64_t addr, void* dst, uint64_t n);
 int64_t draw_dummy_textures();   // (Triforce: texture bindings that sampled the dummy so far: RX_VK_FRAME_TRACE; 0 here)
+
+/// (hookshot) vkCreate* that a driver's compiler can fault inside. A fault leaves that one out (result -77) instead of ending
+/// the process. On Windows, Intel's compiler is entered by one thread (IntelDriverGate, vk_internal.h): the caller holds it. The
+/// calls themselves live in vk_draw.cpp's unnamed namespace; these are the ones the other files link to
+VkResult extern_guarded_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl);
+VkResult extern_guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl);
+VkResult extern_guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShaderModule* m);
+
+/// (hookshot) vkCreate* that a driver's compiler can fault inside. A fault leaves that one out (result -77) instead of
+/// ending the process. On Windows, Intel's compiler is entered by one thread (IntelDriverGate). The calls themselves
+/// live in vk_draw.cpp's unnamed namespace; these are the ones the other files link to.
+VkResult extern_guarded_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl);
+VkResult extern_guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl);
+VkResult extern_guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShaderModule* m);
+/// (hookshot, vk_texture.cpp) One of the renderer's own compute pipelines (the texture pipelines; vk_draw.cpp's upscale and mask
+/// helpers): through the pipeline cache, and without the optimizer where the driver refuses it. The caller holds no
+/// IntelDriverGate
+VkResult texture_compute_pipeline(const VkComputePipelineCreateInfo& ci, VkPipeline& out);
+/// (hookshot) The programs the driver faulted on (driver_faults.h): asked before a program's modules are made, and noted
+/// when making one faulted (vk_shader.cpp make_module)
+bool driver_faulted_program(uint64_t key);
+void driver_faulted_module(uint64_t key);
 
 } // namespace mkwvk

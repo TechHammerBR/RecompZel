@@ -1,7 +1,7 @@
 """The pipeline cache's files are dropped when they were made for another translator (gpu/vk/pcache_stamp.h; no game/GPU
 required): the header compiled and run against a temporary folder, and a check that vk_draw.cpp's pcache_init asks it with
-program_cache_stamp before the cache file is read, keeps RX_VK_PCACHE_LOAD=0 as it was, and has RX_VK_PCACHE_STAMP=0 to keep
-the files whatever made them.
+program_cache_stamp before the cache file is read, drops them whether or not this start reads the file (RX_VK_PCACHE_LOAD=0,
+or pcache_load.h's rule).
 
 python -I -B tests/test_pcache_stamp.py [--cxx g++]
 """
@@ -30,10 +30,13 @@ def check_source():
     if '#include "pcache_stamp.h"' not in draw:
         raise SystemExit("vk_draw.cpp does not include pcache_stamp.h")
     drop = block(draw, "bool pcache_drop_stale()")
-    for needle in ('getenv("RX_VK_PCACHE_STAMP")', "if (pcache_load_off() || !by_stamp) return false;",
-                   "pcache_stamp::check(dir, program_cache_stamp())", "return gone.files > 0;"):
+    for needle in ("pcache_stamp::check(dir, program_cache_stamp())", "return gone.files > 0;"):
         if needle not in drop:
             raise SystemExit("vk_draw.cpp: pcache_drop_stale() no longer has: " + needle)
+    # (the files of another translator go whether or not this start reads the file: kept unread, they were 1.2 GB of
+    # disk after every update on the PCs that don't read it, and a start that reads it would drop them anyway)
+    if "pcache_load_off()" in drop:
+        raise SystemExit("vk_draw.cpp: pcache_drop_stale() keeps another translator's files when the file is not read")
     init = block(draw, "void pcache_init()")
     # (the stale files go before anything reads them: the main file here, the play files in play_files_merge)
     if not init.index("pcache_drop_stale();") < init.index("pcache_file_read(pcache_path)") < init.index("play_files_merge()"):
@@ -44,6 +47,15 @@ def check_source():
     if reset not in prep or not prep.index("prepare_check(") < prep.index(reset) < prep.index("prepared_for.warmed == warmed"):
         raise SystemExit("vk_draw.cpp: prepare_run() keeps the warm record when the pipeline cache's files were dropped "
                          "(the stage libraries went with them and were not made again)")
+    # (a file another driver made, refused by pcache_file_read, empties the cache as a dropped one does: the noted pipelines'
+    # marker goes, and create mode warms again before the game rather than compile them in play, after a driver update)
+    if not init.index("pcache_file_read(pcache_path)") < init.index("pcache_file_rejected = true;") < init.index("vkCreatePipelineCache"):
+        raise SystemExit("vk_draw.cpp: pcache_init() does not note a cache file it refused (another driver's) before it makes the cache")
+    run = block(draw, "void precompile_run(")
+    drop = "if (pcache_drop_stale() || pcache_file_rejected) remove(precompile_built_path().c_str());"
+    if drop not in run or not run.index("pcache_init();") < run.index(drop) < run.index("const bool warms = !precompile_covers_notes();") < run.index("if (warms) precompile_warm("):
+        raise SystemExit("vk_draw.cpp: precompile_run() judges the pipelines' marker before the cache's file is read, or keeps it "
+                         "when another driver's file was refused (the noted pipelines compile in play after a driver update)")
 
 
 def main():

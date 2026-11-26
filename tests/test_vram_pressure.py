@@ -1,5 +1,5 @@
 """Compile and run the write-back shadows' rules near the VRAM limit (gpu/vk/vram_pressure.h; no game/GPU required), and check
-that vk_memory.cpp still judges the shadows by what is really allocated, with the switch back to the driver's count alone."""
+that vk_memory.cpp still judges the shadows by what is really allocated."""
 import argparse
 import subprocess
 import tempfile
@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def check_source():
     src = (ROOT / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
-    for needle in ('#include "vram_pressure.h"', 'getenv("RX_VK_SHADOW_RAW")',
+    for needle in ('#include "vram_pressure.h"',
                    "vram_pressure::shadow_fits(n, used, allowed, block_free)",
                    "vram_pressure::shadows_go(used, allowed, block_free)"):
         if needle not in src:

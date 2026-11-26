@@ -22,6 +22,9 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cc", "gcc"]
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/hookshot_env.h)
+ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "hookshot_env.h")
 sys.path.insert(0, str(ROOT / "nx2"))
 import oot_patches  # noqa: E402
 
@@ -58,6 +61,10 @@ typedef int SRWLOCK;
 static void AcquireSRWLockExclusive(SRWLOCK *l) { CHECK(!*l); *l = 1; }
 static void ReleaseSRWLockExclusive(SRWLOCK *l) { CHECK(*l); *l = 0; }
 volatile uint32_t hos_frame_seconds_bits;
+/* (the extracted hos_movie_frames stamps the movie's last update with the host clock) */
+static volatile uint64_t movie_seen_at;   /* (the host's: the extracted code reads and writes it) */
+static int64_t clock_ns = 1000000000LL;
+static int64_t hos_now_ns(void) { return clock_ns; }
 @HOST@
 /* (the lifted update with the patch, on a small guest: the count at +760 of the player) */
 typedef struct { uint64_t x[31]; } Ctx;
@@ -92,6 +99,9 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 600; i++) n = update(0);
     CHECK(n == 600);
     CHECK(hos_movie_frames(0x5000) == 1 && hos_movie_frames(0x5000) == 1);
+    /* (the stamp happens before the frame time is read, so a movie player updating at the console's cap is
+       seen by the pacing even though the count keeps the game's own step) */
+    CHECK(movie_seen_at == (uint64_t)clock_ns);
     /* 120 fps: half a 60th an update, a whole one every second update */
     seconds(1.0 / 120);
     before = n;
@@ -113,6 +123,11 @@ int main(int argc, char **argv) {
         n = update(0);
         CHECK(n - was == 1 || n - was == 2);
     }
+    CHECK(within(n - before, 600));
+    /* 30 fps: cues advance 60 movie frames per second, with the picture and sound. */
+    seconds(1.0 / 30);
+    before = n;
+    for (int i = 0; i < 300; i++) n = update(0);
     CHECK(within(n - before, 600));
     /* two movies at once: each its own count (one carry for both would give each half) */
     seconds(1.0 / 120);
@@ -216,7 +231,7 @@ def main():
         c = Path(tmp) / "fixture.c"
         exe = Path(tmp) / "fixture.exe"
         c.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
+        subprocess.run([a.cc, "-std=c11", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror", str(c), "-o", str(exe)], check=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith("HOS_")}
         subprocess.run([str(exe)], env=env, check=True)
         subprocess.run([str(exe)], env=dict(env, HOS_FPS_MOVIE="1"), check=True)   # (read by its value: 1 is on)
@@ -227,7 +242,7 @@ def main():
         plain = Path(tmp) / "plain.c"
         plain.write_text(FIXTURE.replace("@HOST@", block(vi, HOST_ANCHOR)).replace("@LIFTED@", oot_patches.MOVIE_OLD + STORE),
                          encoding="utf-8")
-        subprocess.run([a.cc, "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", str(plain), "-o", str(exe)], check=True)
+        subprocess.run([a.cc, "-std=c11", "-include", ENV_ON_H, "-Wall", "-Wextra", "-Werror", "-Wno-unused-function", str(plain), "-o", str(exe)], check=True)
         r = subprocess.run([str(exe)], env=env, capture_output=True, text=True)
         check(r.returncode != 0 and "FAIL:" in r.stderr, "the unpatched count passes the checks: they prove nothing")
 

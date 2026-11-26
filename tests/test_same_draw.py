@@ -1,11 +1,13 @@
 """A draw keeps the last program and pipeline when the material has not changed.
 
-python -I -B tests/test_same_draw.py [--cxx g++]
+python -I -B tests/test_same_draw.py [--cxx g++] [--headers <Vulkan headers>]
 """
 import argparse
 import subprocess
 import tempfile
 from pathlib import Path
+
+RUN_ALL_ARGS = ["--headers", "{vulkan_headers}"]   # (draw_key.h includes Vulkan's, for its types)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,11 +25,18 @@ def block(text, marker):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cxx", default="g++")
+    p.add_argument("--headers", type=Path, help="the Vulkan headers, where the compiler does not find them itself")
     a = p.parse_args()
     shader = (ROOT / "gpu" / "vk" / "vk_shader.cpp").read_text(encoding="utf-8")
     draw = (ROOT / "gpu" / "vk" / "vk_draw.cpp").read_text(encoding="utf-8")
     prog = block(shader, "bool prog_same(")
-    pipe = block(draw, "bool pipe_same(")
+    # (the functions run below are draw_key.h's, which vk_draw.cpp includes: they were cut out of vk_draw.cpp by their text)
+    key = (ROOT / "gpu" / "vk" / "draw_key.h").read_text(encoding="utf-8")
+    if '#include "draw_key.h"' not in draw:
+        raise SystemExit("vk_draw.cpp does not include draw_key.h: what runs below is not what a draw runs")
+    for fn in ("bool pipe_same(",):
+        if fn in draw or fn not in key:
+            raise SystemExit("draw_key.h is not the one place that defines " + fn)
     choose = block(shader, "const Program* program_for(")
     if choose.index("prog_same(") > choose.index("picks[") :
         raise SystemExit("program_for hashes the inputs before checking the last answer")
@@ -38,8 +47,9 @@ def main():
 #include <cstdio>
 #include <cstdlib>
 #define CHECK(x) do {{ if (!(x)) {{ std::fprintf(stderr, "FAIL:%d %s\\n", __LINE__, #x); std::exit(1); }} }} while (0)
+#include "draw_key.h"
+using namespace mkwvk;
 {prog}
-{pipe}
 int main() {{
     uint32_t va[16]{{}}, vb[16]{{}};
     uint8_t ct[8]{{}}, cu[8]{{}};
@@ -63,7 +73,8 @@ int main() {{
         cpp = Path(tmp) / "fixture.cpp"
         exe = Path(tmp) / "fixture"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(cpp), "-o", str(exe)], check=True)
+        subprocess.run([a.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "gpu" / "vk"),
+                        *(["-I", str(a.headers)] if a.headers else []), str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
 
 

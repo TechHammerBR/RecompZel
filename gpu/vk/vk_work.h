@@ -8,10 +8,56 @@
 
 #include "vk_loader.h"
 #include "vk_recorder.h"   // (RX_VK_RECORDER: each macro below calls its packer, which calls the driver directly when the recorder is off)
+#include "gpu_wait_stats.h"
 
 namespace mkwvk {
 extern std::atomic<uint64_t> work_epoch;   // (vk_texture.cpp)
+// (vk_texture.cpp) Work that is not a draw (dispatches, copies, clears, updates, queries), counted by the command buffer it
+// went into: a slot of 64 by its handle (two command buffers in one slot count each other's: a barrier kept, never one left out)
+extern std::atomic<uint64_t> other_work_by_cmd[64];
+inline std::atomic<uint64_t>& other_work_slot(VkCommandBuffer c) {
+    const uintptr_t v = (uintptr_t)c;
+    return other_work_by_cmd[((v >> 4) ^ (v >> 10) ^ (v >> 16)) & 63];
+}
+extern std::atomic<uint64_t> xfer_work_by_cmd[64];   // (the same without dispatches: copies, clears, updates, queries)
+inline void note_xfer_work(VkCommandBuffer c) {
+    const uintptr_t v = (uintptr_t)c;
+    xfer_work_by_cmd[((v >> 4) ^ (v >> 10) ^ (v >> 16)) & 63].fetch_add(1, std::memory_order_relaxed);
+}
+// Every command that does or orders GPU work, and every begin of a command buffer, by the command buffer it went into
+// (a slot of 64 by its handle, as above: two command buffers in one slot count each other's, a barrier kept, never one left out).
+// full_barrier's dedupe inside a parallel replay (RX_VK_BARRIER_DEDUPE_PAR) compares this count, not work_epoch, which the
+// other recording threads move all the time
+extern std::atomic<uint64_t> all_work_by_cmd[64];
+inline std::atomic<uint64_t>& all_work_slot(VkCommandBuffer c) {
+    const uintptr_t v = (uintptr_t)c;
+    return all_work_by_cmd[((v >> 4) ^ (v >> 10) ^ (v >> 16)) & 63];
+}
+// (RX_VK_WORK_LOCAL=1, off by default) Inside a parallel replay's segment (vk_replay.cpp record_job, while par_active)
+// the five recording threads bumped work_epoch (one cache line) and all_work_by_cmd (8 slots a line) at every draw, pass edge and
+// barrier: ~2 contended lock xadd a draw. There work_seg_local is set (work_seg_begin / work_seg_end, vk_texture.cpp) and:
+// - work_epoch is not bumped. It is read only by the serial barrier dedupe (full_barrier) and RX_VK_PASS_BARRIER=game, both only
+// while par_active is false, i.e. never while a segment records; the segment's end bumps it once (work_seg_end), so a thread whose
+// last barrier came before or during the segments sees it moved and keeps its next barrier, as it would have;
+// - all_work_by_cmd is not bumped when nothing reads it: only RX_VK_BARRIER_DEDUPE_PAR and RX_VK_BARRIER_TRUST decide from it (both
+// off by default); with either on it is bumped as before (work_seg_skip_all false).
+// other_work_by_cmd / xfer_work_by_cmd (dispatches, copies, clears: ~130 a frame) are kept as they were.
+inline thread_local bool work_seg_local = false;
+inline thread_local bool work_seg_skip_all = false;
+void work_seg_begin();   // (vk_texture.cpp)
+void work_seg_end();
+inline void note_other_work(VkCommandBuffer c) {
+    other_work_slot(c).fetch_add(1, std::memory_order_relaxed);
+    if (!work_seg_skip_all) all_work_slot(c).fetch_add(1, std::memory_order_relaxed);
+    if (!work_seg_local) work_epoch.fetch_add(1, std::memory_order_relaxed);
+}
+inline void note_work_cmd(VkCommandBuffer c) {
+    if (!work_seg_skip_all) all_work_slot(c).fetch_add(1, std::memory_order_relaxed);
+    if (!work_seg_local) work_epoch.fetch_add(1, std::memory_order_relaxed);
+}
+extern std::atomic<uint64_t> foreign_work;   // (note_work's calls with no command buffer, NGX's: the dedupe by command buffer keeps the next barrier)
 inline void note_work() {
+    foreign_work.fetch_add(1, std::memory_order_relaxed);
     // (an add, not a load and a store: a thread preempted between the two would store a stale count over another thread's, which could
     // make the count equal the one a barrier was recorded at with work recorded since, and the next barrier is left out for it)
     work_epoch.fetch_add(1, std::memory_order_relaxed);
@@ -86,6 +132,7 @@ inline void note_work() {
 #define vkCmdSetCheckpointNV(...) (::mkwvk::rec::rx_vkCmdSetCheckpointNV(__VA_ARGS__))
 #define vkCmdWriteTimestamp2(...) (::mkwvk::rec::rx_vkCmdWriteTimestamp2(__VA_ARGS__))
 #define vkCmdResetQueryPool(...) (::mkwvk::rec::rx_vkCmdResetQueryPool(__VA_ARGS__))
+#define vkCmdCopyQueryPoolResults(...) (::mkwvk::note_work(), ::mkwvk::rec::rx_vkCmdCopyQueryPoolResults(__VA_ARGS__))
 
 // (RX_VK_RECORDER=defer) the calls that begin, end or reset command buffers, submit, present or wait, read back what the GPU did,
 // or let go of what recorded commands use: the thread's held packets reach the driver first (rec::boundary(): a relaxed load and
@@ -96,16 +143,16 @@ inline void note_work() {
 #define vkResetCommandPool(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkResetCommandPool), ::vkx::vkResetCommandPool(__VA_ARGS__))
 #define vkDestroyCommandPool(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkDestroyCommandPool), ::vkx::vkDestroyCommandPool(__VA_ARGS__))
 #define vkQueueSubmit2(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkQueueSubmit2), ::vkx::vkQueueSubmit2(__VA_ARGS__))
-#define vkQueueWaitIdle(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkQueueWaitIdle), ::vkx::vkQueueWaitIdle(__VA_ARGS__))
+#define vkQueueWaitIdle(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkQueueWaitIdle), ::mkwvk::gpu_wait_stats::idle(::vkx::vkQueueWaitIdle, __VA_ARGS__))
 #define vkQueueBindSparse(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkQueueBindSparse), ::vkx::vkQueueBindSparse(__VA_ARGS__))
 #define vkQueuePresentKHR(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkQueuePresentKHR), ::vkx::vkQueuePresentKHR(__VA_ARGS__))
 #define vkAcquireNextImageKHR(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkAcquireNextImageKHR), ::vkx::vkAcquireNextImageKHR(__VA_ARGS__))
-#define vkDeviceWaitIdle(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkDeviceWaitIdle), ::vkx::vkDeviceWaitIdle(__VA_ARGS__))
-#define vkWaitForFences(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkWaitForFences), ::vkx::vkWaitForFences(__VA_ARGS__))
+#define vkDeviceWaitIdle(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkDeviceWaitIdle), ::mkwvk::gpu_wait_stats::idle(::vkx::vkDeviceWaitIdle, __VA_ARGS__))
+#define vkWaitForFences(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkWaitForFences), ::mkwvk::gpu_wait_stats::fences(::vkx::vkWaitForFences, __VA_ARGS__))
 #define vkResetFences(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkResetFences), ::vkx::vkResetFences(__VA_ARGS__))
-#define vkWaitSemaphores(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkWaitSemaphores), ::vkx::vkWaitSemaphores(__VA_ARGS__))
+#define vkWaitSemaphores(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkWaitSemaphores), ::mkwvk::gpu_wait_stats::timeline(::vkx::vkWaitSemaphores, __VA_ARGS__))
 #define vkGetSemaphoreCounterValue(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkGetSemaphoreCounterValue), ::vkx::vkGetSemaphoreCounterValue(__VA_ARGS__))
-#define vkGetQueryPoolResults(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkGetQueryPoolResults), ::vkx::vkGetQueryPoolResults(__VA_ARGS__))
+#define vkGetQueryPoolResults(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkGetQueryPoolResults), ::mkwvk::gpu_wait_stats::queries(::vkx::vkGetQueryPoolResults, VK_QUERY_RESULT_WAIT_BIT, __VA_ARGS__))
 #define vkResetQueryPool(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkResetQueryPool), ::vkx::vkResetQueryPool(__VA_ARGS__))
 #define vkGetQueueCheckpointDataNV(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkGetQueueCheckpointDataNV), ::vkx::vkGetQueueCheckpointDataNV(__VA_ARGS__))
 #define vkGetDeviceFaultInfoEXT(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vkGetDeviceFaultInfoEXT), ::vkx::vkGetDeviceFaultInfoEXT(__VA_ARGS__))
@@ -132,5 +179,4 @@ inline void note_work() {
 #define vmaDestroyBuffer(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaDestroyBuffer), ::vmaDestroyBuffer(__VA_ARGS__))
 #define vmaDestroyImage(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaDestroyImage), ::vmaDestroyImage(__VA_ARGS__))
 #define vmaInvalidateAllocation(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaInvalidateAllocation), ::vmaInvalidateAllocation(__VA_ARGS__))
-// (recompzel: Triforce frees the memory of a sparse mirror's pieces and of blocks made ahead with vmaFreeMemory)
-#define vmaFreeMemory(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaFreeMemory), ::vmaFreeMemory(__VA_ARGS__))
+#define vmaFreeMemory(...) (::mkwvk::rec::boundary(::mkwvk::rec::B_vmaFreeMemory), ::vmaFreeMemory(__VA_ARGS__))   // (hookshot: a sparse mirror's blocks, vk_vma.cpp)

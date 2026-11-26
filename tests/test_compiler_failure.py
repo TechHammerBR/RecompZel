@@ -20,6 +20,10 @@ class CompilerFailureTests(unittest.TestCase):
         functions = [node for node in source.body if isinstance(node, ast.FunctionDef)
                      and node.name in ('compile_one', 'cache_put')]
         self.assertEqual(len(functions), 2)
+        constants = [node for node in source.body if isinstance(node, ast.Assign)   # (what compile_one tells a depfile key by)
+                     and any(isinstance(t, ast.Name) and t.id in ('DEPFILE_DEPS', 'DEPFILE_PENDING') for t in node.targets)]
+        self.assertEqual(len(constants), 2)
+        functions[:0] = constants
         with tempfile.TemporaryDirectory(prefix='hookshot-compiler-failure-') as temporary:
             folder = Path(temporary)
             compiler = folder / 'compiler.py'
@@ -38,7 +42,7 @@ elif mode == 'killed':
 raise SystemExit(7)
 ''', encoding='utf-8')
             env = dict(os=os, subprocess=subprocess, time=time, GATE=None, PLANNED={},
-                       OBJ_CACHE=str(folder / 'cache'), no_throttle=lambda handle: None,
+                       OBJ_CACHE=str(folder / 'cache'), no_throttle=lambda handle: None, below_normal=lambda handle: None,
                        object_key=lambda src, flags, deps: hashlib.sha1(repr((src, flags, deps)).encode()).hexdigest())
             exec(compile(ast.Module(body=functions, type_ignores=[]), str(BUILD), 'exec'), env)
             authored = folder / 'authored.c'

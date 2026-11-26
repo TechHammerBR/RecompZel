@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 
 namespace mkwvk {
@@ -14,10 +15,19 @@ namespace mkwvk {
 /// A completion flag alone does not imply success: its resource must describe the failure too.
 void jobs_push(std::function<void()> fn, bool urgent = false, const std::atomic<bool>* flag = nullptr,
                std::function<void()> on_failure = {});
-/// Queues fn for the one thread that runs such jobs one at a time, in order
-void jobs_push_serial(std::function<void()> fn, std::function<void()> on_failure = {});
-/// Waits until flag is set by a job (which calls jobs_notify after setting it)
-void jobs_wait(const std::atomic<bool>& flag);
+/// Queues fn for the one thread that runs such jobs one at a time, in order (first: ahead of the others not queued first)
+void jobs_push_serial(std::function<void()> fn, std::function<void()> on_failure = {}, bool first = false);
+/// Waits until flag is set by a job (which calls jobs_notify after setting it). Its job still queued (pushed with flag) is
+/// taken out and run on this thread first, so it runs once and never waits behind the queue: true when it ran here
+bool jobs_wait(const std::atomic<bool>& flag);
+/// Waits at most ms for flag, without running a queued job on this thread; whether it was set
+bool jobs_wait_for(const std::atomic<bool>& flag, double ms);
+/// (hookshot) Moves flag's job, still queued, to the queue's front, for the next free worker; whether it was queued
+bool jobs_hurry(const std::atomic<bool>& flag);
+/// (hookshot) Queues fn behind all other work: taken only when no other job waits (work made ahead, that nothing waits on yet)
+void jobs_push_background(std::function<void()> fn);
+/// (hookshot) Waits until flag is set, until deadline at most: whether the flag is set
+bool jobs_wait_until(const std::atomic<bool>& flag, std::chrono::steady_clock::time_point deadline);
 void jobs_notify();
 int jobs_pending();
 

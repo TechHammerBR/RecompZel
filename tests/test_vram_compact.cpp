@@ -32,24 +32,40 @@ int main() {
     CHECK(held_budget(budget, 5600 * MB, 10023 * MB, 215 * MB, allowed, 90) == budget);   // (9,808 of 9,810: at 90 that count is let be)
     CHECK(held_budget(budget, 5600 * MB, 10323 * MB, 215 * MB, allowed, 90) == 5600 * MB - (10323 - 215 - 9810) * MB);
     CHECK(held_budget(4096 * MB, 5600 * MB, 10023 * MB, 215 * MB, allowed, 85) == 4096 * MB);   // (never more than it was)
-    CHECK(held_budget(budget, 300 * MB, 10800 * MB, 0, allowed, 85) == 0);                      // (the excess is more than the textures hold)
+    CHECK(held_budget(budget, 300 * MB, 10800 * MB, 0, allowed, 85) == texture_min_floor(allowed)); // (clamped at floor)
     CHECK(held_budget(budget, 5600 * MB, 10023 * MB, 215 * MB, 0, 85) == budget);               // (no allowance known: left alone)
+    {   // past the allowance no floor holds the textures (a GTX 1060 6 GB at 6128 MB of the 5231 it allowed, 1606 MB of
+        // textures, under the 1800 MB floor of a card under 8 GB: no rule could take one while the driver paged)
+        const uint64_t a = 5231 * MB, total = 1606 * MB, big = 3584 * MB;
+        CHECK(texture_min_floor(a) == 1800 * MB);
+        CHECK(held_budget(big, total, 6128 * MB, 0, a, 80) < total);                    // (the hold's line takes some)
+        CHECK(held_budget(big, total, 6128 * MB, 0, a, 80) == total - (6128 * MB - a / 100 * 80) / 4);   // (damped, no floor)
+        CHECK(held_budget(big, total, 6128 * MB, 0, a, 80, 2600 * MB) < total);         // (the dynamic floor gives way too)
+        CHECK(count_line_floor(6128 * MB, a) == 0);                                     // (and the 97% rule's floor)
+        CHECK(floor_within(2600 * MB, 6128 * MB, a) == 0);
+        // within the allowance the floors hold as before: the working set is not ratcheted down
+        CHECK(count_line_floor(5100 * MB, a) == 1800 * MB);
+        CHECK(count_line_floor(a, a) == 1800 * MB);                                     // (at it, not past)
+        CHECK(floor_within(2600 * MB, 5100 * MB, a) == 2600 * MB);
+        CHECK(held_budget(big, total, 5100 * MB, 0, a, 80) == 1800 * MB);               // (clamped at the floor, as before)
+        CHECK(floor_within(1800 * MB, 6128 * MB, 0) == 1800 * MB);                      // (no allowance known: as it was)
+    }
     CHECK(held_budget(budget, 5600 * MB, 100 * MB, 215 * MB, allowed, 85) == budget);           // (more to give back than is used)
     // the hold's pass keeps a live texture used in the last ten seconds: the eviction's own 60 presents is not enough for it
-    CHECK(kHoldUnused == 600);
-    CHECK(hold_keeps(0) && hold_keeps(60) && hold_keeps(599));   // (out of view for a second: a turning camera brings it back)
-    CHECK(!hold_keeps(600) && !hold_keeps(3600));
-    // the reserve: a line five points under the hold's, for the textures unused thirty seconds
+    CHECK(kHoldUnused == 180);
+    CHECK(hold_keeps(0) && hold_keeps(60) && hold_keeps(179));   // (out of view for a second: a turning camera brings it back)
+    CHECK(!hold_keeps(180) && !hold_keeps(3600));
+    // the reserve: a line five points under the hold's, for the textures unused ten seconds
     CHECK(reserve_pct(85) == 80 && reserve_pct(50) == 45 && reserve_pct(3) == 0);
-    CHECK(kReserveUnused == 1800 && kReserveUnused > kHoldUnused);
+    CHECK(kReserveUnused == 600 && kReserveUnused > kHoldUnused);
     const uint64_t none = UINT64_MAX;   // (the other rules ask nothing: the hold's two lines alone)
     CHECK(hold_target(59, 60, none, 5000 * MB, 4500 * MB) == UINT64_MAX);   // (used a second ago: stays, whatever the lines ask)
-    CHECK(hold_target(599, 60, none, 5000 * MB, 4500 * MB) == UINT64_MAX);
-    CHECK(hold_target(600, 60, none, 5000 * MB, 4500 * MB) == 5000 * MB);   // (unused ten seconds: for the hold's own line)
-    CHECK(hold_target(1799, 60, none, 5000 * MB, 4500 * MB) == 5000 * MB);
-    CHECK(hold_target(1800, 60, none, 5000 * MB, 4500 * MB) == 4500 * MB);  // (unused thirty: down to the reserve's line)
-    CHECK(hold_target(600, 60, none, 0, 4500 * MB) == UINT64_MAX);          // (the hold's line not crossed: only the long unused go)
-    CHECK(hold_target(1800, 60, none, 0, 4500 * MB) == 4500 * MB);
+    CHECK(hold_target(179, 60, none, 5000 * MB, 4500 * MB) == UINT64_MAX);
+    CHECK(hold_target(180, 60, none, 5000 * MB, 4500 * MB) == 5000 * MB);   // (unused three seconds: for the hold's own line)
+    CHECK(hold_target(599, 60, none, 5000 * MB, 4500 * MB) == 5000 * MB);
+    CHECK(hold_target(600, 60, none, 5000 * MB, 4500 * MB) == 4500 * MB);  // (unused ten: down to the reserve's line)
+    CHECK(hold_target(180, 60, none, 0, 4500 * MB) == UINT64_MAX);          // (the hold's line not crossed: only the long unused go)
+    CHECK(hold_target(600, 60, none, 0, 4500 * MB) == 4500 * MB);
     // the other rules' part: over the budget's size, over 90% of the allowance or at the driver's limit, a texture unused for
     // the eviction's own 60 presents goes for what those rules ask, as with the compaction off; the hold's patience is for its
     // own lines
@@ -62,17 +78,34 @@ int main() {
     CHECK(rule_target(2873 * MB, 3285 * MB, 2811 * MB) == 2811 * MB - kExcessSlack);   // (the excess: 126 MB go, not 413)
     CHECK(rule_target(2873 * MB, 3285 * MB, 2811 * MB) > rule_target(2873 * MB, 2811 * MB));
     CHECK(rule_target(2873 * MB, 2560 * MB, 2560 * MB) == 2560 * MB / 8 * 7);      // (over its size: 7/8 of it, as before)
-    CHECK(rule_target(2873 * MB, 2560 * MB, 2500 * MB) == 2560 * MB / 8 * 7);      // (both: the lower of the two)
-    CHECK(rule_target(2873 * MB, 2880 * MB, 2200 * MB) == 2200 * MB - kExcessSlack);
-    CHECK(rule_target(100 * MB, 3285 * MB, 32 * MB) == 0);                         // (never under nothing)
+    CHECK(rule_target(2600 * MB, 2560 * MB, 2500 * MB) == 2560 * MB / 8 * 7);      // (both: the lower of the two)
+    CHECK(rule_target(2873 * MB, 2560 * MB, 2500 * MB) == 2500 * MB / 8 * 7);      // (both, the rule's excess a large one: its own cut)
+    CHECK(rule_target(2873 * MB, 2880 * MB, 2740 * MB) == 2740 * MB - kExcessSlack);
+    CHECK(rule_target(33 * MB, 3285 * MB, 32 * MB) == 0);                          // (never under nothing)
+    // and only a small excess, up to a sixteenth of the rule's budget (half of what the cut takes): a larger one is an area
+    // that has come in or textures made again as fast as they go, and is cut to 7/8 as before. Issue 2780's Lake Hylia, a 10 GB
+    // card with a 4 GB budget set by hand: 4,022 MB of textures, 383 MB over the line at each pass
+    CHECK(excess_small(2873 * MB, 2811 * MB) && !excess_small(4022 * MB, 3639 * MB));
+    CHECK(!excess_small(2811 * MB, 2811 * MB) && !excess_small(2800 * MB, 2811 * MB));   // (no excess is not a small one)
+    CHECK(rule_target(4022 * MB, 4096 * MB, 3639 * MB) == 3639 * MB / 8 * 7);      // (383 MB over 3,639: the cut, 455 MB under it)
+    CHECK(rule_target(4022 * MB, 4096 * MB, 3639 * MB) == rule_target(4022 * MB, 3639 * MB));   // (as RX_VK_EVICT_EXCESS=0 does)
+    CHECK(rule_target(2873 * MB, 2880 * MB, 2200 * MB) == 2200 * MB / 8 * 7);      // (673 MB over 2,200)
+    {   // (the edge: a sixteenth is still small, a byte more is not; and the cut is never above the trim it replaces)
+        const uint64_t rule = 3200 * MB, edge = rule + rule / kExcessSmall;
+        CHECK(rule_target(edge, 4096 * MB, rule) == rule - kExcessSlack);
+        CHECK(rule_target(edge + 1, 4096 * MB, rule) == rule / 8 * 7);
+        CHECK(rule / 8 * 7 < rule - kExcessSlack);
+    }
+    CHECK(rule_target(100 * MB, 3285 * MB, 32 * MB) == 32 * MB / 8 * 7);
+    CHECK(rule_target(100 * MB, 3285 * MB, 0) == 0);                               // (a budget of nothing: everything may go)
     CHECK(hold_target(100, 60, 4637 * MB, 5000 * MB, 4500 * MB) == 4637 * MB);     // (the count over 90%: one unused 100 presents still goes)
     CHECK(hold_target(59, 60, 4637 * MB, 5000 * MB, 4500 * MB) == UINT64_MAX);     // (one used in the last 60: never)
     CHECK(hold_target(100, 120, 4637 * MB, 5000 * MB, 4500 * MB) == UINT64_MAX);   // (nor before the pass's own time, whatever that is)
-    CHECK(hold_target(700, 60, 5200 * MB, 5000 * MB, 4500 * MB) == 5000 * MB);     // (the lowest of the lines that apply)
+    CHECK(hold_target(300, 60, 5200 * MB, 5000 * MB, 4500 * MB) == 5000 * MB);     // (the lowest of the lines that apply)
+    CHECK(hold_target(300, 60, 4000 * MB, 5000 * MB, 4500 * MB) == 4000 * MB);
     CHECK(hold_target(700, 60, 4000 * MB, 5000 * MB, 4500 * MB) == 4000 * MB);
-    CHECK(hold_target(2000, 60, 4000 * MB, 5000 * MB, 4500 * MB) == 4000 * MB);
-    CHECK(hold_target(2000, 60, 5200 * MB, 5000 * MB, 4500 * MB) == 4500 * MB);
-    CHECK(hold_target(700, 60, 4000 * MB, 0, 4500 * MB) == 4000 * MB);             // (the hold's line not crossed, the rules asking)
+    CHECK(hold_target(700, 60, 5200 * MB, 5000 * MB, 4500 * MB) == 4500 * MB);
+    CHECK(hold_target(300, 60, 4000 * MB, 0, 4500 * MB) == 4000 * MB);             // (the hold's line not crossed, the rules asking)
     {   // a count at 94% of a 7,000 MB allowance (6,600 MB used, 100 of it to give back; the textures hold 2,400): the 90% rule's
         // budget is 2,200 MB and a pass of its own goes to 1,925; the hold and the reserve ask for less still, so the pass is the
         // hold's. A texture unused 100 presents goes until the 90% rule's part is covered, and no further
@@ -80,13 +113,13 @@ int main() {
         const uint64_t rule = total - (6500 - 6300) * MB;   // (the 90% rule: the excess over 6,300 MB off the textures)
         const uint64_t hold = held_budget(rule, total, 6600 * MB, 100 * MB, a, 85);
         const uint64_t res = held_budget(hold, total, 6600 * MB, 100 * MB, a, reserve_pct(85));
-        CHECK(hold == total - (6500 - 5950) * MB && res == total - (6500 - 5600) * MB);
+        CHECK(hold == rule && res == total - (6500 - 5600) * MB / 4);
         const uint64_t to = hold_target(100, 60, rule_target(total, rule), hold, res);
         CHECK(to == 2200 * MB / 8 * 7);
         CHECK(!hold_met(total, 0, 0, to) && !hold_met(total, 400 * MB, 0, to) && hold_met(total, 475 * MB, 0, to));
         CHECK(hold_met(total, 100 * MB, 375 * MB, to));   // (the dead render targets count for it first, as for the other lines)
-        CHECK(hold_target(700, 60, rule_target(total, rule), hold, res) == hold);    // (older ones go on to the hold's line)
-        CHECK(hold_target(1800, 60, rule_target(total, rule), hold, res) == res);    // (and the long unused to the reserve's)
+        CHECK(hold_target(300, 60, rule_target(total, rule), hold, res) == std::min(rule_target(total, rule), hold)); // (older ones go on to the hold's line)
+        CHECK(hold_target(700, 60, rule_target(total, rule), hold, res) == std::min(rule_target(total, rule), res)); // (and the long unused to the reserve's)
         CHECK(hold_target(100, 60, rule_target(2100 * MB, rule), hold, res) == UINT64_MAX);   // (under that budget: the hold's patience again)
     }
     // a count between the two lines: the reserve asks for less than the budget, the hold for nothing
@@ -101,6 +134,28 @@ int main() {
     CHECK(!hold_met(5600 * MB, 100 * MB, 400 * MB, 5000 * MB));   // (100 MB still to go)
     CHECK(hold_met(5600 * MB, 200 * MB, 400 * MB, 5000 * MB));
     CHECK(hold_met(300 * MB, 200 * MB, 200 * MB, 0));             // (more chosen than the textures hold, their sum having drifted)
+    // the room in VMA's blocks that makes the count line's squeeze wait: on a dedicated card within the allowance only, and never
+    // on an integrated GPU (the UHD Graphics: 6,709 of 7,172 MB used, 1,121 MB free in the blocks)
+    CHECK(room_in_blocks(6709 * MB, 7172 * MB, 1121 * MB, false));
+    CHECK(!room_in_blocks(6709 * MB, 7172 * MB, 1121 * MB, true));
+    CHECK(!room_in_blocks(7602 * MB, 6982 * MB, 1649 * MB, false));   // (#2156: past the allowance the driver pages)
+    CHECK(!room_in_blocks(6709 * MB, 7172 * MB, 800 * MB, false));    // (less than an eighth free)
+    // what a pipeline refused for want of memory asks: the excess over the line, and kShortGive at least
+    CHECK(short_excess(6600 * MB, 6450 * MB) == kShortGive);           // (150 MB over: kShortGive)
+    CHECK(short_excess(6709 * MB, 6450 * MB) == 259 * MB);
+    CHECK(short_excess(7680 * MB, 6450 * MB) == 1230 * MB);            // (7.5 of 7.0 GB: the whole excess)
+    CHECK(short_excess(5000 * MB, 6450 * MB) == kShortGive);           // (under the line: refused all the same)
+    // an allowance the driver gives as the count itself is past (AMD's Windows driver): a tenth under the count
+    CHECK(past_allowance(5940 * MB, 5940 * MB) == 5940 * MB - 5940 * MB / 10);   // (the RX 6600 in Hyrule Field)
+    CHECK(past_allowance(6600 * MB, 6600 * MB + 8 * MB) < 6600 * MB);           // (within kAtCount over the count)
+    CHECK(past_allowance(6600 * MB + 8 * MB, 6600 * MB) < 6600 * MB);           // (within kAtCount under it)
+    CHECK(past_allowance(5300 * MB, 6500 * MB) == 6500 * MB);                   // (an allowance over the count: as it is)
+    CHECK(past_allowance(7602 * MB, 6982 * MB) == 6982 * MB);                   // (under the count, past already: as it is)
+    CHECK(past_allowance(5000 * MB, 0) == 0);                                   // (unknown: as it is)
+    CHECK(past_allowance(0, 0) == 0);
+    // and the rules then see the count past it: no room in the blocks, the squeeze's line crossed
+    CHECK(!room_in_blocks(5940 * MB, past_allowance(5940 * MB, 5940 * MB), 746 * MB, false));
+    CHECK(room_in_blocks(5940 * MB, 5940 * MB, 746 * MB, false));               // (what the rule did with the driver's word)
     std::printf("PASS: the compaction's rules\n");
     return 0;
 }

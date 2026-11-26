@@ -117,6 +117,15 @@ void EmitInst(EmitContext& ctx, IR::Inst* inst) {
         EmitInstOf(ctx, inst);
     } catch (const NotImplementedException& e) {
         throw NotImplementedException("{} ({})", e.what(), IR::NameOf(inst->GetOpcode()));
+    } catch (const std::runtime_error& e) {   // (sirit's null Id, named by the IR op that asked for it)
+        std::string args;
+        for (size_t i = 0; i < inst->NumArgs(); ++i) {
+            const IR::Value a{inst->Arg(i)};
+            args += a.IsImmediate() ? " imm" : a.IsEmpty() ? " empty" : a.IsIdentity() ? " identity"
+                  : (" " + std::string(IR::NameOf(a.InstRecursive()->GetOpcode())) +
+                     (a.InstRecursive()->Definition<Id>().value == 0 ? "(undefined)" : ""));
+        }
+        throw LogicError("{} ({}; args:{})", e.what(), IR::NameOf(inst->GetOpcode()), args);
     }
 }
 
@@ -133,6 +142,7 @@ Id TypeId(const EmitContext& ctx, IR::Type type) {
 
 void Traverse(EmitContext& ctx, IR::Program& program) {
     IR::Block* current_block{};
+    bool prologue_done{};
     // (EvilOOT, RX_VK_BLOCK_PROBE=1 with RX_VK_MISS_LOG=1 and RX_VK_MISS_LOG_PROG=<key>: each block's entries counted, by
     // invocation, in the miss log's words 128 + the block's index in program.blocks: IR::DumpProgram's "Block $n")
     static const bool probe_env{std::getenv("RX_VK_BLOCK_PROBE") != nullptr};
@@ -150,6 +160,7 @@ void Traverse(EmitContext& ctx, IR::Program& program) {
             }
             current_block = node.data.block;
             ctx.AddLabel(label);
+            if (!prologue_done) prologue_done = true, ctx.EmitEntryPrologue();   // (RX_VK_MESH_G3: before the first instruction)
             bool probed{!probe};
             for (IR::Inst& inst : node.data.block->Instructions()) {
                 if (!probed && inst.GetOpcode() != IR::Opcode::Phi) {   // (after the phis: they must lead the block)
@@ -167,6 +178,8 @@ void Traverse(EmitContext& ctx, IR::Program& program) {
         case IR::AbstractSyntaxNode::Type::If: {
             const Id if_label{node.data.if_node.body->Definition<Id>()};
             const Id endif_label{node.data.if_node.merge->Definition<Id>()};
+            // (hookshot: the shared warp's region, said before the merge instruction, which must stand right before its branch)
+            WarpOpenRegion(ctx, node.data.if_node.body, ctx.Def(node.data.if_node.cond));
             ctx.OpSelectionMerge(endif_label, spv::SelectionControlMask::MaskNone);
             ctx.OpBranchConditional(ctx.Def(node.data.if_node.cond), if_label, endif_label);
             break;
@@ -187,6 +200,7 @@ void Traverse(EmitContext& ctx, IR::Program& program) {
             break;
         }
         case IR::AbstractSyntaxNode::Type::EndIf:
+            WarpCloseRegion(ctx);
             if (current_block) {
                 ctx.OpBranch(node.data.end_if.merge->Definition<Id>());
             }
@@ -500,9 +514,11 @@ void SetupCapabilities(const Profile& profile, const Info& info, EmitContext& ct
         ctx.AddExtension("SPV_KHR_shader_draw_parameters");
         ctx.AddCapability(spv::Capability::DrawParameters);
     }
+    // (hookshot: not for a stage on the shared warp, which has no subgroup instruction; its check keeps them)
+    const bool subgroup_free{ctx.warp_shared && !ctx.warp_shared_check};
     if ((info.uses_subgroup_vote || info.uses_subgroup_invocation_id ||
          info.uses_subgroup_shuffles || info.uses_subgroup_mask) &&
-        profile.support_vote && profile.SupportsSubgroupStage(ctx.stage)) {
+        profile.support_vote && profile.SupportsSubgroupStage(ctx.stage) && !subgroup_free) {
         ctx.AddCapability(spv::Capability::GroupNonUniformBallot);
         ctx.AddCapability(spv::Capability::GroupNonUniformShuffle);
         if (info.uses_subgroup_shuffles && profile.support_shuffle_relative) {

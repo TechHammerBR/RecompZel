@@ -20,11 +20,16 @@ ImGuiIO& GetIO() { std::abort(); } // No HDR/context transformation is modeled b
 }
 /* DESTROY_PIXELS */
 using VmaAllocation = void*;
-struct { VkDevice device{}; bool hdr=false; } dev;
+struct { VkDevice device{}; bool hdr=false; bool offscreen=false; } dev;
+// (with no window, what the overlays let go waits for the timeline too: vk_replay.cpp's two, as a test sets them)
+uint64_t retirement=0, timeline_done=0;
+uint64_t vk_retirement_value() { return retirement; }
+uint64_t vk_timeline_completed() { return timeline_done; }
 struct { int hdr_white=200; } opts;
 ImU32 hdr10_of(ImU32 c, float) { std::abort(); return c; }
 bool srgb_target=false, coherent=false;
 int64_t presents=0;
+/* RING */
 /* STATE */
 struct Buffer { std::vector<uint8_t> cpu, visible; bool coherent; };
 struct Image { unsigned w,h; std::vector<uint8_t> bytes; VmaAllocation allocation; };
@@ -123,16 +128,46 @@ static void install_existing(ImTextureData& tex,bool alpha) {
     images[t->image]={8,6,pattern(8,6,alpha,1),t->alloc}; views[t->view]=t->image;
     tex.BackendUserData=t; tex.SetTexID((ImTextureID)t->set); tex.SetStatus(ImTextureStatus_WantUpdates);
 }
+// In a window the overlays are recorded into each present's copy (vk_replay.cpp present_image), and the CPU knows a copy is
+// done on the GPU only from present_image's wait for its frame slot: at present M, the copy of present M - S, S the ring's
+// slots (present_slots_for: 3, and while frame generation's sets are on the game's timeline a slot per frame of two sets, up
+// to kPresentSlotsMax). Presented ahead, a set's copies go to the GPU together, behind the game's next frame, so the GPU may
+// be that far behind. What the copy of present used_at used (gone(): let go) must live through every ring's presents in
+// flight, and still be let go after them
+template<class Gone> static void ring_retire(int64_t used_at, Gone gone, const char* what) {
+    int most=0, most_fg=0; bool most_two=false;
+    for(int fg=0; fg<=8; fg++) for(bool two:{false,true}) {
+        const int s=present_slots_for(fg,two);
+        if(s>most) most=s, most_fg=fg, most_two=two;
+    }
+    for(int64_t m=used_at+1; m<=used_at+2*kPresentSlotsMax+2; m++) {
+        presents=m; reap(false);
+        if(gone() && m-used_at<most) {
+            std::fprintf(stderr,"FAIL: %s, let go %lld presents after the copy that used it, while present_image keeps %d copies "
+                         "in flight (frame generation %dx%s, present_slots_for): the GPU could still read it\n",what,
+                         (long long)(m-used_at),most,most_fg,most_two?", two sets on the game's timeline":"");
+            std::exit(1);
+        }
+    }
+    require(gone(),"what the overlays let go is let go once the presents in flight are done");
+}
 static void finish(ImTextureData& tex) {
     tex.WantDestroyNextFrame=true; tex.SetStatus(ImTextureStatus_WantDestroy); update_texture({},&tex); reap(true);
     require(buffers.empty() && images.empty() && views.empty() && dead.empty(),"retirement must release all resources");
 }
 int main(int argc,char**argv) {
     require(argc==3,"fixture arguments"); std::string mode=argv[1]; coherent=std::string(argv[2])=="coherent";
+    if(mode=="headless") dev.offscreen=true, retirement=7;   // (no window: RX_VK_SHOT_MENU's overlays, recorded on the timeline)
     bool alpha=mode.rfind("alpha",0)==0; ImTextureData tex; init_pixels(tex,alpha,2);
     if(mode=="no-backend") { tex.SetStatus(ImTextureStatus_WantUpdates); update_texture({},&tex); require(buffers.empty() && pending.empty() && !flushes,"no backend has no upload"); return 0; }
     if(mode=="empty") { tex.SetStatus(ImTextureStatus_WantCreate); tex.Width=0; update_texture({},&tex); require(buffers.empty() && pending.empty() && !flushes,"empty request has no upload"); return 0; }
     if(mode=="destroy") { install_existing(tex,alpha); finish(tex); require(!flushes && pending.empty(),"destroy has no staging upload"); return 0; }
+    if(mode=="ring-destroy") {   // (a texture Dear ImGui lets go, its atlas grown: last sampled by the copy of present 5)
+        install_existing(tex,alpha); presents=5; tex.WantDestroyNextFrame=true; tex.SetStatus(ImTextureStatus_WantDestroy); update_texture({},&tex);
+        ring_retire(5,[]{ return images.empty() && views.empty(); },"a texture Dear ImGui gave up");
+        require(buffers.empty() && dead.empty() && tex.Status==ImTextureStatus_Destroyed,"ring-destroy: all released");
+        return 0;
+    }
     bool dirty=mode.find("dirty")!=std::string::npos || mode.find("fallback")!=std::string::npos;
     auto expected=pattern(8,6,alpha,2);
     if(dirty) {
@@ -154,7 +189,12 @@ int main(int argc,char**argv) {
     auto& staged=buffers.at(pending[0].buffer); if(flushes) require(flushed_bytes==staged.cpu.size(),"flush must cover the entire packed staging range");
     VkImage image=pending[0].image; submit();
     require(images.at(image).bytes==expected,"GPU must see expected RGBA/alpha bytes and preserve untouched pixels");
-    presents=3; reap(false); require(!buffers.empty(),"staging must live through frames in flight");
-    presents=4; reap(false); require(buffers.empty(),"completed staging should retire");
+    if(dev.offscreen) {
+        presents=kFramesLater; timeline_done=6;   // (the presents counted too, and the timeline)
+        reap(false); require(!buffers.empty(),"headless: staging must live until the timeline is past its last use");
+        timeline_done=7; reap(false); require(buffers.empty(),"headless: staging retires once the timeline is past it");
+    } else {
+        ring_retire(0,[]{ return buffers.empty(); },"an upload's staging buffer");
+    }
     finish(tex); std::puts("PASS: production UI texture upload visibility and failure/retirement controls");
 }

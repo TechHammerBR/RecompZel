@@ -1,5 +1,5 @@
-/* (hookshot) Two small checks of NVIDIA DLSS's (gpu/vk/vk_dlss.cpp), as plain functions: which scene sizes DLSS can take
-   for an output, and a Linux path (UTF-8) for NGX's wide strings. No Vulkan, no NGX: tests/test_dlss_checks.cpp
+/* (hookshot) Small checks of NVIDIA DLSS's (gpu/vk/vk_dlss.cpp), as plain functions: which scene sizes DLSS can take for an
+   output, which quality mode takes a render size, and a Linux path (UTF-8) for NGX's wide strings. No Vulkan, no NGX: tests/test_dlss_checks.cpp
    checks them. */
 #pragma once
 
@@ -13,8 +13,100 @@ namespace mkwvk::dlss_checks {
 /// (DLAA at 1, Ultra Performance at 3: 512x288 for 1536x864, 683x384 for 2048x1152). False while the output is not known
 /// (0). The scene's camera and the actor motion take only these, and the upscale draws only these.
 inline bool scene_size_fits(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
-    return w && h && ow && oh && w <= ow && h <= oh && (uint64_t)w * 3 >= ow && (uint64_t)h * 3 >= oh;
+    return w && h && ow && oh && w <= ow && h <= oh && (uint64_t)(w + 2) * 3 >= ow && (uint64_t)(h + 2) * 3 >= oh;
 }
+
+/// A DLSS quality mode's range of render sizes for an output (NGX_DLSS_GET_OPTIMAL_SETTINGS' smallest and largest)
+struct ModeRange {
+    uint32_t min_w = 0, min_h = 0, max_w = 0, max_h = 0;
+};
+
+/// Which of n modes' ranges takes a render size of w x h for an output of ow x oh (vk_dlss.cpp prepare): the first that holds
+/// it; else the first it misses by a little, at most 1/64 of the range's largest size on each axis (2 pixels at the least),
+/// its range widened to the size in *taken. The Render resolution's sizes are rounded: at a 4416x1864 output Ultra
+/// Performance takes 1472x621 alone, and the game's third of 1864 came out 622, so no mode took it and the game's own
+/// upscale network ran in DLSS's place (slower than DLAA on GPUs where that network is heavy). Only a size DLSS can scale
+/// at all (scene_size_fits: the output 1 to 3 times it) is widened into a range; a size between two modes' ranges (42 % at
+/// 5120x2160, between Ultra Performance's third and the other modes' half) is not. -1: no mode takes it
+inline int mode_for(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh, const ModeRange* r, int n, ModeRange* taken) {
+    for (int i = 0; i < n; i++)
+        if (w >= r[i].min_w && h >= r[i].min_h && w <= r[i].max_w && h <= r[i].max_h) return *taken = r[i], i;
+    if (!scene_size_fits(w, h, ow, oh)) return -1;
+    for (int i = 0; i < n; i++) {
+        if (!r[i].max_w || !r[i].max_h) continue;
+        const uint32_t sw = r[i].max_w / 64 > 2 ? r[i].max_w / 64 : 2, sh = r[i].max_h / 64 > 2 ? r[i].max_h / 64 : 2;
+        if (w + sw >= r[i].min_w && h + sh >= r[i].min_h && w <= r[i].max_w + sw && h <= r[i].max_h + sh) {
+            *taken = {w < r[i].min_w ? w : r[i].min_w, h < r[i].min_h ? h : r[i].min_h, w > r[i].max_w ? w : r[i].max_w,
+                      h > r[i].max_h ? h : r[i].max_h};
+            return i;
+        }
+    }
+    return -1;
+}
+
+/// (hookshot, RX_VK_DLSS_PREWARM: prefer_scaled) Whether prepare makes a DLAA-mode feature for a frame: DLAA asked (native_aa) at
+/// a full-size frame, always; DLSS at a full-size frame only with RX_VK_DLSS_PREWARM=0. With it DLSS takes the scaled mode whose range
+/// holds the full size (MaxQuality's at 2560x1440: 1280x720 to 2560x1440), DLAA's mode only where none does (mode_for's -1).
+/// The Render resolution's Auto starts each area at full size, and the DLAA-mode feature made then was made again 17 frames
+/// later once the size dropped (119 ms, then 29.5 ms)
+inline bool dlaa_feature(bool full, bool native_aa, bool prefer_scaled) { return full && (native_aa || !prefer_scaled); }
+
+/// The preset DLSS draws with while the DLSS model row is stepped through (vk_dlss.cpp prepare). The row goes K, M, L,
+/// NVIDIA's default, so K to L passes M, and a feature made for each preset passed over costs 20 to 35 ms of CPU and its
+/// video memory, which NGX keeps for some seconds after the feature is let go: issue 17's 12 GB card at 3440x1440 DLAA held
+/// 1419 MB of DLSS's for K, M and L at once against 631 MB for L alone, its driver's allowance nearly used up. A new preset is
+/// taken once the row has held it for `frames`; until then the feature already made draws on with its own. With no feature
+/// (the first, or one let go) the row's preset is taken at once.
+struct PresetSettle {
+    unsigned wanted = ~0u;   // (the row's preset, last seen)
+    uint64_t since = 0;      // (the frame it was first seen)
+    /// The preset for frame `now`: `want` the row's, `have` the feature's (has: there is one)
+    unsigned pick(unsigned want, unsigned have, bool has, uint64_t now, uint64_t frames) {
+        if (want != wanted) wanted = want, since = now;
+        if (!has || want == have) return want;
+        return now - since >= frames ? want : have;
+    }
+};
+
+/// A feature creation refused for want of video memory is often temporary: a menu switch's old feature and its memory
+/// may still be waiting to be let go (vk_dlss.cpp prepare). NGX's out-of-video-memory result is tried again after
+/// kRetryFrames, at most kMaxTries creations; any other result is kept until a DLSS setting changes (dlss_retry) or the
+/// engine is let go (release). The key is the output size, quality mode, preset and HDR the feature was refused for:
+/// another key is tried at once. (Same shape as frame generation's three failed creations, vk_dlss.cpp kFgRefusalsOff.)
+namespace retry {
+constexpr uint64_t kRetryFrames = 600;   // (10 s at 60 fps: NGX's old feature and its memory are let go within seconds)
+constexpr unsigned kMaxTries = 3;        // (creations that may fail for one key, the first included)
+struct Refusal {
+    uint64_t key = 0;        // (0: none refused)
+    uint64_t retry_at = 0;   // (the frame the next try is due)
+    unsigned tries = 0;      // (creations that failed for this key)
+    bool ended = false;      // (no more tries: another result, or kMaxTries of them)
+};
+enum class Verdict { None, Wait, Try, Ended };
+/// What prepare does with a refusal for `key` at frame `frame`: None (make it), Wait (still refused), Try (retry now),
+/// or Ended (refused for good until a setting changes)
+inline Verdict verdict(const Refusal& r, uint64_t key, uint64_t frame) {
+    if (!r.key || r.key != key) return Verdict::None;
+    if (r.ended) return Verdict::Ended;
+    return frame >= r.retry_at ? Verdict::Try : Verdict::Wait;
+}
+/// Record a failed creation for `key`; answers whether the refusal is now final. Out of video memory sets the next
+/// try kRetryFrames later until kMaxTries creations have failed; any other result is final at once. A different key
+/// starts its own count.
+inline bool failed(Refusal& r, uint64_t key, bool out_of_memory, uint64_t frame) {
+    if (r.key != key) r = {};
+    r.key = key;
+    r.tries++;
+    if (!out_of_memory || r.tries >= kMaxTries) {
+        r.ended = true;
+        return true;
+    }
+    r.retry_at = frame + kRetryFrames;
+    return false;
+}
+/// A feature was made: the next failure starts its count again
+inline void made(Refusal& r) { r = {}; }
+} // namespace retry
 
 /// Whether s is all ASCII: NGX's Linux library takes only such paths (vk_dlss.cpp wide())
 inline bool ascii(std::string_view s) {

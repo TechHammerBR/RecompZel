@@ -1,7 +1,8 @@
 <Window x:Class="HookshotBuilder.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="RecompZel" Width="960" Height="600" ResizeMode="CanMinimize"
+        xmlns:local="clr-namespace:HookshotBuilder"
+        Title="Hookshot" Width="960" Height="600" ResizeMode="CanMinimize"
         WindowStartupLocation="CenterScreen" Background="Transparent" AllowDrop="True"
         UseLayoutRounding="True" SnapsToDevicePixels="True" FontFamily="{StaticResource Ui}">
 
@@ -102,6 +103,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
           <StackPanel>
             <TextBlock x:Name="FilesTitle" Style="{StaticResource Heading}" Text="Build your game"/>
@@ -124,7 +126,18 @@
             <Button x:Name="OtherWays" Style="{StaticResource LinkButton}" Foreground="{StaticResource InkSoft}" Content="romfs and exefs folders" Click="BrowseFolders"/>
           </WrapPanel>
 
-          <Grid Grid.Row="3">
+          <!-- Bring in a save: the saves found on this PC (an emulator's or another port's, Saves.cs), one of them copied into the
+               game folder once the build is done. Shown only when there is one -->
+          <StackPanel x:Name="SaveSection" Grid.Row="3" Margin="0,16,0,0" Visibility="Collapsed">
+            <TextBlock x:Name="SaveLabel" Style="{StaticResource Label}" Text="BRING IN A SAVE"/>
+            <Border Style="{StaticResource Card}">
+              <ScrollViewer MaxHeight="128" VerticalScrollBarVisibility="Auto">
+                <StackPanel x:Name="SaveList"/>
+              </ScrollViewer>
+            </Border>
+          </StackPanel>
+
+          <Grid Grid.Row="4" Margin="0,16,0,0">
             <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="20"/><ColumnDefinition Width="200"/></Grid.ColumnDefinitions>
             <StackPanel>
               <TextBlock x:Name="InstallLabel" Style="{StaticResource Label}" Text="INSTALL THE GAME TO"/>
@@ -149,9 +162,9 @@
             </StackPanel>
           </Grid>
 
-          <Grid Grid.Row="4" Margin="0,12,0,0">
+          <Grid Grid.Row="5" Margin="0,12,0,0">
             <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="20"/><ColumnDefinition Width="160"/><ColumnDefinition Width="20"/><ColumnDefinition Width="160"/></Grid.ColumnDefinitions>
-            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
             <Grid VerticalAlignment="Center">
               <Grid.ColumnDefinitions><ColumnDefinition Width="16"/><ColumnDefinition/></Grid.ColumnDefinitions>
               <Border Width="16" Height="16" CornerRadius="8" Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
@@ -198,11 +211,18 @@
             <CheckBox x:Name="PrepareTick" Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="3" Style="{StaticResource Tick}" Content="Prepare shaders now"
                       IsChecked="True" Margin="0,12,0,0"
                       ToolTip="Prepares the game's shaders at the end of the build, a few minutes (longer on some GPUs). Unticked, the game prepares them at its first start, behind a black window."/>
+            <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0" VerticalAlignment="Center">
+              <!-- (the Version menu, ReleaseList.cs: the track's newest, or any release on git.notrexed.dev, read when it opens; saved) -->
+              <TextBlock x:Name="VersionLabel" Style="{StaticResource Label}" Text="VERSION" VerticalAlignment="Center" Margin="0,0,12,0"/>
+              <ComboBox x:Name="VersionBox" Width="240" Style="{StaticResource Choice}" IsEditable="False"
+                        AutomationProperties.Name="Version" AutomationProperties.LabeledBy="{Binding ElementName=VersionLabel}"
+                        ToolTip="Newest: the update track's newest version, as before. Or pick any release of Hookshot, older ones too: the builder installs it and your game is built with it, until you pick another one."/>
+            </StackPanel>
           </Grid>
 
           <!-- NVIDIA DLSS: off unless ticked. Ticking it shows NVIDIA's license; the build downloads NVIDIA's SDK under it
                (make_game.py, scripts/ngx_sdk.py). Nothing of NVIDIA's comes with the builder -->
-          <StackPanel Grid.Row="5" Margin="0,14,0,0">
+          <StackPanel Grid.Row="6" Margin="0,14,0,0">
             <CheckBox x:Name="DlssTick" Style="{StaticResource Tick}" IsChecked="False" Click="DlssChanged"
                       Content="NVIDIA DLSS (downloads NVIDIA's SDK under NVIDIA's license)"/>
             <TextBlock Style="{StaticResource Note}" FontSize="12" Margin="26,4,0,0" TextWrapping="Wrap"
@@ -278,11 +298,22 @@
           </Grid>
           <TextBlock x:Name="ReadyTitle" Style="{StaticResource Heading}" Text="Your game is ready" HorizontalAlignment="Center" Margin="0,24,0,0"/>
           <TextBlock x:Name="ReadyNote" Style="{StaticResource Sub}" HorizontalAlignment="Center" TextAlignment="Center"/>
+          <TextBlock x:Name="SaveNote" Style="{StaticResource Note}" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"
+                     MaxWidth="560" Margin="0,8,0,0" Visibility="Collapsed"/>
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,28,0,0">
             <Button x:Name="PlayButton" Style="{StaticResource GoButton}" Click="Play">
               <StackPanel Orientation="Horizontal">
                 <Path Data="M0,0 L11,7 L0,14 Z" Fill="{StaticResource GoInk}" VerticalAlignment="Center" Margin="0,0,10,0"/>
                 <TextBlock x:Name="PlayText" Text="Play" FontSize="16" FontWeight="Bold" Foreground="{StaticResource GoInk}"/>
+              </StackPanel>
+            </Button>
+            <!-- (Mods + Editor: the mods and the save editor, ToolsPage) -->
+            <Button Style="{StaticResource Quiet}" Height="50" Padding="22,0" Margin="12,0,0,0" AutomationProperties.Name="Mods + Editor" Click="ReadyToolsClick">
+              <StackPanel Orientation="Horizontal">
+                <!-- (a wrench) -->
+                <Path Data="M22.7,19 L13.6,9.9 C14.5,7.6 14,4.9 12.1,3 C10.1,1 7.1,0.6 4.7,1.7 L9,6 L6,9 L1.6,4.7 C0.4,7.1 0.9,10.1 2.9,12.1 C4.8,14 7.5,14.5 9.8,13.6 L18.9,22.7 C19.3,23.1 19.9,23.1 20.3,22.7 L22.6,20.4 C23.1,20 23.1,19.3 22.7,19 Z"
+                      Fill="{StaticResource InkSoft}" Width="17" Height="17" Stretch="Uniform" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                <TextBlock Text="Mods + Editor" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Ink}"/>
               </StackPanel>
             </Button>
             <Button x:Name="OpenButton" Style="{StaticResource Quiet}" Height="50" Margin="12,0,0,0" Content="Open folder" Click="OpenFolder"/>
@@ -317,12 +348,29 @@
                 <TextBlock Text="Play" FontSize="16" FontWeight="Bold" Foreground="{StaticResource GoInk}"/>
               </StackPanel>
             </Button>
+            <!-- (Mods + Editor: the mods and the save editor, ToolsPage) -->
+            <Button Style="{StaticResource Quiet}" Height="50" Padding="22,0" Margin="12,0,0,0" AutomationProperties.Name="Mods + Editor" Click="LaunchToolsClick">
+              <StackPanel Orientation="Horizontal">
+                <!-- (a wrench) -->
+                <Path Data="M22.7,19 L13.6,9.9 C14.5,7.6 14,4.9 12.1,3 C10.1,1 7.1,0.6 4.7,1.7 L9,6 L6,9 L1.6,4.7 C0.4,7.1 0.9,10.1 2.9,12.1 C4.8,14 7.5,14.5 9.8,13.6 L18.9,22.7 C19.3,23.1 19.9,23.1 20.3,22.7 L22.6,20.4 C23.1,20 23.1,19.3 22.7,19 Z"
+                      Fill="{StaticResource InkSoft}" Width="17" Height="17" Stretch="Uniform" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                <TextBlock Text="Mods + Editor" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource Ink}"/>
+              </StackPanel>
+            </Button>
           </StackPanel>
           <Button x:Name="LaunchFolder" Style="{StaticResource LinkButton}" Foreground="{StaticResource InkFaint}" HorizontalAlignment="Center"
                   Margin="0,22,0,0" Content="Open the game folder" Click="LaunchFolderClick"/>
+          <!-- (Save my pipeline list: the zip for the "Submit your pipelines" issue, LaunchShareClick) -->
+          <Button x:Name="LaunchShare" Style="{StaticResource LinkButton}" Foreground="{StaticResource InkFaint}" HorizontalAlignment="Center"
+                  Margin="0,6,0,0" Content="Save my pipeline list (helps remove stutter)" Click="LaunchShareClick"/>
+          <TextBlock x:Name="LaunchShareStatus" FontSize="12" Foreground="{StaticResource InkSoft}" TextWrapping="Wrap" MaxWidth="560"
+                     TextAlignment="Center" HorizontalAlignment="Center" Margin="0,4,0,0" Visibility="Collapsed"/>
         </StackPanel>
 
         <!-- ===== when something goes wrong ===== -->
+        <!-- ===== Mods + Editor (ToolsPage.xaml), from the ready page or the launcher ===== -->
+        <local:ToolsPage x:Name="ToolsPage" Visibility="Collapsed"/>
+
         <Grid x:Name="ProblemPage" Visibility="Collapsed">
           <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>

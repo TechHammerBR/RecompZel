@@ -14,8 +14,12 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include "bank_write.h"
 #include "vk_internal.h"
 #include "vk_state.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 
 namespace mkwvk {
 // (hookshot) the seed's compute programs (vk_shader.cpp seed_program) have no bound program to read their layout from. Translated
@@ -39,6 +43,13 @@ std::unordered_map<uint64_t, std::vector<int>> regs_by_serial;
 std::atomic<uint64_t> reg_gen{1};   // (bumped by every texture registration: resolved handles go stale)
 std::atomic<uint64_t> samp_gen{1};  // (bumped when a sampler registration's contents change: sampler_for's cache, vk_draw.cpp)
 // (and a version a slot: caches of what a slot resolves to check theirs, not every registration's)
+// The order of the two bumps is part of what their readers rely on: a writer changes the slot, bumps the slot's version,
+// and bumps reg_gen LAST, all under reg_mu. The readers (program_for in vk_shader.cpp, the descriptor reuse in vk_draw.cpp)
+// read reg_gen first, without the lock, then check or resolve the slots, and keep the result under the reg_gen they read.
+// So a reader that saw the new reg_gen finds every slot version already new and resolves the new contents, and one that
+// saw the old reg_gen looks again once it changes. With reg_gen bumped first, a reader between the two bumps would read
+// the new reg_gen and the slot's old version, take what it had cached for that version (texture_answer, a pick's handles)
+// as checked, and keep it under the new reg_gen: nothing would make it look again until the next registration.
 constexpr int kSlotVersions = 1 << 20;
 std::unique_ptr<std::atomic<uint32_t>[]> slot_versions{new std::atomic<uint32_t>[kSlotVersions]()};
 // (hookshot, RX_VK_SAMPLER_CACHE: the same for sampler ids, so what a sampler id resolves to can be cached and checked
@@ -81,7 +92,7 @@ CsLayout cs_layout(const NvnState& s) {
         host->gpu_read(s.prog.sd[i].control + 0x56, &st, 2);
         if (magic != 0x98761234 || st != 5) continue;
         l = cs_layout_of(c);
-        static const bool log_cs = getenv("RX_VK_LOG_CS") != nullptr;   // (hookshot) the control bytes 0xb0..0xbf
+        static const bool log_cs = env_on("RX_VK_LOG_CS");   // (hookshot) the control bytes 0xb0..0xbf
         if (log_cs) {
             char hex[700];
             int k = 0;
@@ -126,9 +137,9 @@ const void* descriptor_ok(const void* p, size_t n) {
     const uintptr_t q = (uintptr_t)p, base = (uintptr_t)host->guest_base();
     if (q >= base && q + n <= base + host->guest_size()) return p;
     // (the host's own copies: registrations made before the renderer started, kept by host/rx_backend.c. A registration's
-    // pointer is a host pointer, never a GPU address: asked as one (host->gpu_ptr), a heap address between 16 MB and 512 GB, as
-    // Windows gives them, named guest memory, and the registration was copied from there, all zero: a sampler filtered nearest
-    // and a texture slot had no image (Castle Town's sunlight, blocky halos). After HeyListen d7d3b7c8 / Hookshot #1117)
+    // pointer is a host pointer, never a GPU address: asked as one (host->gpu_ptr), a heap address between 16 MB and 512 GB,
+    // as Windows gives them, named guest memory, and the registration was copied from there, all zero: the game's sampler
+    // 258 filtered nearest and texture slot 0x102 had no image, issue 1117's blocky halos)
     MEMORY_BASIC_INFORMATION mi{};
     if (VirtualQuery(p, &mi, sizeof mi) == sizeof mi && mi.State == MEM_COMMIT &&
         (mi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY)) && !(mi.Protect & PAGE_GUARD) &&
@@ -178,7 +189,7 @@ void register_texture_copy(int id, const nvn_tex& tex, const nvn_view* v) {
     r.released = false;
     regs_by_serial[t->serial].push_back(id);
     slot_versions[id].fetch_add(1, std::memory_order_acq_rel);
-    reg_gen++;
+    reg_gen++;   // (after the slot's version: the note at reg_gen)
 }
 uint32_t texture_slot_version(int id) {
     return id >= 0 && id < kSlotVersions ? slot_versions[id].load(std::memory_order_acquire) : 0;
@@ -219,7 +230,7 @@ void texture_released(uint64_t serial) {
     if (it == regs_by_serial.end()) return;
     for (int id : it->second)
         if (id >= 0 && (size_t)id < tex_regs.size()) tex_regs[id].released = true, slot_versions[id].fetch_add(1);
-    reg_gen++;
+    reg_gen++;   // (after the slots' versions: the note at reg_gen)
 }
 bool texture_of(int id, nvn_tex* t, nvn_view* v, bool* has_view) {
     std::lock_guard lk(reg_mu);
@@ -311,7 +322,8 @@ const PointerEntry* pointer_table(const NvnState& s, int stage) {
     return e;
 }
 
-void driver_bank_fill(const NvnState& s, int bank, int stage, uint8_t* d, uint32_t n) {
+// (the word-by-word fill, the reference of the native writer below: HL_UBO_WRITER=0 runs it alone, HL_UBO_WRITER_CHECK=1 beside it)
+static void driver_bank_fill_ref(const NvnState& s, int bank, int stage, uint8_t* d, uint32_t n) {
     std::memset(d, 0, n);
     if (stage < 0 || stage >= kNvnStages) return;
     auto put = [&](uint32_t off, uint32_t v) {
@@ -363,6 +375,58 @@ void driver_bank_fill(const NvnState& s, int bank, int stage, uint8_t* d, uint32
         }
     }
     if (stage == 0) put(0x610, std::bit_cast<uint32_t>(2047.9375f));
+}
+
+// (Hookshot, HL_UBO_WRITER=1, default off) the banks of a graphics stage (c2; c0 of the stages with a storage buffer table and no pointer
+// table) written by bank_write.h in one pass. Compute (stage 5), task and mesh (6, 7: the pointer table) and stages without a table
+// stay on the word-by-word fill. HL_UBO_WRITER_CHECK=1 (implies the switch): both run, the bytes are compared, the calls compared
+// and the mismatches counted (the first ones logged, a line every 10 s)
+namespace {
+bool ubo_writer_handles(int bank, int stage) {
+    if (stage < 0 || stage >= kNvnStages) return false;
+    if (bank == 2) return true;
+    return bank == 0 && stage != 5 && stage != 6 && stage != 7;
+}
+void ubo_writer_fill(const NvnState& s, int bank, int stage, uint8_t* d, uint32_t n) {
+    if (bank == 2) return bankw::write_c2(s.tex[stage], s.samp[stage], s.img[stage], d, n);
+    static constexpr uint32_t kTable[kNvnStages] = {0x110, 0x510, 0x410, 0x210, 0x310, 0, 0x670, 0x770};
+    if (!kTable[stage]) return std::memset(d, 0, n), void();
+    bankw::write_c0(s.ssbo[stage], kTable[stage], stage == 0, d, n);
+}
+}  // namespace
+
+void driver_bank_fill(const NvnState& s, int bank, int stage, uint8_t* d, uint32_t n) {
+    static const bool check = env_on("HL_UBO_WRITER_CHECK");
+    static const bool on = check || env_on("HL_UBO_WRITER");
+    if (!on || !ubo_writer_handles(bank, stage)) {
+        driver_bank_fill_ref(s, bank, stage, d, n);
+        return;
+    }
+    static std::atomic<bool> announced{false};
+    if (!announced.exchange(true))
+        logf("hl ubo writer: the graphics stages' driver banks written natively%s (HL_UBO_WRITER=1)",
+             check ? ", checked against the word path (HL_UBO_WRITER_CHECK=1)" : "");
+    ubo_writer_fill(s, bank, stage, d, n);
+    if (!check) return;
+    static std::atomic<uint64_t> compared{0}, bad{0}, bytes{0}, last_log{0};
+    thread_local std::vector<uint8_t> ref;
+    ref.resize(n);
+    driver_bank_fill_ref(s, bank, stage, ref.data(), n);
+    compared++, bytes += n;
+    if (std::memcmp(ref.data(), d, n)) {
+        if (bad++ < 12) {
+            uint32_t at = 0;
+            while (ref[at] == d[at]) at++;
+            logf("hl ubo writer check: MISMATCH bank c%d stage %d n %u first at %#x: word path %#x, native %#x", bank, stage, n, at,
+                 *(const uint32_t*)(ref.data() + (at & ~3u)), *(const uint32_t*)(d + (at & ~3u)));
+        }
+    }
+    const uint64_t now = GetTickCount64();
+    uint64_t prev = last_log.load();
+    if (prev == 0) last_log.compare_exchange_strong(prev, now);
+    else if (now - prev >= 10000 && last_log.compare_exchange_strong(prev, now))
+        logf("hl ubo writer check: %llu bank fills compared (%llu bytes), %llu mismatches", (unsigned long long)compared.load(),
+             (unsigned long long)bytes.load(), (unsigned long long)bad.load());
 }
 
 /// (hookshot) the bound compute program's texture and image slot counts (its control section's)

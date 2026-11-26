@@ -41,7 +41,8 @@ void destroy_image(VkImage image, VmaAllocation) {
 // Keep submission code real; the queue executes captured command buffers only on advance().
 struct Recording { int slot = 0; VkCommandBuffer cmd{}, upload{}; VkFence fence{}; uint64_t value = 0, batch = 0, part = 0; bool submitted = false; };
 Recording* rec_cur = nullptr;
-uint64_t done_max = 20, oldest = UINT64_MAX, rec_seq = 0, batch_next = 0, batch_flushed = 0;
+uint64_t done_max = 20, oldest = UINT64_MAX, rec_seq = 0, batch_next = 0;
+uint64_t batch_flushed = 1;   // (with the batch timeline at 0 below: the GPU still busy, so no idle flush, as batch_gpu_idle says)
 VkSemaphore rec_timeline = reinterpret_cast<VkSemaphore>(uintptr_t(2));
 VkSemaphore batch_tl = reinterpret_cast<VkSemaphore>(uintptr_t(3));
 std::mutex rec_map_mu;
@@ -52,11 +53,14 @@ std::condition_variable rec_map_cv;
 std::atomic<bool> pend_held{false};
 std::map<uint64_t,uint64_t> value_rec;
 std::vector<uint64_t> rec_open_values;
-struct { std::vector<VkCommandBufferSubmitInfo> cbs; uint64_t signal = 0, rec = 0; bool any_signal = false; } pend;
+struct { std::vector<VkCommandBufferSubmitInfo> cbs; uint64_t signal = 0, rec = 0; bool any_signal = false; uint64_t reflex = 0; } pend;
+uint64_t reflex_frame() { return 0; }   // (vk_reflex.cpp: no Reflex here)
+const void* reflex_submit_id(const void* next, uint64_t = ~0ull) { return next; }   // (vk_reflex.cpp: no tag without Reflex)
 std::chrono::steady_clock::time_point pend_since;
 int st_flushes = 0, st_reason[2]{};
 int64_t st_batched_cbs = 0;
-enum { FR_OTHER, FR_CAP }; int flush_reason = FR_OTHER;
+enum { FR_OTHER, FR_CAP, FR_READBACK }; int flush_reason = FR_OTHER;
+bool readback_send_now() { return false; }   // (held submits sent for a readback's wait: none waits here)
 bool batched = false;
 bool batch_on() { return batched; }
 bool batch_gpu_idle() { return false; }   // (#1993's flush at an idle GPU: none here)
@@ -72,11 +76,12 @@ void gpu_time_end(Recording&) {}
 void end_pass(VkCommandBuffer) {}
 void flush_ub_updates(VkCommandBuffer) {}
 void memory_end_submission(VkCommandBuffer, uint64_t) {}
-bool memory_mirror_bind_wait(VkSemaphoreSubmitInfo*) { return false; }   // (Triforce: the mirrors' piece binds: none here)
-void texture_end_recording(VkCommandBuffer) {}   // (Triforce: the bake's write-backs at a recording's end: none here)
 void full_barrier(VkCommandBuffer, const char*) {}
 void logf(const char*, ...) {}
 void device_lost() { need(false, "unexpected device loss"); }
+void note_timeline_sent(uint64_t) {}
+void rec_close() {}   // (RX_VK_READBACK_EARLY: the recording finished, for the early reads' writers; none here)
+bool memory_sparse_wait(VkSemaphoreSubmitInfo*) { return false; }   // (vk_memory.cpp: no sparse mirror binds here)
 uint64_t oldest_unfinished() { return oldest; }
 #define PROF(x) ((void)0)
 VKAPI_ATTR VkResult VKAPI_CALL vkEndCommandBuffer(VkCommandBuffer) { return VK_SUCCESS; }
@@ -98,12 +103,26 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(VkQueue, uint32_t count, const VkS
     }
     queued.push_back(q); return VK_SUCCESS;
 }
+// (vk_replay.cpp: the submit made again after a refusal for want of memory goes to the queue as it is here; the host-read
+// barrier before a readback does nothing here)
+VkResult submit_or_retry(const VkSubmitInfo2& si, VkFence fence) { return vkQueueSubmit2(VK_NULL_HANDLE, 1, &si, fence); }
+void host_read_barrier(VkCommandBuffer) {}
+VKAPI_ATTR VkResult VKAPI_CALL vkGetSemaphoreCounterValue(VkDevice, VkSemaphore, uint64_t* value) { *value = 0; return VK_SUCCESS; }
 void advance() {
     need(!queued.empty(), "queued GPU work");
     auto q = queued.front(); queued.pop_front();
     for (auto id : q.uses) need(!bundles[id].image && !bundles[id].views, "GPU accessed a destroyed image bundle");
     if (q.signal) gpu_done = std::max(gpu_done, q.signal);
 }
+namespace rec {   // (vk_recorder.h's RX_VK_RECORDER_OWN marks, as they are with the recorder off)
+inline void slot_begin(uint64_t) {}
+inline void slot_done() {}
+inline uint64_t produced() { return 0; }
+struct OwnSlot { OwnSlot() {} ~OwnSlot() {} };   // (a scope, as the real one)
+}   // namespace rec
+uint64_t rec_end_pos[64];   // (vk_replay.cpp: each slot's end in the recorder's ring)
+uint64_t occ_part_lo = UINT64_MAX, occ_part_hi = 0;   // (vk_replay.cpp, RX_VK_OCC_COPY: no occlusion queries here)
+void occ_copy_part(VkCommandBuffer) {}
 // PRODUCTION
 void retire(uintptr_t id, uint64_t required) {
     bundles[id].required = required;
@@ -120,6 +139,20 @@ void freed(uintptr_t id) { need(bundles[id].views == 3 && bundles[id].image, "co
 int main(int argc, char** argv) {
     need(argc == 2, "case required");
     const char* mode = argv[1];
+#ifdef FSR3_IDLE_TEST
+    if (!std::strcmp(mode, "idle-after-switch")) {
+        retire(1, 21);
+        gpu_done = 20;
+        collect_retired(); // Present after leaving FSR 3.1; no new FSR 3.1 dispatch.
+        retained(1);
+        for (unsigned i = 0; i < 100; i++) { cpu_frames++; collect_retired(); retained(1); }
+        gpu_done = 21;
+        collect_retired();
+        freed(1);
+        collect_retired(); // No double free.
+        return 0;
+    }
+#endif
     if (!std::strncmp(mode, "queue-", 6)) {
         gpu_done = 20;
         batched = !std::strcmp(mode, "queue-batch");

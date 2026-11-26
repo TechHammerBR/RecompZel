@@ -18,7 +18,7 @@
     ],
     "args": [
       "--play",
-      "{home}/Games/Hookshot"
+      "{install}/Hookshot"
     ]
   },
   "prepare": {
@@ -31,10 +31,49 @@
       "--cli",
       "--prepare",
       "--game",
-      "{game}"
+      "{game}",
+      "--out",
+      "{install}/Hookshot"
     ],
+    "version": "2",
     "label": "Building the game from your copy (10 to 45 minutes)",
-    "timeout": 7200
+    "timeout": 7200,
+    "options": [
+      {
+        "id": "dlss",
+        "label": "NVIDIA DLSS and frame generation",
+        "note": "Downloads NVIDIA's DLSS SDK during the build so the in-game menu offers DLSS. Never share the game folder.",
+        "gpu": "nvidia",
+        "os": [
+          "windows",
+          "linux"
+        ],
+        "args": [
+          "--fetch-ngx-sdk",
+          "--accept-nvidia-license"
+        ],
+        "license": {
+          "name": "NVIDIA RTX SDKs license",
+          "url": "https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt"
+        }
+      },
+      {
+        "id": "xess",
+        "label": "Intel XeSS",
+        "note": "Downloads Intel's XeSS library during the build so the in-game menu offers XeSS, made for Intel Arc graphics. Never share the game folder.",
+        "os": [
+          "windows"
+        ],
+        "args": [
+          "--fetch-xess-runtime",
+          "--accept-intel-license"
+        ],
+        "license": {
+          "name": "Intel Simplified Software License",
+          "url": "https://github.com/intel/xess/blob/de0fb9c1c510661c571164e1418ceca8101dab69/LICENSE.txt"
+        }
+      }
+    ]
   },
   "config": [
     {
@@ -42,28 +81,34 @@
       "format": "ini",
       "file": [
         {
-          "path": "{home}/Games/Hookshot/hookshot_options.ini"
+          "path": "{install}/Hookshot/hookshot_options.ini"
         }
       ]
     }
   ],
   "saves": [
-    "{local}/hookshot",
-    "{home}/Games/Hookshot/user"
+    "{install}/Hookshot/user/save",
+    "{install}/Hookshot/user/mouse_sens.txt",
+    "{local}/hookshot/save",
+    "{local}/hookshot/mouse_sens.txt"
   ],
   "folders": {
     "saves": [
       {
-        "path": "{home}/Games/Hookshot/user",
-        "if": "{home}/Games/Hookshot/user"
+        "path": "{install}/Hookshot/user/save",
+        "if": "{install}/Hookshot/user/save"
       },
       {
-        "path": "{local}/hookshot"
+        "path": "{local}/hookshot/save",
+        "if": "{local}/hookshot/save"
+      },
+      {
+        "path": "{install}/Hookshot"
       }
     ],
     "game": [
       {
-        "path": "{home}/Games/Hookshot"
+        "path": "{install}/Hookshot"
       }
     ]
   },
@@ -269,7 +314,7 @@
         }
       ],
       "defaults": {
-        "output_res": "2048x1152"
+        "output_res": "2560x1440"
       }
     },
     {
@@ -358,8 +403,8 @@
     },
     {
       "id": "ultrawide",
-      "label": "Ultrawide",
-      "help": "Monitor's shape widens the camera to fill a screen wider than 16:9. The HUD stays stretched. Applies after a restart.",
+      "label": "Aspect ratio",
+      "help": "The picture's shape: your monitor's (the default: wider on an ultrawide, narrower on 4:3 or 16:10), or the game's 16:9. Applies after a restart.",
       "choices": [
         {
           "label": "16:9",
@@ -375,7 +420,7 @@
         }
       ],
       "defaults": {
-        "ultrawide": "0"
+        "ultrawide": "1"
       }
     },
     {

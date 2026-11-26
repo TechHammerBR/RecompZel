@@ -74,6 +74,12 @@ def main():
                    'return upload_astc_gpu(tex, total, nullptr);'):   # (back to BC3: uploaded whole)
         if needle not in source:
             raise SystemExit("vk_texture.cpp: missing %r" % needle)
+    # the blocks are counted from the game's bytes as they are staged: the staging buffer, memory made for sequential writes, is
+    # read back only behind its switch
+    if "const astc_opaque::Scan one = astc_opaque::scan(src, n);" not in source:
+        raise SystemExit("vk_texture.cpp: the blocks' kinds are not counted from the staged layer's source bytes")
+    if source.count("astc_opaque::scan(s.data") != 1 or "if (scan_staged) sc = astc_opaque::scan(s.data, staged);" not in source:
+        raise SystemExit("vk_texture.cpp: the staging buffer is read back for the blocks' kinds outside RX_VK_ASTC_SCAN_STAGED")
     with tempfile.TemporaryDirectory(prefix="astc-opaque-") as tmp:
         cpp = Path(tmp) / "fixture.cpp"
         exe = Path(tmp) / "fixture"

@@ -3,10 +3,12 @@ run held private commit at the VRAM blocks plus ~21 GB the whole way, and a 16 G
 limit at 33.9 GB of its own. A guest commit then failed while an area loaded and the game's next write there crashed it.
 
 Checked here:
-- the textures' budget has a commit rule: below RX_VK_COMMIT_RESERVE_MB of headroom (GlobalMemoryStatusEx's ullAvailPageFile,
-  Windows only) the shortfall comes off the budget and the rule's budget, as the driver's limit's excess does;
+- the textures' budget has a commit rule: below RX_VK_COMMIT_RESERVE_MB of headroom (GlobalMemoryStatusEx's ullAvailPageFile
+  and what the page files can still grow by, tests/test_commit_room.py; Windows only) the shortfall comes off the budget and
+  the rule's budget, as the driver's limit's excess does;
 - hos_commit and the first-touch handler wait at the commit limit (1455) and commit again before they give up, and they log a
-  failure the same way (commit_refused: the out-of-memory notice).
+  failure the same way (commit_refused: the out-of-memory notice, hos_out_of_memory, shared with the host's own allocations:
+  tests/test_host_alloc_wait.py).
 - the first-touch handler tries a page another thread committed again on Windows only (#ifdef _WIN32): on Linux every fault in
   the guest window would be retried forever instead of reaching the crash report.
 python -I -B tests/test_commit_limit.py
@@ -64,7 +66,8 @@ def main():
         raise SystemExit("FAIL: the first-touch handler does not wait at the commit limit")
     # (the retry of a page another thread committed is Windows' only: on Linux the VirtualQuery stand-in calls every guest page
     # committed and read-write and the signal handler never sets 8, so every fault in the window would be tried again forever)
-    retry = "if (mbi.State == MEM_COMMIT && mbi.Protect == PAGE_READWRITE && rec->ExceptionInformation[0] != 8)"
+    # (read-write, or read-write-execute: hos_commit's commit_marks make one page every 64 MB of a commit RWX)
+    retry = "if (mbi.State == MEM_COMMIT && (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) &&"
     if touch.count(retry) != 1:
         raise SystemExit("FAIL: the first-touch handler does not retry a page another thread committed (not an execute fault)")
     head, tail = touch[:touch.index(retry)], touch[touch.index(retry):]
@@ -76,7 +79,8 @@ def main():
     if "hos_commit(" in touch:
         raise SystemExit("FAIL: the first-touch handler calls hos_commit, which would wait a second time")
     refused = block(glue, "static void commit_refused(uint64_t lo, uint64_t size, DWORD err)")
-    if "hos_out_of_memory_box" not in refused:
+    notice = block(glue, "void hos_out_of_memory(int wait)")
+    if "hos_out_of_memory(0)" not in refused or "oom_box" not in notice:
         raise SystemExit("FAIL: commit_refused does not show the out-of-memory notice")
     # (#2941: std::bad_alloc on the presenting thread, in the page table's flush, closed the game: the flush writes the changes
     # at once when its list cannot be made, and the renderer keeps a reserve that operator new's handler gives back)

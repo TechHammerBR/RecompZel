@@ -4,8 +4,7 @@
 With RX_VK_PARALLEL set, every command buffer first paid a dry pass - the whole stream applied for state only - and then
 its one segment was recorded on the replay thread anyway: the same stream walked twice for nothing. A submission of a
 few hundred draws is one segment, and on a title that submits six a frame that was most of them. The work is counted
-from the stream's op headers, with the op test the dry pass counts dry_work with; RX_VK_NO_DRY_SHORT=1: the dry pass
-comes back.
+from the stream's op headers, with the op test the dry pass counts dry_work with.
 
 python -I -B tests/test_parallel_small_cb.py [--cxx g++]
 """
@@ -55,17 +54,18 @@ def main():
         raise SystemExit("vk_replay.cpp: a command buffer's work is not counted before the dry pass")
     if handle.index("stream_work(h, 2 * per)") > handle.index("dry_marks_begin();"):
         raise SystemExit("vk_replay.cpp: the dry pass still runs before the short command buffer is decided")
-    short = body(handle, "if (!no_short && stream_work(h, 2 * per)", "// the dry pass")
+    short = body(handle, "if (stream_work(h, 2 * per)", "// the dry pass")
     if "replay(cmd, state, h);" not in short:
         raise SystemExit("vk_replay.cpp: a short command buffer is not recorded on the replay thread")
     if "split_off = true;" not in short or "split_off = was_split;" not in short:
         raise SystemExit("vk_replay.cpp: a short command buffer's recording is left to be split, or the flag is not restored")
-    if 'env_on("RX_VK_NO_DRY_SHORT")' not in replay:
-        raise SystemExit("vk_replay.cpp: the switch RX_VK_NO_DRY_SHORT is gone")
     # (a segment is not split by the chunking the serial path does)
-    split = body(replay, "void maybe_split(VkCommandBuffer& cmd) {", "end_pass(cmd);")
+    split = body(replay, "void maybe_split(VkCommandBuffer& cmd) {", "part_end_wanted = true;")
     if "if (split_off ||" not in split:
         raise SystemExit("vk_replay.cpp: maybe_split no longer leaves a short command buffer's recording whole")
+    cut = body(replay, "void split_part(VkCommandBuffer& cmd) {", "end_pass(cmd);")   # (an end asked for in a buffer before it)
+    if "if (split_off ||" not in cut:
+        raise SystemExit("vk_replay.cpp: split_part no longer leaves a short command buffer's recording whole")
 
     count = block(replay, "int64_t stream_work(const uint8_t* p, int64_t most)")
     fixture = f'''#include <cstdint>

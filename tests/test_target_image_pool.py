@@ -12,18 +12,11 @@ python -I -B tests/test_target_image_pool.py
 from pathlib import Path
 import re
 import unittest
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
 
 
 class TargetImagePoolTests(unittest.TestCase):
@@ -47,7 +40,7 @@ class TargetImagePoolTests(unittest.TestCase):
             self.assertIn(part, rule, part)
         cap = block(self.tex, "uint64_t pool_cap()")
         self.assertIn('getenv("RX_VK_TARGET_POOL_MB")', cap)
-        self.assertIn(": 256", cap)
+        self.assertIn("target_pool::default_mb(vram_usage(&used, &allowed) ? allowed : 0)", cap)
         self.assertIn("uint64_t pool_key = 0;", self.hdr)
 
     def test_a_texture_made_for_a_target_is_one_and_its_image_comes_from_the_targets_blocks(self):
@@ -60,15 +53,44 @@ class TargetImagePoolTests(unittest.TestCase):
         image = block(vma, "bool create_image_inner(const VkImageCreateInfo& ci, VkImage& image, VmaAllocation& allocation, bool dedicated, bool target, bool textures) {")
         self.assertIn("target && target_images_pool() ? target_images_pool() : images_pool()", image)
         pool = block(vma, "VmaPool target_images_pool()")
-        self.assertIn('getenv("RX_VK_TARGET_BLOCKS")', pool)
-        self.assertIn("pi.blockSize = target_block();", pool)   # (Triforce: the targets' own block size)
+        self.assertIn("pi.blockSize = block_size;", pool)
         self.assertIn("void vma_log_image_blocks()", vma)
 
-    def test_the_dead_targets_are_swept_every_ten_presents(self):
-        frame = block(self.tex[self.tex.rindex("void texture_sweep("):], "void texture_sweep(")   # (Triforce: texture_frame's sweep is a function of its own)
-        self.assertIn('getenv("RX_VK_DEAD_EVERY")', frame)
-        self.assertIn(": 10;", frame[frame.index('getenv("RX_VK_DEAD_EVERY")'):])
-        self.assertIn("frame_no % (dead_targets ? dead_every : 600)", frame)
+    def test_the_dead_targets_are_swept_every_present_after_one_unused(self):
+        frame = block(self.tex, "void texture_frame(uint64_t completed)")
+        every = block(self.tex, "uint64_t dead_every_presents()")
+        self.assertIn('getenv("RX_VK_DEAD_EVERY")', every)
+        self.assertIn(": 1;", every[every.index('getenv("RX_VK_DEAD_EVERY")'):])
+        self.assertIn("(sweep && frame_no % dead_every)", frame)
+        unused = block(self.tex, "uint64_t dead_min_unused_presents()")
+        self.assertIn(": 1;", unused[unused.index('getenv("RX_VK_DEAD_MIN_UNUSED")'):])
+        # (and the pass that reads them is not the only one that looks: it runs at every tenth present, and on the presents
+        # between the sweep does. tests/test_dead_targets_sweep.py has the presents)
+        self.assertIn("dead_targets_sweep(completed);", frame)
+
+    def test_a_dead_target_is_what_every_newer_target_over_it_has_drawn_together(self):
+        # (several over parts of it add up; judged one by one they left the big ones, 3-4 GB, issue 2180)
+        frame = block(self.tex, "void texture_frame(uint64_t completed)")
+        rule = frame[frame.index("const auto drawn_over_shifted"):frame.index("static const uint64_t dead_min_unused")]
+        self.assertIn("target_overlap::DrawnOver over;", rule)
+        self.assertIn("over.add(lo, hi, tex->last_frame, (*it)->gpu", rule)
+        self.assertIn("over.an_eighth(hi - lo)", rule)
+        self.assertNotIn("target_overlap::shifted_over", rule)
+
+    def test_a_view_inside_a_target_is_not_a_new_target(self):
+        # (5bfa6aa, PR #899: a live scene target's sub-rects redrawn as views must not make it a dead one)
+        hdr = (ROOT / "gpu" / "vk" / "target_overlap.h").read_text(encoding="utf-8")
+        add = block(hdr, "void add(")
+        self.assertIn("if (olo == lo) return;", add)   # (drawn_over's own case)
+        self.assertIn("if (olo >= lo && ohi <= hi) return;", add)
+
+    def test_a_finalized_map_keeps_its_keep_against_a_view_inside_it(self):
+        # (keep_finalized: a 260 x 260 normal map the game finalized and samples again has a view drawn inside it; the
+        # view is not a new target, so the map is not drawn over and keeps its keep)
+        keep = block(self.tex, "const auto keep_finalized = [&](const Texture* tex)")
+        self.assertIn("return !drawn_over(tex) && !drawn_over_shifted(tex);", keep)
+        hdr = (ROOT / "gpu" / "vk" / "target_overlap.h").read_text(encoding="utf-8")
+        self.assertIn("if (olo >= lo && ohi <= hi) return;", block(hdr, "void add("))
 
     def test_a_pooled_image_is_taken_before_one_is_made_and_still_cleared_from_undefined(self):
         make = block(self.tex, "Texture* create(const Key& key")
@@ -84,6 +106,8 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertRegex(later, r"if \(tex\.pool_key && tex\.allocation && tex\.sparse_chunks\.empty\(\) && pool_cap\(\)\)")
         self.assertIn("d.view_map = std::move(tex.views)", later)
         self.assertIn("d.views.push_back(kv.second)", later)   # (the others' views destroyed, as before)
+        self.assertIn("pool_put(d);", later)   # (pooled at eviction for the next frame: test_target_image_reuse)
+        self.assertIn("dead.push_back(std::move(d));", later)
 
     def test_the_dead_list_pools_before_it_destroys_and_the_pool_is_trimmed_each_present(self):
         frame = block(self.tex, "void texture_frame(uint64_t completed)")
@@ -91,24 +115,14 @@ class TargetImagePoolTests(unittest.TestCase):
         self.assertLess(loop.index("if (it->pool_key) {"), loop.index("destroy_image(it->image, it->allocation);"))
         self.assertIn("pool_put(*it);", loop[:loop.index("destroy_image(")])
         trim = frame.index("pool_trim();")
-        # (every present, not every tenth: before the sweep, which has its own present test)
-        self.assertLess(trim, frame.index("texture_sweep(completed"))
-        self.assertIn("frame_no % (dead_targets ? dead_every : 600)", block(self.tex[self.tex.rindex("void texture_sweep("):], "void texture_sweep("))
-        self.assertIn("pool_pressed = known && pressure > pressure_line;", frame)
-        # (recompzel) 90% is still the baseline; DLSS-G running tightens it (nvngx_dlssg.dll crashed twice when the pool
-        # gave back what Streamline held, both times past 90% of what the driver allowed)
-        pressure_line = frame[frame.index("pressure_line ="):frame.index("squeeze_line =")]
-        self.assertIn("allowed / 10 * 9", pressure_line)
-        self.assertIn("slfg::active()", frame)
-        self.assertIn('getenv("RX_VK_DLSSG_SAFE_PCT")', frame)
+        self.assertLess(trim, frame.index("if (!dead_targets::pass_due(frame_no)) {"))   # (every present, not every tenth)
+        self.assertIn("pool_pressure = !known ? 0 : (used > allowed / 100 * 97) ? 2 : (pressure > allowed / 10 * 9) ? 1 : 0;", frame)
 
     def test_the_trim_is_bounded_a_present_and_gives_back_idle_and_excess_images(self):
         trim = block(self.tex, "size_t pool_trim()")
-        # (Triforce: pressed and no floor of blocks kept: give_back)
-        self.assertIn("const bool give_back = pool_pressed && !target_floor_kept();", trim)
-        self.assertIn("give_back ? 0 : pool_cap()", trim)
-        self.assertIn("give_back ? 64 : 16", trim)
-        self.assertIn("frame_no - v[i].since <= 120", trim)
+        self.assertIn("(pool_pressure >= 2) ? 0 : (pool_pressure == 1) ? (full_cap / 2) : full_cap", trim)
+        self.assertIn("(pool_pressure > 0) ? 64 : 16", trim)
+        self.assertIn("!target_pool::idle_out(frame_no, v[i].since, idle)", trim)   # (RX_VK_POOL_IDLE, 8 presents: target_pool.h)
         self.assertIn("pool_bytes <= cap", trim)
         self.assertIn("pool_destroy(v[i]);", trim)
         destroy = block(self.tex, "void pool_destroy(Pooled& p)")

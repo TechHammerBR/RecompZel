@@ -13,6 +13,9 @@
    and hands it to the focus manager (*(screen+32)+96, its vtable +48), when the manager takes the player's input.
    HOS_MENU_TRACE=1: the focus changes, the screens and what the mouse does logged. */
 #include "hos.h"
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 #if defined(_WIN32)
 #include <windows.h>
 #include <ctype.h>
@@ -142,8 +145,9 @@ static int set_item_key(Ctx *c, uint64_t screen, const char *key) {
     peek(screen + 840, &mode, 4);
     const size_t n = strlen(key);
     A64Fn fn = a64_lookup(0x833fda00ULL);
-    if (!fn || !buf || buf + n + 1 > HOS_GUEST_SPACE || room <= (int32_t)n || mode != 0) return 0;
-    memcpy(GP(buf), key, n + 1);
+    void *to = buf ? hos_guest_range(buf, n + 1) : NULL;   /* (hookshot: buf + n + 1 wrapped for a buf near 2^64) */
+    if (!fn || !to || room <= (int32_t)n || mode != 0) return 0;
+    memcpy(to, key, n + 1);
     const Ctx saved = *c;
     c->x[0] = screen, c->x[1] = screen + 760, c->x[30] = 0;
     fn(c);
@@ -161,7 +165,7 @@ static struct { uint64_t screen, pane, lr; int set; } pending;
 static void focus_locked(uint64_t screen, uint64_t pane, uint64_t lr);
 void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr) {
     (void)c;
-    if (trace < 0) trace = getenv("HOS_MENU_TRACE") != NULL;
+    if (trace < 0) trace = env_on("HOS_MENU_TRACE");
     if (mouse_owner == GetCurrentThreadId()) {   /* (inside mouse_tick's setter, on its thread: the lock is this thread's) */
         focus_locked(screen, pane, lr);
         return;
@@ -366,7 +370,10 @@ static void item_choice_tick(void) {
 }
 
 static void mouse_tick_locked(Ctx *c, uint64_t screen) {
+    /* a left press on a panel page, its click at the release (below) */
+    static int ldown, ldrag, lx0, ly0, llx, lly;
     if (peek64(screen) == ITEM_CHOICE_VTABLE) {
+        ldown = ldrag = 0;
         item_choice_tick();
         return;
     }
@@ -374,7 +381,10 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
     int px, py, w, h, wheel;
     uint32_t pressed;
     const int got = hos_mouse_game_pointer(&px, &py, &w, &h, &pressed, &wheel);
-    if (!got) return;
+    if (!got) {   /* (outside the window or under the Insert menu: a release there is not seen, so no click on return) */
+        ldown = ldrag = 0;
+        return;
+    }
     const int hidden = got == 2;   /* (the cursor hidden while the pad is in use: the wheel only, no pointing) */
     const int pause = screen == pause_screen_now();
     const float scale = 3840.0f / (float)w > 2160.0f / (float)h ? 3840.0f / (float)w : 2160.0f / (float)h;
@@ -393,7 +403,6 @@ static void mouse_tick_locked(Ctx *c, uint64_t screen) {
        Key Items' stones are): a drag there turns it, off the buttons; the page's slots at the left (to x about 100),
        the tabs above (y 900), the prompts below (-960) */
     const int item_model = pause && page_now == 2, pan = page >= 0 || item_model;
-    static int ldown, ldrag, lx0, ly0, llx, lly;
     if (pan) {
         const int held = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
         const int was_down = ldown;
@@ -757,7 +766,7 @@ static Seen *screen_seen(uint64_t screen, int64_t now) {
 
 void hos_oot_menu_tick(Ctx *c, uint64_t screen) {
     if (!screen) return;
-    if (trace < 0) trace = getenv("HOS_MENU_TRACE") != NULL;
+    if (trace < 0) trace = env_on("HOS_MENU_TRACE");
     const int64_t now = hos_now_ns();
     AcquireSRWLockExclusive(&seen_lock);
     Seen *me = screen_seen(screen, now);
@@ -820,6 +829,11 @@ void hos_oot_menu_tick(Ctx *c, uint64_t screen) {
     if (screen == pause_screen_now()) InterlockedIncrement(&ticks);
 }
 #else
-void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr) { (void)c, (void)screen, (void)pane, (void)lr; }
+void hos_input_clear_toggles(void);
+/* Every menu screen's pane-focus hook runs on Linux too, without mouse menu navigation. */
+void hos_oot_menu_focus(Ctx *c, uint64_t screen, uint64_t pane, uint64_t lr) {
+    (void)c, (void)screen, (void)pane, (void)lr;
+    hos_input_clear_toggles();
+}
 void hos_oot_menu_tick(Ctx *c, uint64_t screen) { (void)c, (void)screen; }
 #endif

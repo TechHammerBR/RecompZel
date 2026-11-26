@@ -1,0 +1,3 @@
+| Date | Build | OS / desktop | GPU / driver | CPU / RAM | Settings | Where | Result |
+|---|---|---|---|---|---|---|---|
+| 2026-11-14 UTC | v3.0.0-rc.3, guest memory reporting backported from a4c77174, host db2f0d91f2b7, renderer 665aef4f4718 | SteamOS 3.9.5, direct headless | Steam Deck OLED, RADV VANGOGH, Mesa 26.2.0-devel 5c65d4fc31 | AMD Custom APU 0932, 16 GB shared | 1280×720 output, render resolution option 4, frame generation off, precompile off, 1536 MiB texture budget, copied warm caches, HOS_MEMINFO_OLD=0, RX_VK_TEST_UNIFORM_GAP=0 | Child Kokiri save, 20 s settled, teleport to HyruleField_Child at the Lost Woods bridge, 20 s warmup and 45 s stationary. | scan-old1. Field reached after 9.0 s. 20.19 FPS, p95 interval 52.82 ms. |

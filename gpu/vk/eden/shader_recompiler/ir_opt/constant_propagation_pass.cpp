@@ -17,6 +17,7 @@
 #include "shader_recompiler/frontend/ir/value.h"
 #include "shader_recompiler/ir_opt/passes.h"
 #include "shader_recompiler/ir_opt/predicate_mask.h"
+#include "shader_recompiler/ir_opt/pseudo_fold.h"
 
 namespace Shader::Optimization {
 namespace {
@@ -90,6 +91,32 @@ bool FoldWhenAllImmediates(IR::Inst& inst, Func&& func) {
     }
     using Indices = std::make_index_sequence<LambdaTraits<decltype(func)>::NUM_ARGS>;
     inst.ReplaceUsesWith(EvalImmediates(inst, func, Indices{}));
+    return true;
+}
+
+/// (hookshot, RX_VK_FOLD_PSEUDO=1, pseudo_fold.h) Folds an instruction of immediates whose result is a u32 and whose only pseudo-operations
+/// are the zero and sign flags: the flags take the value the back end would have made of the folded result, then the instruction folds
+/// as FoldWhenAllImmediates does. Carry and overflow are not computed here: such an instruction is left as it was.
+template <typename Func>
+bool FoldWhenAllImmediatesWithFlags(IR::Inst& inst, Func&& func) {
+    static const bool enabled{FoldPseudoEnabled(getenv("RX_VK_FOLD_PSEUDO"))};
+    if (!enabled || !inst.AreAllArgsImmediates()) {
+        return FoldWhenAllImmediates(inst, func);
+    }
+    if (inst.GetAssociatedPseudoOperation(IR::Opcode::GetCarryFromOp) ||
+        inst.GetAssociatedPseudoOperation(IR::Opcode::GetOverflowFromOp)) {
+        return false;
+    }
+    using Indices = std::make_index_sequence<LambdaTraits<decltype(func)>::NUM_ARGS>;
+    const IR::Value result{EvalImmediates(inst, func, Indices{})};
+    const u32 bits{result.U32()};
+    if (IR::Inst* const zero{inst.GetAssociatedPseudoOperation(IR::Opcode::GetZeroFromOp)}) {
+        zero->ReplaceUsesWith(IR::Value{ZeroFlagOf(bits)});
+    }
+    if (IR::Inst* const sign{inst.GetAssociatedPseudoOperation(IR::Opcode::GetSignFromOp)}) {
+        sign->ReplaceUsesWith(IR::Value{SignFlagOf(bits)});
+    }
+    inst.ReplaceUsesWith(result);
     return true;
 }
 
@@ -1120,16 +1147,16 @@ void ConstantPropagation(Environment& env, IR::Block& block, IR::Inst& inst) {
         FoldWhenAllImmediates(inst, [](u32 a, u32 b) { return a != b; });
         return;
     case IR::Opcode::BitwiseAnd32:
-        FoldWhenAllImmediates(inst, [](u32 a, u32 b) { return a & b; });
+        FoldWhenAllImmediatesWithFlags(inst, [](u32 a, u32 b) { return a & b; });
         return;
     case IR::Opcode::BitwiseOr32:
-        FoldWhenAllImmediates(inst, [](u32 a, u32 b) { return a | b; });
+        FoldWhenAllImmediatesWithFlags(inst, [](u32 a, u32 b) { return a | b; });
         return;
     case IR::Opcode::BitwiseXor32:
-        FoldWhenAllImmediates(inst, [](u32 a, u32 b) { return a ^ b; });
+        FoldWhenAllImmediatesWithFlags(inst, [](u32 a, u32 b) { return a ^ b; });
         return;
     case IR::Opcode::BitFieldUExtract:
-        FoldWhenAllImmediates(inst, [](u32 base, u32 shift, u32 count) {
+        FoldWhenAllImmediatesWithFlags(inst, [](u32 base, u32 shift, u32 count) {
             if (static_cast<size_t>(shift) + static_cast<size_t>(count) > 32) {
                 throw LogicError("Undefined result in {}({}, {}, {})", IR::Opcode::BitFieldUExtract,
                                  base, shift, count);
@@ -1138,7 +1165,7 @@ void ConstantPropagation(Environment& env, IR::Block& block, IR::Inst& inst) {
         });
         return;
     case IR::Opcode::BitFieldSExtract:
-        FoldWhenAllImmediates(inst, [](s32 base, u32 shift, u32 count) {
+        FoldWhenAllImmediatesWithFlags(inst, [](s32 base, u32 shift, u32 count) {
             const size_t back_shift{static_cast<size_t>(shift) + static_cast<size_t>(count)};
             const size_t left_shift{32 - back_shift};
             const size_t right_shift{static_cast<size_t>(32 - count)};

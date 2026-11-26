@@ -34,10 +34,9 @@ def check_source():
     mem = (ROOT / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
     rep = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     need("vk_memory.cpp", mem, ['#include "wb_learn.h"'])
-    # (the cap from RX_VK_WB_MAX_KB through the header's rule, none when unset or 0; the table's probation from
-    # RX_VK_WB_PROBATION)
+    # (the cap from RX_VK_WB_MAX_KB through the header's rule, 0: none; the table's probation from RX_VK_WB_PROBATION)
     need("vk_memory.cpp: wb_cap()", block(mem, "uint64_t wb_cap()"),
-         ['const char* e = getenv("RX_VK_WB_MAX_KB");', 'wb_learn::max_bytes(e)', 'env_int("RX_VK_WB_PROBATION", (int)wb_table.probation)'])
+         ['wb_learn::max_bytes(getenv("RX_VK_WB_MAX_KB"))', 'env_int("RX_VK_WB_PROBATION", (int)wb_table.probation)'])
     need("vk_memory.cpp: wb_leave_out()", block(mem, "bool wb_leave_out(uint64_t lo, uint64_t hi"),
          ["if (!wb_cap()) return false;", "std::lock_guard lk(wb_learn_mu);", "wb_table.plan(lo, hi, wb_cap(), mirror_epoch, keep)"])
     # (a CPU read or write counts only in a large binding the table follows)
@@ -49,8 +48,8 @@ def check_source():
     bind = mem[mem.index("p->gpu_written = true;   // (its mirror kept: mirrors_give_back)"):]
     bind = bind[:bind.index("return remember({p->mirror, off, size, 0});")]
     need("vk_memory.cpp: the written binding", bind,
-         ["if (!wb_leave_out(wlo, whi, keep)) writebacks.push_back({p, off, whi - p->lo, tl_event_write});",
-          "for (const auto& [klo, khi] : keep) writebacks.push_back({p, klo - p->lo, khi - p->lo, tl_event_write});",
+         ["if (!wb_leave_out(wlo, whi, keep)) writebacks.push_back({p, off, whi - p->lo});",
+          "for (const auto& [klo, khi] : keep) writebacks.push_back({p, klo - p->lo, khi - p->lo});",
           "rb_hazard_locked(p->lo + off, p->lo + std::min(off + size, p->hi - p->lo));"])
     if "wb_max" in bind:
         raise SystemExit("vk_memory.cpp: the plain size cap is back beside the learned one")

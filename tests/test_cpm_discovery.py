@@ -51,7 +51,17 @@ class CpmDiscoveryTests(unittest.TestCase):
         # so the real build module discovers packages in this owned layout instead.
         kit = types.SimpleNamespace(ROOT=str(self.tools), HERE=str(self.tools / "nx2"),
                                     WORK=str(self.tools / "work"))
-        toolchain = types.SimpleNamespace(windows=lambda: os.name == "nt")
+        # No clang here: like the real toolchain.find with nothing on PATH, a path that isn't a file, so the
+        # import-time -march=native query is skipped and no compiler runs.
+        no_tools = self.base / "no toolchain"
+
+        def need(path):
+            if not os.path.isfile(path):
+                raise SystemExit("%s not found" % path)
+            return path
+
+        toolchain = types.SimpleNamespace(windows=lambda: os.name == "nt",
+                                          find=lambda tool, host=False: str(no_tools / tool), need=need)
 
         def no_process(command, *args, **kwargs):
             if command[0] == "pkg-config":
@@ -145,6 +155,28 @@ class CpmDiscoveryTests(unittest.TestCase):
             else:
                 self.assertIsNone(
                     build.header_package("vulkanmemoryallocator", "vk_mem_alloc.h", "HOOKSHOT_VMA_HEADERS"))
+
+    def test_dav1d_windows_only_with_llvm_mingw(self):
+        """dav1d (scripts/windows/dav1d.sh) is linked for the AV1 movies on Windows with llvm-mingw only, and only whole"""
+        self.cache(self.bundled)
+        dav1d = self.bundled / "dav1d" / "1.5.4"
+        header, lib = dav1d / "include" / "dav1d" / "dav1d.h", dav1d / "lib" / "libdav1d.a"
+        header.parent.mkdir(parents=True)
+        header.write_text("/* authored fixture */\n", encoding="utf-8")
+        lib.parent.mkdir(parents=True)
+        lib.write_bytes(b"!<arch>\n")
+        with self.build() as build:
+            build.LINUX = False
+            build.toolchain = types.SimpleNamespace(mingw=lambda: "llvm-mingw")
+            self.assertEqual(build.dav1d_windows(), str(dav1d))
+            build.toolchain = types.SimpleNamespace(mingw=lambda: "")
+            self.assertIsNone(build.dav1d_windows(), "the Visual Studio route links no MinGW library")
+            build.toolchain = types.SimpleNamespace(mingw=lambda: "llvm-mingw")
+            build.LINUX = True
+            self.assertIsNone(build.dav1d_windows(), "Linux decodes AV1 through FFmpeg's dav1d")
+            build.LINUX = False
+            lib.unlink()
+            self.assertIsNone(build.dav1d_windows(), "headers without the library")
 
 
 if __name__ == "__main__":

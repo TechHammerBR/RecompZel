@@ -7,18 +7,11 @@ a floor, and the spare ones are counted out as well as in.
 python -I -B tests/test_mem_trim.py
 """
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
 
 
 def need(cond, why):
@@ -48,6 +41,9 @@ def main():
          "an ASTC upload does not check scratch allocation with its resize mode")
     need("if (!bc_scratch_layout(cmd, dst->bc_resized)) return false;" in copy,
          "a BC3 copy does not check scratch allocation with its destination resize mode")
+    guard = "if (!dst->bc_resized && (((w & 3) && dx + w != ow) || ((h & 3) && dy + h != oh))) return false;"
+    need(guard in copy and copy.index(guard) < copy.index("bc_scratch_layout("),
+         "a BC3 copy region that is not whole blocks and does not reach the level's edge is copied in")
     need("bc_have = false" in block(tex, "void bc_scratch_idle("), "the scratch given back is still taken for made")
     need("dead.push_back" in block(tex, "void bc_scratch_idle("), "the scratch is freed with no wait for the GPU")
     need("total_bytes -= std::min(total_bytes, tex.bytes + tex.pad)" in tex, "a texture leaves the budget by its texels only")

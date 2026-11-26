@@ -11,9 +11,13 @@
 #include <direct.h>
 
 #include "vk_dump.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
+bool dump_armed = false;   // (dump_on, vk_dump.h)
 namespace {
 
 enum Kind { KIND_FLOAT, KIND_UINT, KIND_SINT };
@@ -37,7 +41,6 @@ struct Item {
 
 std::vector<int64_t> targets;   // the presents whose next frame is dumped
 std::vector<int> counts;        // (and how many frames from there: RX_VK_DUMP=<present>+<count>)
-bool armed = false;
 int64_t armed_present = 0, armed_until = 0;
 int seq = 0;
 std::vector<Item> items;
@@ -224,7 +227,7 @@ void write_item(Item& it) {
         }
     }
     logf("%s", line);
-    static const bool no_png = getenv("RX_VK_DUMP_NOPNG") != nullptr;   // (statistics only)
+    static const bool no_png = env_on("RX_VK_DUMP_NOPNG");   // (statistics only)
     if (no_png) return;
     // (RX_VK_DUMP_RAW: float pictures also as raw RGBA32F)
     char path[1024];
@@ -232,7 +235,7 @@ void write_item(Item& it) {
     for (char* c = path + dir.size() + 1; *c; c++)
         if (*c == ' ' || *c == ':' || *c == '/' || *c == '\\') *c = '_';
     write_png(path, rgba.data(), it.w, it.h);
-    static const bool raw = getenv("RX_VK_DUMP_RAW") != nullptr;
+    static const bool raw = env_on("RX_VK_DUMP_RAW");
     if (raw && it.kind == KIND_FLOAT) {
         std::string rp(path);
         rp.replace(rp.size() - 4, 4, ".f32");
@@ -245,10 +248,6 @@ void write_item(Item& it) {
 }
 
 } // namespace
-
-bool dump_on() {
-    return armed;
-}
 
 int dump_seq() {
     return seq;
@@ -267,10 +266,10 @@ void dump_present(int64_t presents) {
                 if (*q == ',') q++;
             }
     }
-    if (armed) logf("vk: dump of the frame after present %lld: %d steps so far", (long long)armed_present, seq);
-    if (armed && presents < armed_until) return;   // (a run of frames: one folder, steps numbered on)
-    armed = std::find(targets.begin(), targets.end(), presents) != targets.end();
-    if (!armed) return;
+    if (dump_armed) logf("vk: dump of the frame after present %lld: %d steps so far", (long long)armed_present, seq);
+    if (dump_armed && presents < armed_until) return;   // (a run of frames: one folder, steps numbered on)
+    dump_armed = std::find(targets.begin(), targets.end(), presents) != targets.end();
+    if (!dump_armed) return;
     armed_present = presents;
     armed_until = presents + 1;
     for (size_t i = 0; i < targets.size(); i++)
@@ -312,10 +311,10 @@ bool step_wanted(int step, const char* what) {
 }
 
 void dump_image(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t layer, const char* what) {
-    if (!armed || !tex || !tex->image || tex->samples != VK_SAMPLE_COUNT_1_BIT) return;
+    if (!dump_armed || !tex || !tex->image || tex->samples != VK_SAMPLE_COUNT_1_BIT) return;
     if (!step_wanted(seq, what)) return void(seq++);
     // (RX_VK_DUMP_DEPTH_ONLY=1: the passes' colour targets left out, depth only (per-draw dumps of big targets fit))
-    static const bool depth_only = getenv("RX_VK_DUMP_DEPTH_ONLY") != nullptr;
+    static const bool depth_only = env_on("RX_VK_DUMP_DEPTH_ONLY");
     if (depth_only && (tex->aspect & VK_IMAGE_ASPECT_COLOR_BIT) && std::strncmp(what, "pass", 4) == 0) return void(seq++);
     // (RX_VK_DUMP_ONLY_W=<width>[,<width>...]: only targets that wide (the minimap's 468: its per-draw dumps alone,
     // small; the scene's and the output's: 2048,3840)
@@ -332,7 +331,7 @@ void dump_image(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t laye
     if (!only_w.empty() && std::find(only_w.begin(), only_w.end(), std::max(1u, tex->width >> std::min(level, tex->levels - 1))) ==
                                only_w.end())
         return void(seq++);
-    static const bool as_9e5 = getenv("RX_VK_DUMP_9E5") != nullptr;
+    static const bool as_9e5 = env_on("RX_VK_DUMP_9E5");
     const bool raw_9e5 = as_9e5 && tex->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32;
     if (!(tex->aspect & VK_IMAGE_ASPECT_COLOR_BIT) || raw_9e5) {
         if (!(tex->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && !raw_9e5) return;
@@ -420,7 +419,7 @@ std::vector<BufItem> buf_items;
 } // namespace
 
 void dump_buffer(VkCommandBuffer cmd, VkBuffer src, VkDeviceSize off, VkDeviceSize n, const char* what) {
-    if (!armed || !src || !n) return;
+    if (!dump_armed || !src || !n) return;
     n = std::min<VkDeviceSize>(n, 65536) & ~3ull;
     if (!n) return;
     BufItem it;
