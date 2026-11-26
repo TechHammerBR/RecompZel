@@ -602,13 +602,6 @@ static void cv_count_in(Obj *cv) {
     __atomic_add_fetch(&cv->cv_waiting, 1, __ATOMIC_SEQ_CST);
 }
 /* a waiter in: (cv->lk held) */
-/* a waiter counted in for SignalConditionVariable's check, before it takes cv->lk: a signal that reads 0 then came
-   before this waiter started to wait. Counted after cv->lk instead, a signal made without the guest mutex could read 0
-   while the waiter held cv->lk between its generation read and cv_enter, and return without the wake the old Signal
-   (which waited for cv->lk) gave it. cv_leave counts it out. */
-static void cv_count_in(Obj *cv) {
-    __atomic_add_fetch(&cv->cv_waiting, 1, __ATOMIC_SEQ_CST);
-}
 static void cv_enter(Obj *cv, Obj *m) {
     if (cv->cv_in && cv->cv_mutex != m) cv->cv_mixed = 1;
     if (!cv->cv_in) cv->cv_mixed = 0;

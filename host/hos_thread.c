@@ -1081,7 +1081,7 @@ static uint64_t last_fastest_core(int *cores) {
             const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *e = (const SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)(buf + at);
             if (!e->Size) break;
             if (e->Relationship == RelationProcessorCore && e->Processor.GroupCount && e->Processor.GroupMask[0].Group == group) {
-                masks[n] = (uint64_t)e->Processor.GroupMask[0].Mask & allowed;
+                masks[n] = (uint64_t)e->Processor.GroupMask[0].Mask;
                 classes[n] = e->Processor.EfficiencyClass;
                 n++;
             }

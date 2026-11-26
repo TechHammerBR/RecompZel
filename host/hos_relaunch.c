@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <process.h>   /* (_cexit) */
 #include "hos_relaunch.h"
 
 static volatile LONG relaunch_asked;

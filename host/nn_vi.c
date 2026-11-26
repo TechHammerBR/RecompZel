@@ -207,7 +207,7 @@ volatile int64_t hos_menu_shown_ns;
 static int menu_hold(int64_t now, int64_t shown, int cap, int on) {
     return on && cap > 60 && shown && now - shown >= 0 && now - shown < 150000000;
 }
-static int fps_now(int64_t now) {
+static int fps_effective(int64_t now) {
     static int on = -1, was;
     if (on < 0) on = !(getenv("HOS_MENU_FPS60") && !atoi(getenv("HOS_MENU_FPS60")));
     const int held = menu_hold(now, __atomic_load_n(&hos_menu_shown_ns, __ATOMIC_RELAXED), fps_max(), on);
@@ -616,7 +616,7 @@ static void realtime_step(int64_t now) {
     } else {
         __atomic_store_n(&hos_frame_seconds_bits, 0, __ATOMIC_RELAXED);
     }
-    const int top = timed ? 60 : fps_now(now);
+    const int top = timed ? 60 : fps_effective(now);
     const double ratio = sum / count * 60.0;
     int *slot = (int *)GP(mod + 0x2c8);
     if (*slot < 15 || (*slot > (fps_max() < 60 ? 60 : fps_max()) && *slot != slot_set)) {
