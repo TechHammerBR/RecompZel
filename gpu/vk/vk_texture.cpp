@@ -4249,6 +4249,10 @@ uint32_t texture_epoch() {
 }
 
 thread_local bool upload_defer_ok = false;
+/// (recompzel) set when upload_defer holds a texture back on this thread: the draw whose descriptors are being built samples
+/// the dummy for it, and those descriptors must not be kept (vk_draw.cpp: Descriptor reuse kept them while no slot version
+/// moved, and nothing looked the held texture up again: the forest's cliffs and Kakariko's ground stayed flat for minutes)
+thread_local bool texture_held_now = false;
 namespace {
 /// (hookshot) A new ASTC texture a draw samples, met after this frame's uploads took their budget: not uploaded now, the draw
 /// samples the placeholder, and the next frame's first look at it uploads it. An area's load made 300-800 ASTC uploads in one
@@ -4281,6 +4285,7 @@ bool upload_defer(Texture& tex) {
     const int64_t spent = summed ? frame_upload_ns.load(std::memory_order_relaxed) : tl_upload_frame == frame_no ? tl_upload_ns : 0;
     if (spent < budget_ns) return false;
     st_deferred.fetch_add(1, std::memory_order_relaxed), st_deferred_frame.fetch_add(1, std::memory_order_relaxed);
+    texture_held_now = true;   // (recompzel: the draw's descriptors are not kept)
     tex.defer_asks++;
     if (tex.defer_seen != frame_no) {   // (the deferral's age: the distinct textures, and when each was first held back)
         tex.defer_seen = frame_no;

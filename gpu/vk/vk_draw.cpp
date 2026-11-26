@@ -4841,6 +4841,9 @@ bool sampler_cache_on() {
 // slot that is not registered, only a registration (the global generation) can tell us that it is one now.
 TLS_OBJECT(desc_fp, std::vector<uint64_t>)   // ((version << 20 | slot), a handle read)
 thread_local bool desc_fp_dummy = false;      // (some handle read 0)
+}  // namespace
+extern thread_local bool texture_held_now;   // (recompzel, vk_texture.cpp upload_defer: a texture of this build was held back)
+namespace {
 thread_local bool desc_fp_on = false;         // (the build being made records its handles: Descriptor reuse on when it began)
 thread_local uint64_t desc_samp_seen = 0;     // (the samplers' generation when the build began)
 thread_local uint64_t desc_destroy_seen = 0;  // (the eviction generation: destroy_later retires a view without touching any slot or sampler generation)
@@ -5035,6 +5038,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
     DescWriter& out = dw();
     out.reset();
     out.prog = &p;
+    texture_held_now = false;                   // (recompzel: set by upload_defer while this build resolves its textures)
     desc_fp().clear(), desc_fp_dummy = false;   // (Descriptor reuse: the samplers' generation is read before the first handle,
     desc_fp_on = desc_slotgen_on();             // (the row read once for the whole build: it changes in play)
     desc_samp_seen = sampler_registrations_generation();   // (so one registered during the build still forces the next rebuild)
@@ -10289,6 +10293,9 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (desc_fp_on)   // (Descriptor reuse: what its handles resolved; the next such draw may keep it through other slots' churn)
             cb.desc.fp = desc_fp(), cb.desc.fp_dummy = desc_fp_dummy, cb.desc.samp = desc_samp_seen,
             cb.desc.destroy = desc_destroy_seen;
+        // (recompzel) a texture this build sampled was held back by the upload budget: the dummy is bound for it, and the next
+        // draw builds its descriptors again, which looks it up and uploads it, instead of keeping the dummy while no slot moves
+        if (texture_held_now) cb.desc.valid = false, texture_held_now = false;
     } else {
         st_desc_reused++;
     }

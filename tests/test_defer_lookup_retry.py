@@ -4,6 +4,8 @@ Two parts (2026-11-26, RTX 4080: the Kokiri Forest's cliffs and Hyrule Field's g
 load, the log's "in at last 1760 presents" lines):
 - vk_draw.cpp texture_view_of keeps no empty answer for a registered slot whose texture has no image yet: kept, every later
   binding got the dummy until some texture was destroyed;
+- vk_draw.cpp keeps no descriptors of a draw that bound the dummy for a held texture (Descriptor reuse kept them while no
+  slot version moved, and nothing looked the texture up again);
 - vk_texture.cpp upload_defer holds one back at most RX_VK_UPLOAD_DEFER_FRAMES presents (2), whatever the budget.
 And scripts/texture_problems.py reads both kinds of line from a log.
 
@@ -42,7 +44,10 @@ def main():
     store = draw.index("handle_hits()[key] = {view, tex, dgen, level, version")
     guard = draw.rfind("if (!view && known && !tex) {", 0, store)
     check(guard > 0 and store - guard < 400, "texture_view_of keeps the empty answer of a slot whose texture has no image yet")
+    check("if (texture_held_now) cb.desc.valid = false" in draw,
+          "a draw that bound the dummy for a held texture keeps its descriptors (Descriptor reuse)")
     body = block(tex, "bool upload_defer(Texture& tex) {")
+    check("texture_held_now = true;" in body, "upload_defer does not tell the draw that it held a texture back")
     check("RX_VK_UPLOAD_DEFER_FRAMES" in body, "upload_defer has no hold limit")
     rule = re.search(r"if \(tex\.defer_frame && frame_no - tex\.defer_frame >= max_hold\) return false;", body)
     check(rule is not None and body.index(rule.group(0)) < body.index("const int64_t spent"),
