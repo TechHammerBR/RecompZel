@@ -16,7 +16,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#if defined(_WIN32) && !defined(HOS_FIXTURE)   /* (recompzel: hos_window_closed_exit; HOS_FIXTURE: the tests that compile it) */
 #include <process.h>   /* (_cexit) */
+#define HOS_EXIT_FAST 1
+#endif
 #include "hos_relaunch.h"
 #include "../gpu/vk/compat/hookshot_env.h"   /* (env_on) */
 
@@ -206,8 +209,8 @@ void hos_window_closed_exit(void) {
     hos_log(again ? "display: window closed for a restart (the Insert menu's Restart now)" : "display: window closed, exiting");
     hos_close_finish();
     if (again) relaunch();
-#if defined(_WIN32) && !defined(HOS_FIXTURE)   /* (HOS_FIXTURE: the tests that compile this function, which end it themselves) */
-    if (!env_on("HOS_EXIT_DETACH")) _cexit(), TerminateProcess(GetCurrentProcess(), 0);   /* (recompzel: above) */
+#ifdef HOS_EXIT_FAST
+    if (!env_on("HOS_EXIT_DETACH")) _cexit(), TerminateProcess((HANDLE)-1, 0);   /* (recompzel: above; -1 the process itself) */
 #endif
     ExitProcess(0);
 }
