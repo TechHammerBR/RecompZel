@@ -52,7 +52,7 @@ bool holds = false;
 bool dlss_fg_holds() { return holds; }
 uint64_t antilag_frame() { return 0; }   // (vk_antilag.cpp: AMD Anti-Lag 2 not on here)
 // (vk_framegen.cpp hud_source: FSR 3.1's source with the HUD marked; no picture copied here, the frame as it is)
-bool hud_source(VkCommandBuffer, int, uint32_t, uint32_t, int, int, uint32_t, uint32_t) { return false; }
+bool hud_source(VkCommandBuffer, int, uint32_t, uint32_t, int, int, uint32_t, uint32_t, bool) { return false; }
 int fsr_calls = 0, fsr_result = 1;
 bool last_native_pq = false;
 int fsr3fi_frames(VkCommandBuffer, OutSet&, int, uint32_t w, uint32_t h, uint64_t sequence, bool native_pq, const float* t,
@@ -138,7 +138,7 @@ void check(uint32_t sw, uint32_t sh, const int* crop, uint32_t x, uint32_t y, ui
         // (DLSS FG chosen, the set without an Upscaler picture: the game's frame alone, neither FSR 3.1's nor the built-in one's)
         holds = true;
         for (auto& set : fg.sets) set.busy = false;   // (three sets, no display thread to show them: free for a fourth)
-        CHECK(framegen_record(nullptr, 1, sw, sh, crop, false) && fsr_calls == 2 && fg.recorded->made == 0);
+        CHECK(framegen_record(nullptr, 1, sw, sh, crop, 0.0f, false) && fsr_calls == 2 && fg.recorded->made == 0);
         CHECK(last_maker == FgMaker::DlssPaused && dispatches == 11 && copies == 4);   // (its copy and luma passes only)
         holds = false;
         CHECK(copy_pc[0] == int(x) && copy_pc[1] == int(y) && copy_pc[2] == int(w) && copy_pc[3] == int(h));
@@ -146,7 +146,7 @@ void check(uint32_t sw, uint32_t sh, const int* crop, uint32_t x, uint32_t y, ui
         CHECK(copy.x0 == 0.0f && copy.cover == 0.0f);
         const auto record = [&](float cover) {   // (no display thread here to show a set and free it)
             for (OutSet& set : fg.sets) set.busy = false;
-            return framegen_record(nullptr, 1, sw, sh, crop, cover);
+            return framegen_record(nullptr, 1, sw, sh, crop, cover, false);   // (SDR)
         };
         CHECK(record(0.5f) && copy.x0 == 0.0f && copy.cover == 0.0f);
         margin = 0.125f;

@@ -54,7 +54,8 @@ enum VkShaderFloatControlsIndependence {
     VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL = 1,
     VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE = 2,
 };
-constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
+constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1, VK_DRIVER_ID_MESA_RADV = 3;
+#define VK_MAKE_VERSION(major, minor, patch) ((((uint32_t)(major)) << 22U) | (((uint32_t)(minor)) << 12U) | ((uint32_t)(patch)))
 struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0, max_workgroup_subgroups = 32;
     VkShaderStageFlags subgroup_stages = 0;
@@ -74,7 +75,8 @@ struct {
     } vk12;
     struct { VkBool32 shaderInt16 = 1; } features;
     bool float_atomic_add = false;
-    struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
+    // (driverVersion: make_profile's RADV mesh workaround, need_mesh_num_workgroups, reads it)
+    struct { uint32_t driverVersion = 0; struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
     struct { bool gather_offset = false, warp64 = false, frag_shuffle_fallback = false; } policy;
 } dev;
 '''

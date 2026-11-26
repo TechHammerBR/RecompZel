@@ -14,6 +14,7 @@ python -I -B tests/test_staging_burst.py --headers <Vulkan-Headers/include> [--c
 """
 import argparse
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -26,6 +27,17 @@ RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# (staging()'s spare arena, made off the replay thread: off, as on a card that keeps no more than one arena, spare_on's rule;
+# and RX_VK_RES_LOG's tag of what memory is for, which counts nothing here)
+SPARE_OFF = r"""
+struct { std::atomic<int64_t> taken{0}, made_here{0}; } spare_arenas;
+bool spare_on() { return false; }
+bool spare_take(Arena&) { return false; }
+bool spare_give_back(const Arena&) { return false; }
+enum class MemKind { Staging };
+struct MemKindScope { explicit MemKindScope(MemKind) {} };
+"""
+
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
@@ -33,9 +45,11 @@ def main():
     p.add_argument("--cxx", default="g++")
     a = p.parse_args()
     tex = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
-    arena = "constexpr uint64_t kArena = 64ull << 20;"
-    if tex.count(arena) != 1:
-        raise SystemExit("vk_texture.cpp's arenas are no longer 64 MB: update this test")
+    # (the arenas' size, as the source has it: the cases are in arenas of that size)
+    sizes = re.findall(r"(?m)^constexpr uint64_t kArena = \d+ull << 20;", tex)
+    if len(sizes) != 1:
+        raise SystemExit("vk_texture.cpp's arena size (kArena, in MB) not found once: update this test")
+    arena = sizes[0]
     frame = block(tex, "void texture_frame(")
     loop = block(frame, "for (auto it = arenas.begin(); it != arenas.end();) {")
     for needle in ("const bool idle = it->value <= completed && it->value != rec_value;", "destroy_buffer(it->buffer, it->allocation);",
@@ -47,6 +61,7 @@ def main():
     if frame.index("completed_value = completed;") > frame.index(loop):
         raise SystemExit("texture_frame gives arenas back before it notes what the GPU completed: update this test's frame()")
     actual = block(tex, "struct Arena {") + ";\nstd::vector<Arena> arenas;\n" + arena + "\n"
+    actual += block(tex, "bool arena_make(Arena& a, uint64_t size) {") + "\n" + SPARE_OFF
     actual += block(tex, "struct Staging {") + ";\n" + block(tex, "Staging staging(")
     actual += "\nuint64_t give_back(uint64_t completed, uint64_t keep) {\n    uint64_t kept = 0;\n    " + loop + "\n    return kept;\n}\n"
     actual = actual.replace("std::chrono::steady_clock", "Clock")

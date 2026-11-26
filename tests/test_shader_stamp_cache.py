@@ -69,9 +69,9 @@ class ShaderStampCacheTests(unittest.TestCase):
             "gpu/vk/compat/compat.h": "struct Compat {};\n",
             "gpu/compat/common.h": "struct Common {};\n",
             "gpu/render/render.h": "struct Render {};\n",
-            "gpu/third_party/suyu/video_core/textures/decoders.cpp": "int decoder;\n",
-            "gpu/third_party/suyu/video_core/textures/astc.cpp": "int astc;\n",
-            "gpu/third_party/suyu/video_core/textures/texture.h": "struct Texture {};\n",
+            "gpu/vk/texdecode/block_linear.cpp": "int block_linear;\n",
+            "gpu/vk/texdecode/astc.cpp": "int astc;\n",
+            "gpu/vk/texdecode/texdecode.h": "struct Texdecode {};\n",
             "host/posix/windows.h": "struct Posix {};\n",
             "host/posix/win32_posix.c": "int win32;\n",
             "gen/ui_fonts.cpp": "int fonts;\n",
@@ -230,8 +230,8 @@ class ShaderStampCacheTests(unittest.TestCase):
 
     def test_third_party_parts_are_built_for_x86_64_v3_with_the_stamp(self):
         """(nx2/third_party_objects.py) Eden's recompiler, sirit, Dear ImGui and zbic's zstd at THIRD_PARTY_CPU, with the stamp at
-        the end of their headers, so the release's set fits every CPU with v3's features; the back end's own files (and suyu's
-        texture decoders, built with its profile) at the game's CPU, without it"""
+        the end of their headers, so the release's set fits every CPU with v3's features; the back end's own files (and the CPU
+        texture decoders, gpu/vk/texdecode, built with its profile) at the game's CPU, without it"""
         for linux in (False, True):
             with self.subTest(linux=linux):
                 plain = self.jobs(linux)
@@ -282,7 +282,7 @@ class ShaderStampCacheTests(unittest.TestCase):
     # (RX_VK_PGO: the back end's own files, not Eden's recompiler, sirit, Dear ImGui, the fonts, zstd or the
     # POSIX calls)
     def own(self, jobs):
-        return {n for n in jobs if n.startswith(("gpu/vk/vk_", "gpu/third_party/suyu/"))}
+        return {n for n in jobs if n.startswith(("gpu/vk/vk_", "gpu/vk/texdecode/"))}   # (the CPU texture decoders too)
 
     def test_no_profile_is_the_build_as_it_was(self):
         for linux in (False, True):
@@ -299,7 +299,9 @@ class ShaderStampCacheTests(unittest.TestCase):
                     gen = self.jobs(linux, pgo="gen")
                 own = self.own(plain)
                 self.assertIn("gpu/vk/vk_draw.cpp", own)
-                self.assertIn("gpu/third_party/suyu/video_core/textures/astc.cpp", own)
+                self.assertIn("gpu/vk/texdecode/astc.cpp", own)
+                self.assertIn("gpu/vk/texdecode/block_linear.cpp", own)
+                self.assertFalse([n for n in plain if n.startswith("gpu/third_party/")])   # (suyu's texture decoders are no longer built)
                 self.assertEqual(set(gen) - set(plain), {"host/pgo_rt.c"})   # (the counters' writer, the module's own copy)
                 self.assertEqual({n for n, j in gen.items() if "-fprofile-instr-generate" in j["flags"]}, own)
                 self.assertEqual(self.changed(plain, {n: gen[n] for n in plain}), own)

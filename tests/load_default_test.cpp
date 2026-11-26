@@ -85,6 +85,35 @@ int main(int argc, char** argv) {
     CHECK(std::remove(path.c_str()) == 0 && !load_default::marker_there(path));
     CHECK(load_default::marker_write_lacked(path, 4189) && load_default::marker_there(path));
     CHECK(std::remove(path.c_str()) == 0);
+    // which session left it: told by its text, the waits' marker for any text but the lacked one's (a marker by hand)
+    {
+        using load_default::Marker;
+        using load_default::marker_counts;
+        using load_default::marker_kind;
+        CHECK(marker_kind(path) == Marker::kNone);
+        CHECK(load_default::marker_write(path, 884.4, 2556.6) && marker_kind(path) == Marker::kWaits);
+        CHECK(load_default::marker_write_lacked(path, 502) && marker_kind(path) == Marker::kLacked);
+        FILE* hand = std::fopen(path.c_str(), "wb");
+        CHECK(hand && std::fputs("x", hand) >= 0 && std::fclose(hand) == 0 && marker_kind(path) == Marker::kWaits);
+        CHECK(std::remove(path.c_str()) == 0);
+        // the lacked marker on a 16 GB PC (an Arc A750, 16,279 MB; start held 25.8 GB of private memory there and the window
+        // stayed on its start-up screen): not followed, so the default is create again. At 20 GB and under the same
+        CHECK(!marker_counts(Marker::kLacked, 16279) && !marker_counts(Marker::kLacked, 8192) &&
+              !marker_counts(Marker::kLacked, load_default::kStartRamMb));
+        CHECK(choose(nullptr, true, marker_counts(Marker::kLacked, 16279)).create);
+        // with more RAM it is followed as before, and where the RAM is not known too
+        CHECK(marker_counts(Marker::kLacked, load_default::kStartRamMb + 1) && marker_counts(Marker::kLacked, 32768) &&
+              marker_counts(Marker::kLacked, 0));
+        // the waits' marker on any RAM: the RX 580 that needs start had 16 GB
+        CHECK(marker_counts(Marker::kWaits, 16384) && marker_counts(Marker::kWaits, 8192) && marker_counts(Marker::kWaits, 0) &&
+              marker_counts(Marker::kWaits, 65536));
+        CHECK(!choose(nullptr, false, marker_counts(Marker::kWaits, 16384)).create);
+        // no marker: nothing to follow
+        CHECK(!marker_counts(Marker::kNone, 16384) && !marker_counts(Marker::kNone, 0));
+        // the switch still wins over both
+        CHECK(!choose("start", true, marker_counts(Marker::kLacked, 16279)).create);
+        CHECK(choose("create", true, marker_counts(Marker::kWaits, 16384)).create);
+    }
     std::printf("load_default: ok\n");
     return 0;
 }

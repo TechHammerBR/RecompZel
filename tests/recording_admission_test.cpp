@@ -126,6 +126,8 @@ int desc_reuse_level() { return 2; }   // (vk_draw.cpp: RX_VK_DESC_REUSE and the
 /* BANK_CACHE */
 std::array<std::array<BankCache, kNvnStages>, 2>& bank_cache() { static thread_local std::array<std::array<BankCache, kNvnStages>, 2> b; return b; }
 void make_dummies() {}
+// (vk_draw.cpp's per-program descriptor slots, emptied by a new recording past 8192: nothing kept here)
+std::unordered_map<const void*,int>& prog_slots() { static thread_local std::unordered_map<const void*,int> m; return m; }
 /* BEGIN */
 #define FINE_SCOPE(...) ((void)0)
 #define FINE_N(...) ((void)0)

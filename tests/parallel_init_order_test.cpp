@@ -24,6 +24,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 struct Op {
@@ -117,6 +118,8 @@ VkResult vkQueueSubmit2(VkQueue, uint32_t n, const VkSubmitInfo2* si, VkFence) {
         }
     return VK_SUCCESS;
 }
+// (vk_replay.cpp: a segment's submit, made again after a refusal for want of memory; to the queue as it is here)
+VkResult submit_or_retry(const VkSubmitInfo2& si, VkFence fence) { return vkQueueSubmit2(VK_NULL_HANDLE, 1, &si, fence); }
 std::mutex cbs_mu;
 VkCommandBuffer make_cb(const char* what, int k) {
     auto cb = std::make_unique<VkCommandBuffer_T>();
@@ -183,13 +186,19 @@ VkCommandBuffer last_barrier_cmd = VK_NULL_HANDLE;
 thread_local VkCommandBuffer last_pass_end_cmd = VK_NULL_HANDLE;
 bool is_bc(VkFormat) { return false; }
 bool is_astc(VkFormat) { return false; }
+struct Texture {
+    VkImage image;
+    // (what the cut's astc_trace_note reads, RX_VK_FRAME_TRACE: unset here, so it returns at once)
+    uint32_t levels = 1, width = 1, height = 1, layers = 1, nvn_format = 0;
+    uint64_t gpu = 0;
+};
+namespace {   // (vk_texture.cpp's unnamed namespace, open where the cut starts: the cut closes it and opens it again around
+              // upload_to_earliest_begin/end, which other files call)
 #include "init_upload.inc"
+}
 #include "init_hooks.inc"
 
 // ---- create()'s initialization of a new image ----
-struct Texture {
-    VkImage image;
-};
 std::vector<std::unique_ptr<Texture>> textures;
 std::mutex par_lock;   // (texture_get's ParLock: an image is made once, by whichever worker gets there first)
 Texture* create(VkImage image) {
@@ -358,6 +367,10 @@ void submit_post() {
     si.commandBufferInfoCount = n, si.pCommandBufferInfos = cb;
     vkQueueSubmit2(VK_NULL_HANDLE, 1, &si, VK_NULL_HANDLE);
 }
+// (vk_replay.cpp: the host-read barrier at a segment's end does nothing here; the FPS counter's render lane times a wait,
+// fps_stats.h is the real one, included by the test)
+void host_read_barrier(VkCommandBuffer) {}
+struct FpsRtWait { explicit FpsRtWait(int) {} };
 /// replay_handle from its segments on (the dry pass, the part before and the slots' order are the caller's)
 void submit_segments(std::vector<Segment> seg, std::vector<int> order) {
     run_order = order;

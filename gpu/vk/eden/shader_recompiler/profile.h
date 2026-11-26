@@ -109,6 +109,7 @@ struct Profile {
     bool has_broken_spirv_subgroup_mask_vector_extract_dynamic{};
     bool has_broken_spirv_subgroup_shuffle{};
     bool has_broken_spirv_fragment_shuffle{};   // (Lichii #273: AMD's proprietary driver, fragment stages only)
+    bool need_mesh_num_workgroups{};   // (RADV before Mesa 26.2.5: reserve mesh grid-size registers)
     u32 max_subgroup_size{};
 
     u32 gl_max_compute_smem_size{};

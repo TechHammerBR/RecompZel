@@ -3035,8 +3035,10 @@ void save() {
         // (2: game_speed below 2 was only ever the old default, see menu_init; 3: the mouse's buttons are bindings, see
         // host/nn_hid.c binds_load; 4: Descriptor reuse on by default, see menu_init and vk_draw.cpp desc_slotgen_on; 5: the
         // Menu shortcut "Insert, F1 or Esc" by default, see menu_init; 6: the Aspect ratio's 16:9 from before moves on a
-        // screen narrower than 16:9, see menu_init and host/hos_wide_size.h)
-        fprintf(f, "options_version=6\n");
+        // screen narrower than 16:9, see menu_init and host/hos_wide_size.h; 7: Longshot's (Sprint's Toggle on by default), not
+        // taken here, kept so a file from Longshot reads the same; 8: Plus is Tab alone, Enter no longer its second key, see
+        // host/nn_hid.c binds_load)
+        fprintf(f, "options_version=8\n");
         fputs(others.c_str(), f);
         if (!can_bind()) fputs(kept.c_str(), f);
         for (int i = 0; i < HOS_KEY_N && can_bind(); i++) {   // (the stick's and camera's rows, HOS_KEY_MOVE_*/CAM_*, have no pad_ line; the ocarina note rows do)
@@ -6149,6 +6151,11 @@ void draw_startup(ui::Ctx& c) {
 } // namespace
 
 void startup_fade_to(float f) { startup_fade.store(f, std::memory_order_relaxed); }
+void menu_shown_output(uint32_t& w, uint32_t& h) {
+    const Out o = shown_output();
+    w = o.w, h = o.h;
+}
+void menu_game_size(float scale, uint32_t& w, uint32_t& h) { game_size(scale, w, h); }
 
 // (hookshot, #1886) The Upscaler row's one-time questions: NVIDIA's NGX started (dlss_probe), AMD's FSR 4 loaded
 // (fsr4_probe), Intel's XeSS context made once (xess_probe), FSR 3.1's GPU check. They were asked at the menu's first open, on the frame's thread, and NGX's start

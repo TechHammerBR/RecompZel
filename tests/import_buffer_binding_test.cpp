@@ -25,6 +25,8 @@ struct Pool {
     VkBuffer buffer{}; VkDeviceMemory memory{}; VkDeviceAddress address = 0;
     std::vector<VkDeviceMemory> pieces;
 };
+std::map<uint64_t, Pool> imported;   // (vk_memory.cpp's live imports: none here)
+size_t retired_pools_count() { return 0; }
 struct { VkDevice device{}; VkPhysicalDeviceMemoryProperties memory{}; bool dma_buf_import = true, sparse_buffers = true; VkDriverId driver_id{}; } dev;
 struct Host { uint8_t* guest_base() { static uint8_t bytes[4096]{}; return bytes; } } host_value;
 Host* host = &host_value;
@@ -44,6 +46,8 @@ uint32_t allocated_type = UINT32_MAX;
 unsigned owner_releases = 0;
 uintptr_t next_id = 1;
 std::map<VkBuffer, int> buffers;
+// (vk_memory.cpp: every import asked for, and the table RX_VK_IMPORT_DIAG's line reads; no live or retired import here)
+int64_t st_imports_asked = 0;
 std::set<VkBuffer> bound_buffers;
 std::set<VkDeviceMemory> memories;
 std::vector<char> release_order;
@@ -54,7 +58,10 @@ const char* getenv(const char*) { return nullptr; }
 bool env_on(const char* name) { const char* v = getenv(name); return v && !env_value_off(v); }   // (the switches through the stand-in)
 using SIZE_T = size_t;
 constexpr int MEM_COMMIT = 1, MEM_RESERVE = 2, PAGE_READWRITE = 4;
-struct MEMORY_BASIC_INFORMATION { uint8_t* BaseAddress; size_t RegionSize; int State; };
+struct MEMORY_BASIC_INFORMATION { uint8_t* BaseAddress; size_t RegionSize; unsigned long State, Protect, Type; };   // (DWORDs)
+// (the exe's optional exports, looked up by name: an exe without them, so none is called)
+void* GetModuleHandleA(const char*) { return nullptr; }
+void* GetProcAddress(void*, const char*) { return nullptr; }
 void* VirtualAlloc(void* p, size_t, int, int) { return p; }
 // (import_fence.h's stand-in: how many stood, and how many allocations were made while one did)
 unsigned fences = 0, fenced_allocations = 0;

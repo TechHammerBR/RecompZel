@@ -230,6 +230,8 @@ def proc_start(pid):
             stat = f.read()
         return int(stat[stat.rindex(")") + 2:].split()[19])
     except (OSError, ValueError, IndexError):
+        if os.name == "nt":   # (WINDOWS patched off, as a test does: os.kill(pid, 0) here is a Ctrl+C to every process of the console)
+            return _win_start(pid)
         if sys.platform != "linux":
             try:
                 os.kill(pid, 0)

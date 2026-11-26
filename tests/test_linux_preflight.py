@@ -132,6 +132,16 @@ class LinuxPreflightTests(unittest.TestCase):
             dest = Path(cmd[cmd.index("--extract") + 1])
             (dest / "exefs").mkdir(parents=True)
             (dest / "romfs").mkdir()
+            # (a complete romfs, as authored stand-ins: what the build checks for before it goes on (ROMFS_NEEDED and the
+            # supported version's size table). Files start as zstd, so the damaged-file check reads them as whole)
+            needed = [(names[0], there is os.path.isdir) for names, there in self.make.ROMFS_NEEDED]
+            for name, folder in needed + [("System/Resource/" + self.make.ROMFS_TABLE, False)]:
+                path = dest / "romfs" / name
+                if folder:
+                    path.mkdir(parents=True, exist_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"\x28\xb5\x2f\xfd" + b"authored stand-in")
             header = bytearray(0x60)
             header[:4] = b"NSO0"
             header[0x40:0x44] = bytes.fromhex(self.make.BUILD_ID)

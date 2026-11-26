@@ -142,6 +142,14 @@ def main():
                "HOS_AUDIO_DEVICE", "HOS_CRASH_TEST", "HOS_LOG_BATCH_MS", "HOS_NVN_REC_SHIFT", "HOS_NVN_WATCH_DRAW",
                "HOS_SDL_VERSION", "HOS_STATS_AFTER", "HOS_TEXT_SIZE", "HOS_THREAD_TIMES", "HOS_VIDEO_INPUT_LIMIT",
                "HOS_WIDE_UI_LOG", "HOS_PROFILE_EVERY", "HOS_SHADOW_BUCKET"}
+    # (gpu/vk/switches.def gives every switch its type: an int or an enum is a number too, and a bool never is, so a switch
+    # merged in with an atoi read is caught unless its row says it holds a number)
+    declared = dict(re.findall(r"^SW\(([A-Z0-9_]+), \w+, (\w+),", (ROOT / "gpu/vk/switches.def").read_text(encoding="utf-8"),
+                               re.M))
+    listed_bool = sorted(n for n in numbers if declared.get(n) == "bool")
+    if listed_bool:
+        raise SystemExit("FAIL: this check lists as numbers switches that gpu/vk/switches.def declares bool: " + ", ".join(listed_bool))
+    numbers |= {n for n, kind in declared.items() if kind in ("int", "enum")}
     switch = r'"((?:RX|HOS|HOOKSHOT|EDEN|NVN)_[A-Z0-9_]+)"'
     direct = re.compile(r"atoi\(getenv\(" + switch + r"\)\)")
     taken = re.compile(r"\b(\w+)\s*=\s*getenv\(" + switch + r"\)")

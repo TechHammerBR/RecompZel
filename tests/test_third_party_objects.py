@@ -132,7 +132,7 @@ class Fetch(unittest.TestCase):
                     "third_party/zbic/zstd.c", "gpu/vk/eden/x.cpp", "gpu/vk/sirit/src/sirit.cpp"):
             self.assertTrue(tpo.is_third_party(os.path.join(r, rel), r), rel)
         for rel in ("gpu/vk/vk_draw.cpp", "gpu/vk/vk_vma.cpp", "host/hos_main.c", "gpu/render/rx_core.cpp",
-                    "gpu/third_party/suyu/video_core/textures/astc.cpp",   # (the Vulkan back end's own, with its play profile)
+                    "gpu/vk/texdecode/astc.cpp",   # (the Vulkan back end's own, with its play profile)
                     "third_party/a64-kit/rt/a64.c", "work/sa/gen/code_001.c"):
             self.assertFalse(tpo.is_third_party(os.path.join(r, rel), r), rel)
         self.assertFalse(tpo.is_third_party("/elsewhere/third_party/opus/x.c", r))

@@ -98,8 +98,9 @@ struct State {
     bool feature_aa = false;
     uint64_t features_made = 0;      // (how many times: a feature made again in play costs a stall, so each says why)
     // (the preset, output and HDR a creation failed for: not tried again each frame, but once any of them changes, so the
-    // menu's DLSS rows bring DLSS back without a restart. 0: none failed)
-    uint64_t refused = 0;
+    // menu's DLSS rows bring DLSS back without a restart. Out of video memory is often temporary, so that one is tried
+    // again after a bounded interval (dlss_checks::retry). 0: none failed)
+    dlss_checks::retry::Refusal refusal;
     // (the last evaluation's result, and how many times in a row it failed that way: what its log line is spaced by)
     NVSDK_NGX_Result eval_result = NVSDK_NGX_Result_Success;
     uint64_t eval_repeats = 0;
@@ -415,7 +416,13 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
     // (the quality mode with them: the Render resolution row asks for another feature of the same output)
     const uint64_t key = (uint64_t)ow << 44 ^ (uint64_t)oh << 24 ^ (uint64_t)((int)mode & 7) << 8 ^ (uint64_t)preset << 1 ^
                          (hdr ? 1 : 0) ^ 1ull << 63;
-    if (s.refused == key) return *fail = "its feature was not made", 0;
+    // (a refusal for this key: kept, unless it was out of video memory and its retry is due)
+    const dlss_checks::retry::Verdict refused = dlss_checks::retry::verdict(s.refusal, key, texture_frame_no());
+    if (refused == dlss_checks::retry::Verdict::Wait || refused == dlss_checks::retry::Verdict::Ended)
+        return *fail = "its feature was not made", 0;
+    if (refused == dlss_checks::retry::Verdict::Try)
+        logf("vk: NVIDIA DLSS: its feature is tried again (%u of %u) after it was refused for want of video memory",
+             s.refusal.tries + 1, dlss_checks::retry::kMaxTries);
     if (s.feature) {   // (the old one, once a new one is to be made)
         NVSDK_NGX_Handle* old = s.feature;
         temporal_later([old] { NVSDK_NGX_VULKAN_ReleaseFeature(old); });
@@ -441,21 +448,38 @@ int prepare(VkCommandBuffer cmd, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t
                               (hdr ? NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure : 0);
     const auto t0 = std::chrono::steady_clock::now();
     ::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);   // (NGX records into cmd itself: what this thread recorded through vk_work.h reaches cmd first)
-    const NVSDK_NGX_Result r = NGX_VULKAN_CREATE_DLSS_EXT(cmd, 1, 1, &s.feature, s.params, &cp);
+    NVSDK_NGX_Result r = NGX_VULKAN_CREATE_DLSS_EXT(cmd, 1, 1, &s.feature, s.params, &cp);
     const double made_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     note_work();   // (NGX's own commands, which vk_work.h does not see: the next full_barrier is not left out)
+    // (RX_VK_DLSS_FAIL_CREATE=<result>[:<times>]: a test's forced creation result, so the out-of-video-memory retry can
+    // run on any GPU; 0xBAD0000D is NVSDK_NGX_Result_FAIL_OutOfGPUMemory. A feature the real call made is let go.)
+    if (const char* fail = getenv("RX_VK_DLSS_FAIL_CREATE"); fail && *fail) {
+        static unsigned long long tried = 0;
+        char* end = nullptr;
+        const unsigned long long result = strtoull(fail, &end, 0);
+        const unsigned long long times = end && *end == ':' ? strtoull(end + 1, nullptr, 0) : ~0ull;
+        if (tried++ < times) {
+            if (s.feature) NVSDK_NGX_VULKAN_ReleaseFeature(s.feature);
+            s.feature = nullptr;
+            r = (NVSDK_NGX_Result)result;
+        }
+    }
     if (NVSDK_NGX_FAILED(r) || !s.feature) {
         logf("vk: NVIDIA DLSS: its feature was not made (%#x) for %ux%u -> %ux%u", (unsigned)r, max_w, max_h, ow, oh);
         s.feature = nullptr;
-        // (a transient one too, out of video memory while menu switches had old features still waiting to be let go: the
-        // game's upscale until a DLSS setting changes, not for the rest of the run)
-        s.refused = key;
+        // (out of video memory while menu switches had old features still waiting to be let go is often temporary: tried
+        // again after a bounded interval. Any other failure, or the last of them, keeps the game's upscale until a DLSS
+        // setting changes)
+        const bool out_of_memory = r == NVSDK_NGX_Result_FAIL_OutOfGPUMemory;
+        if (dlss_checks::retry::failed(s.refusal, key, out_of_memory, texture_frame_no()) && out_of_memory)
+            logf("vk: NVIDIA DLSS: its feature was not made %u times for want of video memory: DLSS stays off until a DLSS "
+                 "setting changes", s.refusal.tries);
         return *fail = "its feature was not made", 0;
     }
     s.feature_rw = max_w, s.feature_rh = max_h, s.feature_ow = ow, s.feature_oh = oh, s.min_rw = min_w, s.min_rh = min_h;
     s.feature_preset = preset;
     s.feature_hdr = hdr;
-    s.refused = 0;
+    dlss_checks::retry::made(s.refusal);
     s.feature_aa = mode == NVSDK_NGX_PerfQuality_Value_DLAA;
     s.features_made++;
     logf("vk: NVIDIA DLSS: feature create size %ux%u (recommended), input resources %ux%u", create_w, create_h, max_w, max_h);
@@ -512,7 +536,7 @@ bool evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
 
 void release() {
     State& s = st();
-    s.refused = 0;   // (another engine chosen, or the chain idle: DLSS asked again makes its feature again)
+    s.refusal = {};   // (another engine chosen, or the chain idle: DLSS asked again makes its feature again)
     if (!s.feature) return;
     NVSDK_NGX_Handle* old = s.feature;
     temporal_later([old] { NVSDK_NGX_VULKAN_ReleaseFeature(old); });
@@ -566,7 +590,7 @@ void dlss_device_extensions(std::vector<const char*>& want, const std::vector<Vk
     if (!both) g_why = DLSS_NEEDS_RTX;
 }
 
-void dlss_retry() { st().refused = 0; }
+void dlss_retry() { st().refusal = {}; }
 
 int dlss_ngx_ready() {
     if (dlss_why() != DLSS_OK) return 0;

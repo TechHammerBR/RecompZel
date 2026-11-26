@@ -122,6 +122,8 @@ typedef struct {
     void *mf;                        /* (hookshot) an AV1 decoder of our own instead of ctx (av1: which one) */
     const Av1Decoder *av1;
     int64_t decode_ns, decode_worst_ns, decoded, skipped;   /* (hookshot) the movie's decoding, logged when it stops */
+    int64_t held;      /* (hookshot, issue 1964) acquires that showed the last picture again, the next one early (dec_acquire) */
+    int shown_slot;    /* (hookshot) 1 + the buffer the last picture handed out is in, 0 none yet */
     int64_t recent_ns;   /* (hookshot) the recent pictures' decode time, for the catch-up (dec_acquire) */
     int64_t first_pts, end_pts;
     AVPacket *pkt;
@@ -141,8 +143,6 @@ typedef struct {
     int clock_set;                   /* (hookshot) the movie's clock: the picture at clock_pts was due at clock_ns */
     int64_t clock_ns, clock_pts;
     int64_t last_pts;                /* the pts of the last picture handed out */
-    int last_slot;                   /* (Hookshot) the buffer it went into, plus one (0: none yet) */
-    int64_t held;                    /* (Hookshot) acquisitions answered with that picture again (ahead of the clock) */
     int64_t log_submits;             /* (HOS_VIDEO_LOG) submissions still to log, after a flush or the end */
     int npending;                    /* (hookshot) submissions not decoded yet (the list's length): the input limit's count */
     int64_t refused;                 /* submissions refused while the decoder was full, logged when the movie stops */
@@ -561,10 +561,11 @@ static void movie_report(Dec *d) {
         const double each = (double)d->decode_ns / d->decoded / 1e6,
                      every = (double)(d->end_pts - d->first_pts) / (d->decoded - 1) / 1e6;   /* (pts in ns) */
         hos_log("video: a movie of %lld pictures on %s: %.1f ms to decode each (worst %.1f), one shown every %.1f ms%s; "
-                "%lld skipped to keep up with its sound; %lld submissions put off while %d waited", (long long)d->decoded,
+                "%lld skipped to keep up with its sound; %lld submissions put off while %d waited; %lld times the last "
+                "shown again, the next ahead of its clock", (long long)d->decoded,
                 d->ctx ? d->ctx->codec->name : d->mf ? d->av1->name : "no decoder", each, (double)d->decode_worst_ns / 1e6,
                 every, each > every ? " (slower than it plays)" : "", (long long)d->skipped, (long long)d->refused,
-                input_limit());
+                input_limit(), (long long)d->held);
         /* (hookshot) the pictures' pace as the game took them: a movie that shows ten pictures a second while the frames
            are on time (the player busy elsewhere) has long waits here and nothing in the frame times */
         hos_log("video: the longest wait between two of its pictures %.0f ms", (double)d->gap_worst_ns / 1e6);
@@ -577,7 +578,8 @@ static void movie_report(Dec *d) {
     }
     d->out_ns = d->gap_worst_ns = 0;
     memset(d->gaps, 0, sizeof d->gaps);
-    d->decode_ns = d->decode_worst_ns = d->decoded = d->skipped = d->refused = d->recent_ns = 0;
+    d->decode_ns = d->decode_worst_ns = d->decoded = d->skipped = d->refused = d->recent_ns = d->held = 0;
+    d->shown_slot = 0;
 }
 static void pending_push(Dec *d, AVPacket *pkt) {
     Pending *n = (Pending *)calloc(1, sizeof *n);
@@ -823,98 +825,101 @@ static void dec_acquire(Ctx *c) {
         d->skipped += skipped;
         if (skipped && video_log()) hos_log("video: %d pictures skipped to catch up with the movie's clock", skipped);
     }
-    {   /* (Hookshot) And above 60 fps the game still takes one picture a frame: at 120 the movie ran at twice its speed,
-           ended early and stayed black while its sound and voice lines went on. A picture
-           ahead of the movie's clock (by more than half a frame at 60) is not handed out yet: the buffer gets the last
-           picture again, as a display shows a frame until the next one is due. Only for pools the game reads through
-           the API (OoT's): nothing in guest memory to keep. HOS_VIDEO_NO_HOLD=1: as before */
+    int held = 0;
+    {   /* (hookshot, issue 1964) and none ahead of it. The game takes the next picture when its count of the movie's 60ths
+           says so (hos_movie_frames, host/nn_vi.c), and while a movie plays the frames are paced at 240 and the count
+           follows their time, not the clock: on an RTX 3080 at ~226 fps the opening's picture ran ahead, 0.2 s after 6 s
+           and 0.73 s at its end, while its sound kept the clock (heard as the sound coming late). A picture more than
+           `late` ahead waits in the queue, and the buffer handed out shows the last picture again: copied into it from
+           the buffer that has it, both read through ReadDecoderOutputImage* (OoT's). Not a movie's first picture, nor its
+           last (the end is the game's to see). HOS_VIDEO_NO_HOLD=1: every picture handed out when asked */
         static int no_hold = -1;
         if (no_hold < 0) no_hold = env_on("HOS_VIDEO_NO_HOLD");
-        const int64_t due = d->clock_pts + (hos_now_ns() - d->clock_ns), early = 8000000;
-        const int prev = d->last_slot - 1;
+        const int64_t early = 25000000;   /* (the late side's frame and a half) */
+        const Picture *h = &d->queue[d->qhead];
         Pool *to = (Pool *)host_of(d->slots[slot], POOL_MAGIC);
-        Pool *from = prev >= 0 && prev < MAX_SLOTS ? (Pool *)host_of(d->slots[prev], POOL_MAGIC) : NULL;
-        if (!no_hold && from && to && to->read_by_api && !d->queue[d->qhead].last && d->queue[d->qhead].pts > due + early &&
-            (prev == slot || (to->w == from->w && to->h == from->h && to->nv12 && from->nv12))) {
-            if (prev != slot) {
+        const int from_slot = d->shown_slot - 1;
+        const Pool *from = from_slot >= 0 && from_slot < MAX_SLOTS && d->slot_pts[from_slot] == d->last_pts
+                               ? (const Pool *)host_of(d->slots[from_slot], POOL_MAGIC) : NULL;
+        if (!no_hold && d->clock_set && d->out_ns && !h->last && h->pts - d->clock_pts > hos_now_ns() - d->clock_ns + early &&
+            to && from && to->read_by_api && from->read_by_api && to->w == from->w && to->h == from->h && to->nv12 && from->nv12) {
+            if (to != from) {
                 memcpy(to->nv12, from->nv12, (size_t)to->w * to->h * 3 / 2);
-                to->rgba_stale = 1;   /* (made from the NV12 picture if a reader asks for RGBA) */
+                const int rgba = from->rgba && to->rgba && !from->rgba_stale;
+                if (rgba) memcpy(to->rgba, from->rgba, (size_t)to->w * to->h * 4);
+                to->rgba_stale = !rgba;
             }
-            d->slot_pts[slot] = d->last_pts;
-            d->slot_last[slot] = 0;
-            d->busy[slot] = 1;
-            d->last_slot = slot + 1;
+            d->slot_pts[slot] = d->last_pts, d->slot_last[slot] = 0, d->busy[slot] = 1, d->shown_slot = slot + 1;
             d->held++;
-            if (video_log() && d->held % 120 == 1)
-                hos_log("video: acquire %lld: the last picture again (the next is %.1f ms ahead of the movie's clock; %lld so far)",
-                        (long long)d->acquires, (double)(d->queue[d->qhead].pts - due) / 1e6, (long long)d->held);
-            ReleaseSRWLockExclusive(&d->lock);
-            if (ARG(0)) G32(ARG(0)) = (uint32_t)slot;
-            RET(0);
-            return;
+            held = 1;
+            if (video_log())
+                hos_log("video: acquire %lld: the next picture is %.0f ms ahead of the movie's clock: buffer %d shows the last again",
+                        (long long)d->acquires, (double)(h->pts - d->clock_pts - (hos_now_ns() - d->clock_ns)) / 1e6, slot);
         }
     }
-    Picture *p = &d->queue[d->qhead];
-    Pool *o = (Pool *)host_of(d->slots[slot], POOL_MAGIC);
-    /* (the picture at the pool's size: rows and columns past either are left out) */
-    const int ok = o->nv12 != NULL && p->nv12 != NULL;   /* (an allocation that failed: nothing copied; issue 342) */
-    const int w = !ok ? 0 : p->w < o->w ? p->w : o->w, h = !ok ? 0 : p->h < o->h ? p->h : o->h;
-    for (int y = 0; y < h; y++) {
-        if (p->rgba && o->rgba) memcpy(o->rgba + (size_t)y * o->w * 4, p->rgba + (size_t)y * p->w * 4, (size_t)w * 4);
-        memcpy(o->nv12 + (size_t)y * o->w, p->nv12 + (size_t)y * p->w, (size_t)w);
-    }
-    for (int y = 0; y < h / 2; y++)
-        memcpy(o->nv12 + (size_t)o->w * o->h + (size_t)y * o->w, p->nv12 + (size_t)p->w * p->h + (size_t)y * p->w,
-               (size_t)w);
-    o->rgba_stale = !p->rgba;
-    /* (hookshot) and into the pool's guest memory, as the hardware decoder leaves it (NV12, pitch = width, chroma right
-       after the luma rows; RGBA when the memory has room for it and the pool's format is not NV12's). Not once the
-       game reads the pool through ReadDecoderOutputImageNv12 / Rgba, as OoT's movie library does: its pools are
-       format 3, so each 1080p picture was made RGBA and copied there for nothing (the movie is the same without it) */
-    if (o->mem && o->mem_size && !o->read_by_api) {
-        const size_t nv12_size = (size_t)o->w * o->h * 3 / 2, rgba_size = (size_t)o->w * o->h * 4;
-        const int rgba = o->format != 0 && o->mem_size >= rgba_size;   /* (VideoDecoderOutputFormat 0: NV12) */
-        const size_t need = rgba ? rgba_size : nv12_size;
-        void *to = hos_guest_range(o->mem, need);   /* (hookshot: only into guest memory) */
-        if (o->mem_size >= need && ok && to && (rgba ? o->rgba != NULL : 1)) {
-            if (rgba && o->rgba_stale) pool_rgba(o);
-            memcpy(to, rgba ? o->rgba : o->nv12, need);
-            HOS_WRITTEN(to, need);
+    if (!held) {
+        Picture *p = &d->queue[d->qhead];
+        Pool *o = (Pool *)host_of(d->slots[slot], POOL_MAGIC);
+        /* (the picture at the pool's size: rows and columns past either are left out) */
+        const int ok = o->nv12 != NULL && p->nv12 != NULL;   /* (an allocation that failed: nothing copied; issue 342) */
+        const int w = !ok ? 0 : p->w < o->w ? p->w : o->w, h = !ok ? 0 : p->h < o->h ? p->h : o->h;
+        for (int y = 0; y < h; y++) {
+            if (p->rgba && o->rgba) memcpy(o->rgba + (size_t)y * o->w * 4, p->rgba + (size_t)y * p->w * 4, (size_t)w * 4);
+            memcpy(o->nv12 + (size_t)y * o->w, p->nv12 + (size_t)y * p->w, (size_t)w);
         }
+        for (int y = 0; y < h / 2; y++)
+            memcpy(o->nv12 + (size_t)o->w * o->h + (size_t)y * o->w, p->nv12 + (size_t)p->w * p->h + (size_t)y * p->w,
+                   (size_t)w);
+        o->rgba_stale = !p->rgba;
+        /* (hookshot) and into the pool's guest memory, as the hardware decoder leaves it (NV12, pitch = width, chroma right
+           after the luma rows; RGBA when the memory has room for it and the pool's format is not NV12's). Not once the
+           game reads the pool through ReadDecoderOutputImageNv12 / Rgba, as OoT's movie library does: its pools are
+           format 3, so each 1080p picture was made RGBA and copied there for nothing (the movie is the same without it) */
+        if (o->mem && o->mem_size && !o->read_by_api) {
+            const size_t nv12_size = (size_t)o->w * o->h * 3 / 2, rgba_size = (size_t)o->w * o->h * 4;
+            const int rgba = o->format != 0 && o->mem_size >= rgba_size;   /* (VideoDecoderOutputFormat 0: NV12) */
+            const size_t need = rgba ? rgba_size : nv12_size;
+            void *to = hos_guest_range(o->mem, need);   /* (hookshot: only into guest memory) */
+            if (o->mem_size >= need && ok && to && (rgba ? o->rgba != NULL : 1)) {
+                if (rgba && o->rgba_stale) pool_rgba(o);
+                memcpy(to, rgba ? o->rgba : o->nv12, need);
+                HOS_WRITTEN(to, need);
+            }
+        }
+        d->slot_pts[slot] = d->last_pts = p->pts;
+        d->slot_last[slot] = p->last;
+        d->shown_slot = slot + 1;
+        d->busy[slot] = 1;
+        {   /* (hookshot) HOS_VIDEO_LOG: the picture's time against this decoder's movie clock, to see it fall behind the sound */
+            if (video_log() && d->acquires % 60 == 0) {
+                const int64_t now = hos_now_ns();
+                hos_log("video: acquire %lld: picture at %.2f s, wall clock %.2f s (behind by %.2f s), %d decoded ahead", (long long)d->acquires,
+                        (double)(p->pts - d->clock_pts) / 1e9, (double)(now - d->clock_ns) / 1e9,
+                        (double)(now - d->clock_ns - (p->pts - d->clock_pts)) / 1e9, d->qn);
+            }
+        }
+        if (video_log() && (d->acquires <= 8 || p->last || d->acquires % 300 == 0)) {
+            uint64_t sum = 0, n = 0;   /* (the picture's mean luma and RGB, sampled: a black or garbage decode shows) */
+            uint64_t rgb[3] = {0, 0, 0};
+            for (int y = 0; y < p->h; y += 37)
+                for (int x = 0; x < p->w; x += 41, n++) {
+                    sum += p->nv12[(size_t)y * p->w + x];
+                    for (int k = 0; k < 3 && p->rgba; k++) rgb[k] += p->rgba[((size_t)y * p->w + x) * 4 + k];
+                }
+            hos_log("video: acquire %lld: %dx%d pts %lld%s into buffer %d (mean Y %llu, RGB %llu %llu %llu)",
+                    (long long)d->acquires, p->w, p->h, (long long)p->pts, p->last ? " (last)" : "", slot,
+                    (unsigned long long)(n ? sum / n : 0), (unsigned long long)(n ? rgb[0] / n : 0),
+                    (unsigned long long)(n ? rgb[1] / n : 0), (unsigned long long)(n ? rgb[2] / n : 0));
+        }
+        picture_free(p);
+        d->qhead = (d->qhead + 1) % MAX_QUEUE, d->qn--;
     }
-    d->slot_pts[slot] = d->last_pts = p->pts;
-    d->last_slot = slot + 1;
-    d->slot_last[slot] = p->last;
-    d->busy[slot] = 1;
-    {   /* (hookshot) the time since the picture before it, for the movie's report */
+    {   /* (hookshot) the time since the buffer before it, including repeated pictures */
         const int64_t now = hos_now_ns(), gap = d->out_ns ? now - d->out_ns : 0;
         if (gap > d->gap_worst_ns) d->gap_worst_ns = gap;
         if (d->out_ns) d->gaps[now - d->clock_ns >= 5000000000ll][gap < 20000000 ? 0 : gap < 50000000 ? 1 : gap < 90000000 ? 2 : 3]++;
         d->out_ns = now;
     }
-    {   /* (hookshot) HOS_VIDEO_LOG: the picture's time against this decoder's movie clock, to see it fall behind the sound */
-        if (video_log() && d->acquires % 60 == 0) {
-            const int64_t now = hos_now_ns();
-            hos_log("video: acquire %lld: picture at %.2f s, wall clock %.2f s (behind by %.2f s), %d decoded ahead", (long long)d->acquires,
-                    (double)(p->pts - d->clock_pts) / 1e9, (double)(now - d->clock_ns) / 1e9,
-                    (double)(now - d->clock_ns - (p->pts - d->clock_pts)) / 1e9, d->qn);
-        }
-    }
-    if (video_log() && (d->acquires <= 8 || p->last || d->acquires % 300 == 0)) {
-        uint64_t sum = 0, n = 0;   /* (the picture's mean luma and RGB, sampled: a black or garbage decode shows) */
-        uint64_t rgb[3] = {0, 0, 0};
-        for (int y = 0; y < p->h; y += 37)
-            for (int x = 0; x < p->w; x += 41, n++) {
-                sum += p->nv12[(size_t)y * p->w + x];
-                for (int k = 0; k < 3 && p->rgba; k++) rgb[k] += p->rgba[((size_t)y * p->w + x) * 4 + k];
-            }
-        hos_log("video: acquire %lld: %dx%d pts %lld%s into buffer %d (mean Y %llu, RGB %llu %llu %llu)",
-                (long long)d->acquires, p->w, p->h, (long long)p->pts, p->last ? " (last)" : "", slot,
-                (unsigned long long)(n ? sum / n : 0), (unsigned long long)(n ? rgb[0] / n : 0),
-                (unsigned long long)(n ? rgb[1] / n : 0), (unsigned long long)(n ? rgb[2] / n : 0));
-    }
-    picture_free(p);
-    d->qhead = (d->qhead + 1) % MAX_QUEUE, d->qn--;
     input_room(d);   /* (hookshot: a picture taken, the skipped ones gone: the game may submit again) */
     ReleaseSRWLockExclusive(&d->lock);
     if (away) hos_vcore_back();

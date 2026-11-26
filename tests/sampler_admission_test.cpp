@@ -157,7 +157,8 @@ struct DescWriter { std::vector<VkWriteDescriptorSet> writes; } descriptor_write
 DescWriter& dw() { return descriptor_writes; }
 struct Pushed;
 std::array<Pushed, 2>& pushed();
-struct Recording { VkDescriptorPool pool{}; std::vector<VkDescriptorPool> extra; } recording;
+struct Recording { VkDescriptorPool pool{}; std::vector<VkDescriptorPool> extra;
+                   uint32_t pool_sets = 0, pool_descs[6] = {}; } recording;   // (vk_draw.cpp's: what its pool gave out, by type)
 Recording* cur = &recording;
 std::atomic<uint64_t> pools_extra{0};
 bool g_fine = false;

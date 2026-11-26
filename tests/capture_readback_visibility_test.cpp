@@ -104,6 +104,7 @@ void read_shot(bool generated, bool owned = false) {
     }
     bool shot = true;
     VkImage made_src = reinterpret_cast<VkImage>(uintptr_t(123));
+    int made_index = 0;   // (framegen_made_image's: which frame made between two the picture is, for its file's name)
     uint64_t value = 17;
     int64_t presents = 1;
     const char* shots = "private-test";

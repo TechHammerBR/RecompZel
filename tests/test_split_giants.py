@@ -491,6 +491,14 @@ class Programs:
                    "-DA64_POLLING", "-DA64_WRITE_TRACK", "-DA64_HOST_BASE=((uintptr_t)guest_mem)", "-include",
                    os.path.join(d, "pre.h"), "-Wno-everything", "-mllvm", "-rotation-max-header-size=0"]
 
+    def direct_compiles(self):
+        """whether this compiler takes split_giants.DIRECT_IF's branch (asked once, of the compiler itself)"""
+        if not hasattr(self, "_direct"):
+            src = os.path.join(self.d, "direct_if.c")
+            open(src, "w", newline="\n").write(SG.DIRECT_IF + "\nint direct_if = 1;\n#else\n#error trampoline\n#endif\n")
+            self._direct = subprocess.run([self.cc, "-fsyntax-only", src], capture_output=True).returncode == 0
+        return self._direct
+
     def hops(self, tag, text, prefix, direct):
         """the split file's assembly: direct, a piece reaches another by a jump (musttail), never a call; the trampoline,
         a piece never names another (the dispatcher calls them)"""
@@ -520,6 +528,11 @@ class Programs:
                     calls += m.group(1).startswith("call")
                     jumps += m.group(1).startswith("jmp")
         print("%s: the pieces name each other in %d jumps and %d calls" % (tag, jumps, calls))
+        if direct and not self.direct_compiles():
+            # (split_giants.DIRECT_IF: a compiler without preserve_none or musttail (clang 18, Ubuntu 24.04's) takes the
+            # trampoline the #else keeps, so the pieces must not name each other there)
+            print("%s: this compiler lacks preserve_none or musttail: the trampoline's shape is checked" % tag)
+            direct = False
         if direct:
             check(jumps > 0 and calls == 0, "%s: the pieces jump to each other (%d jumps, %d calls)" % (tag, jumps, calls))
         else:

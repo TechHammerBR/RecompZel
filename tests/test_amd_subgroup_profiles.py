@@ -36,8 +36,8 @@ using VkBool32 = uint32_t;
 constexpr VkBool32 VK_FALSE = 0;
 enum VkShaderFloatControlsIndependence { VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL = 1, VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE = 2 };
 constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
-constexpr bool VK_FALSE = false;
 constexpr uint32_t VK_DRIVER_ID_MESA_RADV = 3;   // (the RADV branch of the fragment shuffle fallback)
+#define VK_MAKE_VERSION(major, minor, patch) ((uint32_t(major) << 22) | (uint32_t(minor) << 12) | uint32_t(patch))   // (vulkan_core.h's)
 struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
     uint32_t max_workgroup_subgroups = 32;   // (pins_32: 32-lane subgroups cover the 64 invocations profile_pinned assumes)
@@ -58,12 +58,14 @@ struct {
     } vk12;
     struct { bool shaderInt16 = true; } features;   // (and 16-bit)
     bool float_atomic_add = false;
-    struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
+    struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; uint32_t driverVersion = 0; } props;   // (driverVersion: RADV's mesh NumWorkgroups rule)
     // (device_policy.h, as make_profile reads it: the long warp path where a subgroup can have more than 32 lanes, the
     // fragment shuffles' fallback on AMD's Windows driver, the gather offset. main() fills the first two by those rules,
     // which tests/test_device_policy.py holds device_policy() to)
     struct { bool warp64 = false, frag_shuffle_fallback = false, gather_offset = false; } policy;
 } dev;
+// (vk_shader.cpp's float16_shaders as it answers with neither RX_VK_NO_F16 nor RX_VK_F16 set: the device's shaderFloat16)
+bool float16_shaders() { return dev.vk12.shaderFloat16 != VK_FALSE; }
 
 using Shader::Stage;
 using Id = uint32_t;

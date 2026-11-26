@@ -61,7 +61,9 @@ void draw_flush_recording(int slot);
 VkCommandBuffer rec_cmd{};
 uint64_t rec_value=0,targets_serial=0;
 VkBuffer zero_buffer{}; VmaAllocation zero_alloc{};
-VkDescriptorPool make_pool() { return handle<VkDescriptorPool>(); }
+VkDescriptorPool make_pool(uint32_t = 0) { return handle<VkDescriptorPool>(); }   // (vk_draw.cpp: the shift sizes it; a handle here)
+uint32_t pool_shift_first() { return 1; }   // (vk_draw.cpp's default: a slot's first pool at half the size)
+std::atomic<uint64_t> pools_grown{0};
 VKAPI_ATTR VkResult VKAPI_CALL vkResetDescriptorPool(VkDevice,VkDescriptorPool,VkDescriptorPoolResetFlags) { return VK_SUCCESS; }
 VKAPI_ATTR void VKAPI_CALL vkDestroyDescriptorPool(VkDevice,VkDescriptorPool,const VkAllocationCallbacks*) {}
 struct Pass {}; Pass& pass() { static Pass p;return p; }
@@ -76,6 +78,8 @@ std::array<ViewFast, 1024>& view_fast() { static thread_local std::array<ViewFas
 struct BankCache { uint64_t at=0; };
 std::array<std::array<BankCache,2>,2>& bank_cache() { static std::array<std::array<BankCache,2>,2> b;return b; }
 void make_dummies() {}
+// (vk_draw.cpp's per-program descriptor slots, emptied by a new recording past 8192: nothing kept here)
+std::unordered_map<const void*,int>& prog_slots() { static thread_local std::unordered_map<const void*,int> m; return m; }
 /* FLUSH */
 /* BEGIN */
 struct Recording { int slot;VkCommandBuffer cmd,upload,init; VkFence fence;uint64_t value=1,batch=0,part=0;bool submitted=false; };
@@ -126,6 +130,13 @@ void queue_flush_locked() {
     vkQueueSubmit2(dev.queue,1,&si,VK_NULL_HANDLE);pend.cbs.clear();
 }
 uint64_t occ_part_lo = UINT64_MAX, occ_part_hi = 0;   // (vk_replay.cpp, RX_VK_OCC_COPY: the recording's queries, forgotten at its submit)
+// (vk_replay.cpp: the submit made again after a refusal for want of memory goes to the queue as it is here; the host-read
+// barrier before a readback does nothing here)
+VkResult submit_or_retry(const VkSubmitInfo2& si, VkFence fence) { return vkQueueSubmit2(dev.queue, 1, &si, fence); }
+void host_read_barrier(VkCommandBuffer) {}
+VkSemaphore batch_tl{}; uint64_t batch_flushed = 1;
+// (the GPU still busy with the batch sent before: held submits stay held until a flush, as the batch case checks)
+VKAPI_ATTR VkResult VKAPI_CALL vkGetSemaphoreCounterValue(VkDevice,VkSemaphore,uint64_t* value) { *value = 0; return VK_SUCCESS; }
 /* SUBMIT */
 struct Job { Recording* r;int inits=0;bool uploads=true; };
 void submit_segments(std::vector<Job>& jobs) {

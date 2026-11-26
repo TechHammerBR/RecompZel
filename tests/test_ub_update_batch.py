@@ -132,6 +132,14 @@ std::atomic<int64_t> st_barriers_left_out{0}, st_barriers_made{0};
 VkCommandBuffer last_barrier_cmd{};
 uint64_t last_barrier_epoch = 0;
 bool env_on(const char*) { return false; }
+// (the rest of full_barrier's state, as vk_texture.cpp keeps it: note_work's count, the parallel replay's dedupe
+// (RX_VK_BARRIER_DEDUPE_PAR, off here: par_active is false) and the trust points' counts, which this test does not read)
+std::atomic<uint64_t> foreign_work{0}, other_work_by_cmd[64], xfer_work_by_cmd[64], all_work_by_cmd[64];
+void logf(const char*, ...) {}
+bool barrier_dedupe_par_on() { return false; }
+std::atomic<int64_t> st_barriers_left_out_par{0};
+uint64_t last_barrier_cmd_work = 0, last_barrier_foreign = 0, last_barrier_other = 0, last_barrier_xfer = 0;
+void note_trust_point(VkCommandBuffer) {}
 struct GprofSpan { int items = 0; uint64_t bytes = 0; GprofSpan(VkCommandBuffer, const char*) {} };
 constexpr uint32_t kRbWriterUb = 0x10000;
 void memory_writer_note(uint32_t, uint64_t) {}
@@ -253,6 +261,9 @@ def main():
     declaration = between(texture_h, "void full_barrier(", "\n")
     work = (vk / "vk_work.h").read_text(encoding="utf-8")
     note = block(work, "inline void note_work() {")
+    # (full_barrier reads a command buffer's counts through vk_work.h's own slot helpers)
+    note = "".join(block(work, m) for m in ("inline std::atomic<uint64_t>& other_work_slot(",
+                                            "inline std::atomic<uint64_t>& all_work_slot(")) + note
     wrappers = [between(work, "#define " + name + "(", "\n")
                 for name in ("vkCmdPipelineBarrier2", "vkCmdUpdateBuffer", "vkCmdCopyBuffer")]
     prefix = PREFIX.replace("@@BUFFERREF@@", block((vk / "vk_internal.h").read_text(encoding="utf-8"), "struct BufferRef {")) \

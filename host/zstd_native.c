@@ -18,6 +18,7 @@
    HOS_ZSTD_NATIVE: 1 (default) native; 0 the lifted code; 2 both, compared on every call (the lifted run's result kept, a
    difference logged): see zstd_compare. */
 #include "hos.h"
+#include "../gpu/vk/compat/hookshot_env.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -519,7 +520,7 @@ static void zstd_timed(Ctx *c, void (*self)(Ctx *), int native) {
 int hos_zstd_seq(Ctx *c, void (*self)(Ctx *)) {
     if (zstd_bypass) return 0;
     static int timed = -1;
-    if (timed < 0) timed = getenv("HOS_ZSTD_TIME") && atoi(getenv("HOS_ZSTD_TIME")) != 0;
+    if (timed < 0) timed = env_on("HOS_ZSTD_TIME");
     const int mode = zstd_mode();
     if (timed && mode != 2) {
         zstd_timed(c, self, mode != 0);

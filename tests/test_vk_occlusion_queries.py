@@ -100,7 +100,8 @@ void logf(const char*, ...) {}
 '''
 
 FIXTURE = COMMON + r'''
-struct { VkDevice device = nullptr; bool occlusion_precise = true; int driver_id = 5; struct { int deviceType = 2; } props; } dev;
+struct { VkDevice device = nullptr; bool occlusion_precise = true; int driver_id = 5; struct { int deviceType = 2; } props;
+         struct { bool occ_copy = true; } policy; } dev;   // (Intel's Windows driver on a discrete GPU: device_policy.h's occ_copy on)
 struct NvnState {
     bool render_enabled = true, raster_discard = false;
     uint64_t occ_next = 0, occ_first = 0, occ_limit = 0;

@@ -20,6 +20,7 @@
 #include "oot_heart_containers.h"   /* (the Discord status's pieces of heart) */
 #include "game_layout.h"
 #include "options_path.h"
+#include "prepare_args.h"   /* (the supervised --prepare-shaders run's arguments) */
 #include "hos_wide_size.h"   /* (the widescreen picture's size, shared with the Insert menu) */
 #include "ws_floor.h"        /* (the game's memory kept in RAM: HOS_WS_FLOOR_MB) */
 #include "../gpu/vk/vk_api.h"
@@ -814,7 +815,25 @@ static int oot_gamedata_bool(Ctx *c, uint32_t hash, int *value);
 static int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value);
 static uint64_t oot_gamedata_int_at(Ctx *c, uint32_t hash);
 #define OOT_RUPEES_HASH 0xa77921d7u   /* PlayerStatus.CurrentRupee (Int) */
+static const char *oot_gamedata_queue_bool(Ctx *c, uint32_t hash, int value);
 static int oot_gamedata_string(Ctx *c, uint32_t hash, char *buf, size_t size);
+static int oot_event_playing(Ctx *c);
+
+/* The first adult night's time lock (Longshot #1064): f_8347c020 holds the clock at 20:00 while the saved Bool
+   HrlField_isFirstNightTime_Adult (0x8592aa82) is 1 and quest 0x4dbca27f is not Ready. The flag belongs to Hyrule
+   Field's first night only. A save in any other map that still holds it cannot leave night: clear it there with the
+   game's own Bool, once, and say so, never while an event (the escape's cutscene) is running. HOS_OOT_FIRST_NIGHT_FIX=0
+   turns the repair off for a run. Returns 1 when it cleared the flag. */
+static int oot_first_night_fix(Ctx *c, const char *map) {
+    static int on = -1;
+    if (on < 0) on = env_on_or("HOS_OOT_FIRST_NIGHT_FIX", 1);
+    if (!on || !map[0] || !strncmp(map, "HyruleField", 11) || oot_event_playing(c)) return 0;
+    int set = 0;
+    if (!oot_gamedata_bool(c, 0x8592aa82u, &set) || !set) return 0;
+    if (!oot_gamedata_set_bool(c, 0x8592aa82u, 0)) return 0;
+    hos_log("oot: cleared the first adult night's time lock (the save was in %s, outside Hyrule Field)", map);
+    return 1;
+}
 
 static void oot_inventory_refresh(Ctx *c, int64_t now) {
     void rx_option_set(int id, int value);
@@ -845,6 +864,7 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
             snprintf(line, sizeof line, "%s (%s)", map,
                      oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? "child" : "adult") : "age not known");
             if (strcmp(line, logged)) hos_log("map: %s", line), snprintf(logged, sizeof logged, "%s", line);
+            oot_first_night_fix(c, map);
         }
     }
     if (!probed && oot_pouch_count(c, "Item_DekuSeed") >= 0) {
@@ -912,11 +932,12 @@ static void oot_inventory_edit(Ctx *c, int action) {
     const uint32_t song = oot_song_flag(name);
     if (song) {
         if (op != 200 || have < 0) return;   /* songs have no editable quantity */
-        if (!oot_gamedata_set_bool(c, song, !have)) {
-            hos_log("cheats: song %s: learned flag unavailable", name);
+        const char *missing = oot_gamedata_queue_bool(c, song, !have);
+        if (missing) {
+            hos_log("cheats: song %s: %s not found", name, missing);
             return;
         }
-        hos_log("cheats: song %s %s (had %d, now %d)", name, have ? "relocked" : "unlocked", have, oot_item_count(c, name));
+        hos_log("cheats: song %s: %s queued", name, have ? "relock" : "unlock");
         return;
     }
     char alias[64];
@@ -1049,6 +1070,19 @@ static const OotDestination oot_destinations[] = {   /* (generated: work/oot-tel
 static uint64_t oot_singleton(Ctx *c, uint64_t slot) {
     const uint64_t holder = recomp_load64(c, slot);
     return holder ? recomp_load64(c, holder) : 0;
+}
+
+/* The game's Bool setter queues the live value and the copy written by the next save. */
+static const char *oot_gamedata_queue_bool(Ctx *c, uint32_t hash, int value) {
+    A64Fn set = a64_lookup(0x806a2b20ULL);
+    if (!set) return "the game's Bool setter";
+    const uint64_t mgr = oot_singleton(c, OOT_GAMEDATA_SLOT);
+    if (!mgr) return "the game data manager";
+    const Ctx saved = *c;
+    c->x[0] = mgr, c->x[1] = value != 0, c->x[2] = hash;
+    set(c);
+    *c = saved;
+    return NULL;
 }
 
 /* GameDataMgr getters by MurMur3 name hash: f_8022d9c0 (bool) and f_80cd0ea0 (String64). 1 when found. */
@@ -1236,16 +1270,12 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
        Writing only the live byte restores the HUD until the next load, but saves keep the old hidden value. */
     int hidden = 0;
     if (ok && result && oot_gamedata_bool(c, 0x9a4dd779u, &hidden) && hidden) {
-        A64Fn set_bool = a64_lookup(0x806a2b20ULL);
-        const uint64_t mgr = oot_singleton(c, OOT_GAMEDATA_SLOT);
-        if (set_bool && mgr) {
-            c->x[0] = mgr, c->x[1] = 0, c->x[2] = 0x9a4dd779u;   /* MapIconDeactivateByAreaActor */
-            set_bool(c);
-            *c = saved;
+        const char *missing = oot_gamedata_queue_bool(c, 0x9a4dd779u, 0);   /* MapIconDeactivateByAreaActor */
+        if (!missing) {
             hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): restore queued");
         } else {   /* (another game build: say so, a report's log then shows why the minimap stayed away) */
             hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): %s not found, left hidden",
-                    set_bool ? "the game data manager" : "the game's Bool setter");
+                    missing);
         }
     }
     if (carrier && ok && (result & 1)) {   /* (Sequence_ReservedNextBanc and _StartPosName: the game's String64 setter,
@@ -2427,9 +2457,11 @@ static int game_main(int argc, char **argv) {
             setenv("RX_VK_COMPILE_SHADERS", argv[i + 1], 1);
 #endif
         }
+    hos_prepare_args_env(argc, argv);   /* (hookshot) a supervised preparation's journal, skips and limit: prepare_args.h */
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
         else if (!strcmp(argv[i], "--compile-shaders") && i + 1 < argc) i++;   /* (taken above) */
+        else if (hos_prepare_arg_switch(argv[i]) && i + 1 < argc) i++;         /* (taken above) */
         else if (!strcmp(argv[i], "--user") && i + 1 < argc) hos_user_dir = argv[++i];
         else if (!strcmp(argv[i], "--trace")) hos_trace = 1;
         else if (!strcmp(argv[i], "--prepare-shaders")) {   /* (hookshot) a build's last step: no game */

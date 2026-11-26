@@ -38,7 +38,8 @@
 // What make_profile and storage_binding_align read of the renderer (vk_internal.h's dev): a GPU with 32 lanes, no float add of
 // its own, NVIDIA's gather, 16-byte storage buffer offsets, f16 shaders; the nonuniform indexing features set per device below
 constexpr uint32_t VK_SHADER_STAGE_ALL = 0x7fffffff;
-constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
+constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1, VK_DRIVER_ID_MESA_RADV = 3;
+#define VK_MAKE_VERSION(major, minor, patch) ((((uint32_t)(major)) << 22U) | (((uint32_t)(minor)) << 12U) | ((uint32_t)(patch)))
 using VkBool32 = uint32_t;
 using VkShaderStageFlags = uint32_t;
 constexpr VkBool32 VK_FALSE = 0;
@@ -56,8 +57,12 @@ struct {
         VkBool32 shaderBufferInt64Atomics = 1;
         bool shaderStorageImageArrayNonUniformIndexing = false, shaderUniformTexelBufferArrayNonUniformIndexing = false,
              shaderStorageTexelBufferArrayNonUniformIndexing = false;
+        bool shaderInt8 = true;   // (make_profile: 8-bit integers where the GPU has them)
     } vk12;
-    struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
+    struct { bool shaderInt16 = true; } features;   // (and 16-bit)
+    bool mesh_shader = true;   // (the stages' profile with task and mesh: a GPU with mesh shaders)
+    // (driverVersion: make_profile's RADV mesh workaround, need_mesh_num_workgroups, reads it)
+    struct { uint32_t driverVersion = 0; struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
     // (device_policy.h's fields make_profile reads: no long warp path, no fragment shuffle fallback, no gather offset)
     struct { bool warp64 = false, frag_shuffle_fallback = false, gather_offset = false; } policy;
     struct {

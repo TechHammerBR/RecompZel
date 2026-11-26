@@ -2393,6 +2393,12 @@ void EmitContext::DefineInputs(const IR::Program& program) {
     if (info.uses_workgroup_id) {
         workgroup_id = DefineInput(*this, U32[3], false, spv::BuiltIn::WorkgroupId);
     }
+    if (stage == Stage::Mesh && !runtime_info.mesh_fallback && profile.need_mesh_num_workgroups) {
+        // (hookshot, #1285, as Lichii #1203) RADV before Mesa 26.2.5 (!45092) miscounted the mesh grid-size registers and
+        // emitted an invalid SET_SH_REG packet (reg_count == 0, RING_GFP_TIMEOUT on RDNA 3/4) when a native mesh shader
+        // did not read gl_NumWorkGroups
+        num_workgroups = DefineInput(*this, U32[3], false, spv::BuiltIn::NumWorkgroups);
+    }
     if (info.uses_local_invocation_id) {
         local_invocation_id = DefineInput(*this, U32[3], false, spv::BuiltIn::LocalInvocationId);
     }

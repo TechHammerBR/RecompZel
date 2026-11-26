@@ -9,10 +9,13 @@
 FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-# (libstdc++ 13, from the toolchain PPA: C++20 <format>; linked in statically)
+# (libstdc++ 13, from the toolchain PPA: C++20 <format>; linked in statically. The PPA from ppa.launchpad.net, as in
+# build-linux.yml: ppa.launchpadcontent.net answered 503 for hours on 2026-11-23; apt checks the archive's signature)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends software-properties-common gpg-agent \
- && add-apt-repository -y ppa:ubuntu-toolchain-r/test \
+ && add-apt-repository -y --no-update ppa:ubuntu-toolchain-r/test \
+ && sed -i 's|https://ppa\.launchpadcontent\.net/|http://ppa.launchpad.net/|g' /etc/apt/sources.list.d/*.list \
+ && apt-get update \
  && apt-get install -y --no-install-recommends g++-13 libstdc++-13-dev \
  && apt-get install -y --no-install-recommends git ca-certificates curl xz-utils zstd file unzip python3 \
       build-essential gcc-12 g++-12 libstdc++-12-dev nasm meson ninja-build cmake pkg-config \

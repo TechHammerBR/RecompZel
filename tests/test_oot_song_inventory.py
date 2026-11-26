@@ -33,9 +33,14 @@ FIXTURE = r'''
 #include <string>
 #include "gpu/vk/oot_cheat_items.h"
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL:%d %s\n", __LINE__, #x); std::exit(1); } } while (0)
-struct Ctx {};
+struct Ctx { uint64_t x[32]{}; };
+using A64Fn = void (*)(Ctx *);
+static constexpr uint64_t OOT_GAMEDATA_SLOT = 0x84c9e180ULL;
+static constexpr uint64_t manager_holder = 0x10000;
+static constexpr uint64_t manager = 0x20000;
 static std::map<std::string, int> pouch;
 static std::map<uint32_t, int> flags;
+static std::map<uint32_t, int> saved_flags, pending_flags;
 static int pouch_reads, pouch_writes, flag_writes;
 static bool reject_flag_write;
 static void hos_log(const char *, ...) {}
@@ -47,12 +52,26 @@ static int oot_gamedata_bool(Ctx *, uint32_t hash, int *value) {
     *value = i->second;
     return 1;
 }
-static int oot_gamedata_set_bool(Ctx *, uint32_t hash, int value) {
-    const auto i = flags.find(hash);
-    if (i == flags.end() || reject_flag_write) return 0;
-    i->second = value;
+static uint64_t recomp_load64(Ctx *, uint64_t address) {
+    CHECK(address == OOT_GAMEDATA_SLOT || address == manager_holder);
+    return address == OOT_GAMEDATA_SLOT ? manager_holder : manager;
+}
+static void game_set_bool(Ctx *c) {
+    CHECK(c->x[0] == manager && c->x[1] <= 1);
+    const auto hash = uint32_t(c->x[2]);
+    CHECK(flags.find(hash) != flags.end());
+    pending_flags[hash] = int(c->x[1]);
     ++flag_writes;
-    return 1;
+    c->x[0] = 0;
+}
+static A64Fn a64_lookup(uint64_t address) {
+    CHECK(address == 0x806a2b20ULL);
+    return reject_flag_write ? nullptr : game_set_bool;
+}
+static void update_and_reload() {
+    for (const auto& [hash, value] : pending_flags) flags[hash] = saved_flags[hash] = value;
+    pending_flags.clear();
+    flags = saved_flags;
 }
 static uint32_t rotate(uint32_t x, int n) { return x << n | x >> (32 - n); }
 static uint32_t flag_hash(const std::string& name) {
@@ -78,6 +97,7 @@ static const char *const oot_item_names[] = {OOT_CHEAT_ITEMS(NO_SECTION, ITEM_NA
 // HOST_HELPERS
 int main() {
     Ctx c;
+    c.x[0] = 42;
     CHECK(flag_hash("Item_Melody_EponaSong") == 0xb492ac33u);
     int songs = 0;
     for (unsigned i = 0; i < OOT_ITEM_COUNT; ++i) {
@@ -90,13 +110,18 @@ int main() {
         CHECK(oot_item_count(&c, name) == 1);   // Learned; the pouch still holds zero.
         CHECK(pouch_reads == 0);
         flags[own] = 0; pouch[name] = 7;       // A stale pouch entry cannot grant a song.
+        saved_flags = flags;
         CHECK(oot_item_count(&c, name) == 0);
         CHECK(pouch_reads == 0);
         const int toggle = OOT_CHEAT_ITEM_ACTION + int(i) * 256 + 200;
         oot_inventory_edit(&c, toggle);
-        CHECK(flags[own] == 1 && flags[other] == 1 && flag_writes == 1);
+        update_and_reload();
+        CHECK(flags[own] == 1);
+        CHECK(flags[other] == 1 && flag_writes == 1);
+        CHECK(c.x[0] == 42);
         CHECK(oot_item_count(&c, name) == 1 && pouch_writes == 0);
         oot_inventory_edit(&c, toggle);
+        update_and_reload();
         CHECK(flags[own] == 0 && flags[other] == 1 && flag_writes == 2);
         reject_flag_write = true;
         oot_inventory_edit(&c, toggle);
@@ -129,6 +154,8 @@ def main():
     source = (ROOT / "host/hos_main.c").read_text(encoding="utf-8")
     helpers = [function(source, "static uint32_t oot_song_flag(")]
     helpers += [function(source, signature) for signature in (
+        "static uint64_t oot_singleton(Ctx *c, uint64_t slot) {",
+        "static const char *oot_gamedata_queue_bool(Ctx *c, uint32_t hash, int value) {",
         "static int oot_mask_alias(",
         "static int oot_item_count(Ctx *c, const char *name) {",
         "static void oot_inventory_edit(",

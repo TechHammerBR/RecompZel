@@ -25,6 +25,12 @@ def main():
     # (the spare arena made off the replay thread, #2997: off here, so staging() makes its own, as these checks expect)
     actual += ("#include <atomic>\nstruct SpareArenas { std::atomic<int64_t> taken{0}, made_here{0}; };\nSpareArenas spare_arenas;\n"
                "bool spare_on() { return false; }\nbool spare_take(Arena&) { return false; }\n")
+    # (RX_VK_RES_LOG's tag of what an allocation is for: the real kinds, the scope counting nothing here)
+    internal = (ROOT / "gpu/vk/vk_internal.h").read_text(encoding="utf-8")
+    kinds = [line for line in internal.splitlines() if line.startswith("enum class MemKind : uint8_t {")]
+    if len(kinds) != 1:
+        raise SystemExit("vk_internal.h: MemKind not found once: update this test")
+    actual += kinds[0] + "\nstruct MemKindScope { explicit MemKindScope(MemKind) {} };\n"
     actual += block(tex, "bool arena_make(") + "\n"   # (a new arena, made and mapped: staging() calls it, #2997)
     actual += block(tex, "struct Staging {") + ";\n" + block(tex, "Staging staging(")
     actual += "\n" + block(vma, "void flush_mapped_range(")

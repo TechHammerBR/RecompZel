@@ -31,6 +31,7 @@ DRIVER = r'''#define _CRT_SECURE_NO_WARNINGS 1
 #include <map>
 #include <mutex>
 #include <utility>
+#include <vector>
 static int fails;
 #define CHECK(x) do { if (!(x)) { std::printf("FAIL line %d: %s\n", __LINE__, #x); fails++; } } while (0)
 static void logf(const char*, ...) {}

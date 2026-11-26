@@ -40,13 +40,20 @@ def block(text, marker, start=0):
 
 FIXTURE = r"""
 #include <vulkan/vulkan_core.h>
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <vector>
 static std::vector<std::string> logs;
+// (vk_timeline_wait's measure of what a capture waits for: RX_VK_CAPWAIT_TRACE off, nothing submitted yet, no value handed out)
+static bool env_on(const char*) { return false; }
+static int64_t vk_value_submitted_ns(uint64_t) { return 0; }
+static std::atomic<uint64_t> q_values{0};
 static void logf(const char* format, ...) {
     char line[1024];
     va_list a;

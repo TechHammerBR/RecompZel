@@ -390,7 +390,9 @@ def copy_saves(src, dst, backup, keep_settings, dry_run):
 def remove_tree(path):
     """Deletes path, also a file in it that is read-only (Windows refuses to delete those). True when it is gone."""
     def writable_then_again(func, name, _):
-        os.chmod(name, stat.S_IWRITE)
+        # (the mode it has and this: S_IWRITE alone is Linux's 0200, a folder nobody can list, and one that still cannot be
+        # deleted would stay so)
+        os.chmod(name, os.stat(name).st_mode | stat.S_IWRITE)
         func(name)
     try:
         if sys.version_info >= (3, 12):

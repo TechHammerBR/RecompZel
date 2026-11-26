@@ -575,7 +575,7 @@ static HosThread *thread_of_scan(uint64_t guest_tt) {
 }
 HosThread *hos_thread_of(uint64_t guest_tt) {
     static int on = -1;
-    if (on < 0) on = getenv("HOS_THREAD_OF_CACHE") && atoi(getenv("HOS_THREAD_OF_CACHE")) != 0;
+    if (on < 0) on = env_on("HOS_THREAD_OF_CACHE");
     if (!on) return thread_of_scan(guest_tt);
     static _Thread_local struct { uint64_t tt; HosThread *t; LONG gen; } cache[8];
     const unsigned i = (unsigned)((guest_tt >> 4) * 0x9E3779B1u >> 7) & 7;
@@ -1403,7 +1403,7 @@ static void sleep_ns(int64_t ns, int guest) {
         /* TICK-062 B4, HOS_SHORT_SLEEP_PAUSE=1: one yield, then a PAUSE loop to the deadline (SwitchToThread in a loop
            keeps calling into the kernel and bounces the SMT sibling's work) */
         static int pause_spin = -1;
-        if (pause_spin < 0) pause_spin = getenv("HOS_SHORT_SLEEP_PAUSE") && atoi(getenv("HOS_SHORT_SLEEP_PAUSE")) != 0;
+        if (pause_spin < 0) pause_spin = env_on("HOS_SHORT_SLEEP_PAUSE");
         if (pause_spin) {
             if (hos_now_ns() < until) SwitchToThread();
             while (hos_now_ns() < until) { YieldProcessor(); YieldProcessor(); YieldProcessor(); YieldProcessor(); }

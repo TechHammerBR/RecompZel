@@ -119,7 +119,7 @@ def forget(store, name):
 def restore(store, name, work, bad=None):
     """The snapshot name into work, in place of its lifted C, image and the lift's two files. False (and work's lifted C and image
     gone, the two files as they were) when there is none or it could not be copied. bad(): a check of the copied C (make_game.py
-    lifted_cut_short); one that finds anything forgets the snapshot"""
+    lifted_damaged); one that finds anything forgets the snapshot"""
     snap = os.path.join(store, name)
     listed = _listed(snap) if os.path.isdir(snap) else None
     if listed is None:
@@ -147,7 +147,7 @@ def restore(store, name, work, bad=None):
         found = bad() if bad else None
         if found:
             forget(store, name)
-            raise OSError("its lifted C is cut short (%s), so it is let go" % ", ".join(found[:6]))
+            raise OSError("its lifted C is cut short or damaged (%s), so it is let go" % ", ".join(found[:6]))
         for parts in FILES:   # (last: until here the folder keeps its own, and lifts from them if this fails)
             dst = os.path.join(work, *parts)
             src = next((s for s, d in later if d == dst), None)

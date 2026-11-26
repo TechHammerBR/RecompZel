@@ -353,13 +353,23 @@ def wiring_checks():
     present = block(backend, "void rx_nvn_present(const nvn_tex *t, const int crop[4]) {")
     if not 0 <= present.index("hos_ab_present();") < present.index("vk->nvn_present(t, crop)"):
         fail("host/rx_backend.c: rx_nvn_present does not count the frame (hos_ab_present) before the renderer presents")
-    table = re.sub(r"/\*.*?\*/", "", block(backend, "static const MkwVkHost vk_host = {"), flags=re.S)
-    if [v.strip() for v in table.split(",") if v.strip()][-2] != "hos_ab_frame":
-        fail("host/rx_backend.c: vk_host does not end with hos_ab_frame (MkwVkHost.ab_frame, version 34)")
     api = (ROOT / "gpu/vk/vk_api.h").read_text(encoding="utf-8")
     if int(re.search(r"#define MKWVK_API_VERSION (\d+)", api).group(1)) < 35 or \
-            "int (*ab_frame)(int64_t from_ns, int64_t to_ns);\n} MkwVkHost;" not in api:
-        fail("gpu/vk/vk_api.h: MkwVkHost does not end with ab_frame at version 34 or later")
+            "    int (*ab_frame)(int64_t from_ns, int64_t to_ns);\n" not in api:
+        fail("gpu/vk/vk_api.h: MkwVkHost has no ab_frame at version 35 or later")
+    # (vk_host fills MkwVkHost by position: hos_ab_frame's place in the table is ab_frame's in the struct. Members appended
+    # after it (version 36's vulkan_loader_proc) are allowed; a slot one system fills and the other leaves NULL, inside
+    # #ifdef _WIN32 ... #else ... #endif, counts once.)
+    def code(text):
+        return re.sub(r"//[^\n]*", "", re.sub(r"/\*.*?\*/", "", text, flags=re.S))
+    struct = code(api.split("typedef struct MkwVkHost {", 1)[1].split("} MkwVkHost;", 1)[0])
+    fields = [re.search(r"\(\*(\w+)\)", d).group(1) if "(*" in d else d.split()[-1] for d in struct.split(";") if d.strip()]
+    table = code(block(backend, "static const MkwVkHost vk_host = {"))
+    table = table.split("{", 1)[1].rsplit("}", 1)[0]
+    table = re.sub(r"#ifdef _WIN32\n(.*?)#else\n.*?#endif", r"\1", table, flags=re.S)
+    values = [v.strip() for v in table.split(",") if v.strip()]
+    if len(values) != len(fields) or values.index("hos_ab_frame") != fields.index("ab_frame"):
+        fail("host/rx_backend.c: hos_ab_frame is not in MkwVkHost.ab_frame's place in vk_host (version 35)")
     replay = (ROOT / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     if "host->version >= 35 && host->ab_frame ? host->ab_frame(l_at, at) : -1" not in replay:
         fail("gpu/vk/vk_replay.cpp: the frame trace does not ask the host for ab_side (only from a version 34 host)")

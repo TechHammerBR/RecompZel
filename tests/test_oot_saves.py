@@ -9,6 +9,7 @@ import io
 import json
 import os
 import shutil
+import stat
 from pathlib import Path
 import tempfile
 import unittest
@@ -422,6 +423,31 @@ class Copy(Case):
         code, out, err = self.run_main("export", "lichii")
         self.assertEqual(code, 1)
         self.assertEqual(tree(self.li), before)
+
+
+class RemoveTree(unittest.TestCase):
+    """remove_tree: a delete refused once is tried again with the write bit added to the file's own mode. One refused for
+    good leaves what is left of the old save readable (S_IWRITE alone is Linux's 0200: a folder nobody can list)."""
+
+    def test_old_save_that_cannot_be_deleted_stays_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = Path(tmp) / ".old" / "slot_00"
+            old.mkdir(parents=True)
+            sav = old / "progress.sav"
+            sav.write_bytes(b"save")
+            sav.chmod(stat.S_IREAD)
+            real_unlink = os.unlink
+
+            def refuse(path, *args, **kw):
+                if os.path.basename(path) == "progress.sav":
+                    raise PermissionError(13, "Access is denied")
+                return real_unlink(path, *args, **kw)
+            with mock.patch.object(oot.os, "unlink", side_effect=refuse):
+                self.assertFalse(oot.remove_tree(str(old.parent)))
+            for path in (old.parent, old, sav):
+                self.assertTrue(path.exists(), path)
+                self.assertEqual(path.stat().st_mode & stat.S_IREAD, stat.S_IREAD, path)
+            sav.chmod(stat.S_IREAD | stat.S_IWRITE)
 
 
 class OtherPort(Case):
