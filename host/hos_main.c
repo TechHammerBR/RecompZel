@@ -2340,8 +2340,8 @@ static int game_main(int argc, char **argv) {
         hos_relaunch_keep_env();
     }
     load_hookshot_env();
-    apply_affinity();   /* (recompzel: HOS_AFFINITY, before anything reads the process's mask) */
     hos_profiling_env();   /* (HOS_PROFILE=1, host/profiling.c: after the file, which may set it) */
+    apply_affinity();   /* (recompzel: HOS_AFFINITY, before anything reads the process's mask) */
     oot_places_data();   /* (hookshot: the Travel places' file read here, before the game's code runs: the game's thread reads no file) */
 #endif
     /* (the settings file, in the user folder: chosen before the crash window's helper, the Discord status and the renderer read
