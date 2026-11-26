@@ -85,9 +85,7 @@ def main():
     have_pools = "bool init_pools_make(" in replay
     if have_pools:   # (the last fallible step of replay_start: no later failure returns with them made)
         start = block(replay, "bool replay_start() {")
-        # (Triforce: par_threads_max, the most a parallel replay may use, as RX_VK_PARALLEL_AUTO turns it on and off)
-        call = next((c for c in ("if (par_threads_max() >= 2 && !init_pools_make(pi)) return false;",
-                                 "if (par_threads() >= 2 && !init_pools_make(pi)) return false;") if c in start), "if (par_threads() >= 2")
+        call = "if (par_threads() >= 2 && !init_pools_make(pi)) return false;"
         if call not in start or start.index(call) < start.index("for (Frame& f : frames)") or                 "return false" in start[start.index(call) + len(call):]:
             raise SystemExit("FAIL: replay_start does not make the init pools last (a later failure would leave them made)")
     inc = {

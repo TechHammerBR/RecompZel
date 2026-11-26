@@ -2340,6 +2340,7 @@ static int game_main(int argc, char **argv) {
         hos_relaunch_keep_env();
     }
     load_hookshot_env();
+    apply_affinity();   /* (recompzel: HOS_AFFINITY, before anything reads the process's mask) */
     hos_profiling_env();   /* (HOS_PROFILE=1, host/profiling.c: after the file, which may set it) */
     oot_places_data();   /* (hookshot: the Travel places' file read here, before the game's code runs: the game's thread reads no file) */
 #endif
@@ -2661,6 +2662,9 @@ static int game_main(int argc, char **argv) {
 #ifdef _WIN32
     timeBeginPeriod(1);   /* 1 ms timer resolution: the 60 Hz vsync and the game's frame pacing sleep in short steps */
     no_power_throttling();
+    if (affinity_asked)
+        hos_log("affinity: the game %s logical processors %#llx (HOS_AFFINITY)", affinity_ok ? "is held to" : "could not be held to",
+                affinity_asked);
     process_priority();
     ws_floor();   /* (the game's memory kept in RAM under memory pressure: host/ws_floor.h) */
 #endif

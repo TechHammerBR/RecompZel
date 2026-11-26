@@ -9,8 +9,8 @@ import stat
 import subprocess
 import sys
 import tempfile
-import types
 import unittest
+from types import SimpleNamespace
 import zipfile
 from pathlib import Path
 
@@ -616,7 +616,7 @@ class UpdateTests(unittest.TestCase):
                 (out / name).write_bytes(b"old " + name.encode())
             with mock.patch.dict(os.environ, {"HOOKSHOT_TOOLS": str(ROOT)}):
                 exec(finish, make_game.__dict__, {"built": str(built), "out": str(out), "work": str(work),
-                                           "a": types.SimpleNamespace(update=False, fsr=False)})
+                                                   "a": SimpleNamespace(fsr=False, no_fsr=False, update=None, fetch_fsr_runtime=False)})
             self.assertEqual((out / "hookshot").read_bytes(), (ROOT / "builder" / "linux" / "hookshot-folder").read_bytes())
             self.assertTrue((out / "hookshot").stat().st_mode & stat.S_IXUSR)
             self.assertEqual(sorted(p.name for p in out.iterdir() if p.name != make_game.INSTALLED_NOTE),   # (what the finish put in)

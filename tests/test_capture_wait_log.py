@@ -38,8 +38,7 @@ class CaptureWaitLogTests(unittest.TestCase):
         self.assertRegex(self.take, r"st_tk_stamp \+= std::chrono::duration<double, std::milli>\(tk1 - tk_locked\)")
 
     def test_the_log_line_names_the_wait_and_resets_it(self):
-        # (to the call's end at a line's end: the format itself holds a ");")
-        line = re.search(r'logf\("vk: a capture taken \(ms\):.*?\);$', self.take, re.S | re.M).group(0)
+        line = re.search(r'logf\("vk: a capture taken \(ms\):.*?\);', self.take, re.S).group(0)
         self.assertIn("GPU wait for late pages", line)
         self.assertIn("pools lock", line)
         self.assertIn("st_tk_late / 600", line)

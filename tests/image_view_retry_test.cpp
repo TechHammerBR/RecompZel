@@ -1,7 +1,6 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include <algorithm>
-#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -34,11 +33,10 @@ struct Texture {
     uint64_t gpu=0x1000, view_failed_frame=0; bool astc=false, bc=false, cube=false;
     ViewMap views;
 };
-struct nvn_texdesc { unsigned swizzle_r=0, swizzle_g=1, swizzle_b=2, swizzle_a=3; int format=42; int target=1; };
+struct nvn_texdesc { unsigned swizzle_r=0, swizzle_g=1, swizzle_b=2, swizzle_a=3; int format=42; };
 struct nvn_tex { nvn_texdesc d; };
 struct nvn_view {
-    bool set_levels=false, set_layers=false, set_swizzle=false, set_target=false;
-    int target=0;
+    bool set_levels=false, set_layers=false, set_swizzle=false;
     uint32_t base_level=0, nlevels=0, min_layer=0, nlayers=0; unsigned swz[4]{0,1,2,3};
 };
 enum class ViewUse { Sample, Attachment, Storage };
@@ -71,8 +69,6 @@ VkResult vkCreateImageView(VkDevice, const VkImageViewCreateInfo* ci, const VkAl
 void vkDestroyImageView(VkDevice, VkImageView v, const VkAllocationCallbacks*) {
     require(live.erase(v) == 1, "destroy only a newly owned live view, exactly once"); destroyed++;
 }
-// (Triforce: a flat texture sampled as a 3D one gets a one-slice 3D copy; none in this fixture)
-VkImageView twin3d_view(Texture*, VkFormat, uint32_t, uint32_t, uint32_t, const VkComponentMapping&) { return VK_NULL_HANDLE; }
 /* ACTUAL */
 
 VkImageView route(Texture& tex, const std::string& name, uint32_t level=0) {

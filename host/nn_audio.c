@@ -326,9 +326,6 @@ typedef struct {
     float line[4][REV_LINE];
     int pos[4], len[4];
     float lp[4];                    /* damping filter states */
-    /* the plain ReverbType's own parameters (linear gains, modes), turned into the ones above by plain_reverb_update */
-    float p_early, p_late, p_reverb, p_out, p_coloration;
-    int p_early_mode, p_late_mode;
 } Reverb;
 static Reverb reverbs[MAX_EFFECTS];
 static uint64_t effect_order;

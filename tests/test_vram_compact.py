@@ -38,8 +38,7 @@ def check_source():
     if not make.index(own) < make.index("pool_take(pool_key, x.image, x.allocation, x.views)"):
         raise SystemExit("vk_texture.cpp: the textures' pool is no longer tried before the render targets' pool and blocks")
     # (while a pass is open nothing of the pool is freed: VMA holds the allocations it listed)
-    # (Triforce: texture_frame's sweep is texture_sweep, called at its end: the two read as one, in that order)
-    frame = block(tex, "void texture_frame(uint64_t completed)") + "\n" + block(tex[tex.rindex("void texture_sweep("):], "void texture_sweep(")
+    frame = block(tex, "void texture_frame(uint64_t completed)")
     step_at, sweep = frame.index("compact_step(completed);"), frame.index("for (auto it = dead.begin(); it != dead.end();) {")
     if not step_at < sweep or "if (compact.in_pass) break;" not in frame[sweep:sweep + 400]:
         raise SystemExit("vk_texture.cpp: the dead list is no longer held while a compaction pass is open")

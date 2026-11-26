@@ -463,12 +463,6 @@ bool float16_shaders() {
 
 namespace {
 
-/// A movie upscaler network left out on a card that cannot run it as the console does (translate_program): on purpose,
-/// so told apart from a program that failed
-struct NetworkLeftOut : std::runtime_error {
-    NetworkLeftOut() : std::runtime_error("a network left out on this card") {}
-};
-
 bool handle_is_integer(uint32_t handle) {
     nvn_tex t;
     nvn_view v;

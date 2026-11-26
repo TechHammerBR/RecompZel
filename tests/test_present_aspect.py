@@ -146,7 +146,7 @@ int main() {
     with tempfile.TemporaryDirectory(prefix="present-aspect-") as tmp:
         unit, exe = Path(tmp) / "fixture.cpp", Path(tmp) / "fixture.exe"
         unit.write_text(fixture, encoding="utf-8")
-        subprocess.run([args.cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", str(unit), "-o", str(exe)],
+        subprocess.run([args.cxx, "-std=c++17", "-Wall", "-Wextra", "-Werror", str(unit), "-o", str(exe)],
                        check=True, timeout=60)
         subprocess.run([str(exe)], check=True, timeout=10)
 

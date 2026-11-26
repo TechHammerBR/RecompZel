@@ -58,24 +58,7 @@ static void mirror_sync(Pool& p) { ++synced; p.synced_epoch = mirror_epoch; p.sy
 static uint64_t texture_segment() { return 0; }
 static void publish_cap_ranges() { throw std::runtime_error("unexpected mirror publication"); }
 static void logf(const char*, ...) {}
-static bool import_in_background(uint64_t, uint64_t, const char** = nullptr) { throw std::runtime_error("unexpected asynchronous import"); }
-// (Triforce: the timeline's progress, put-off late pages, mirrors in pieces, the mirrors' use this submission; none in this model)
-static uint64_t vk_timeline_completed() { return 0; }
-static std::atomic<int> deferred_late_n{0};
-static void late_deferred_bound(uint64_t, uint64_t) {}
-static bool pieces_resident(Pool*, uint64_t, uint64_t) { return true; }
-static bool pieces_direct(Pool*, uint64_t, uint64_t) { return false; }
-static bool mirror_use_on() { return false; }
-static void mirror_use_note(const Pool*, uint64_t, uint64_t) {}
-static thread_local const char* tl_sync_why = nullptr;
-static bool mirror_pieces_make(Pool&, uint64_t, uint64_t, bool) { return true; }
-static int64_t st_piece_direct;
-struct PieceWant { uint64_t lo, off, size; };
-static std::vector<PieceWant> piece_wanted;
-static thread_local bool tl_event_write = false, tl_from_compute = false;
-struct DevProps { uint32_t vendorID = 0; };   // (not NVIDIA: the background import (Triforce, RX_VK_ASYNC_IMPORT) stays off)
-struct DevModel { DevProps props; };
-static DevModel dev;
+static bool import_in_background(uint64_t, uint64_t) { throw std::runtime_error("unexpected asynchronous import"); }
 static BufferRef stream_copy(const uint8_t*, uint64_t) { throw std::runtime_error("unexpected streaming copy"); }
 static const uint8_t* gpu_ptr(uint64_t, uint64_t* avail) {
     *avail = mapping_valid ? 4ull << 20 : 0;

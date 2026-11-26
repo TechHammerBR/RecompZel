@@ -86,12 +86,7 @@ VkFormatProperties format_props(VkFormat f) {   // (format 44: the device has no
 int nvn_block_size(int, int* w, int* h) { *w = *h = 1; return 4; }
 void texture_gpu_wrote(uint64_t gpu, uint64_t size) { writes++; written_gpu = gpu; written_size = size; }
 using VmaAllocation = void*;
-struct DeadMirror { uint64_t value; VkBuffer buffer; VmaAllocation alloc; std::vector<VmaAllocation> pieces; };
-// (Triforce: mirrors in pieces, their binds still to be made and their pieces' memory; none in this model)
-struct PieceBind { VkBuffer buffer; };
-std::mutex piece_binds_mu;
-std::vector<PieceBind> piece_binds;
-void vma_piece_free(VmaAllocation) {}
+struct DeadMirror { uint64_t value; VkBuffer buffer; VmaAllocation alloc; };
 std::deque<DeadMirror> dead_mirrors;
 /* DEAD IMPORT */
 std::deque<DeadImport> dead_imports;

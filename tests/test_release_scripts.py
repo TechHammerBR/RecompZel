@@ -334,7 +334,7 @@ class ReleaseScripts(unittest.TestCase):
         self.assertEqual(names, ["Hookshot-v2.1.0-x86_64.AppImage", "SHA256SUMS", "hookshot-linux.txt"])
         sums = next(a["content"] for a in made["assets"] if a["name"] == "SHA256SUMS")
         self.assertEqual(sums, (self.dir / "SUMS").read_text(encoding="utf-8"))
-        self.assertIn("Qual arquivo baixar?", made["body"])
+        self.assertIn("Which file do I download?", made["body"])
         check = self.run_script("release_files.sh", "check", "v2.1.0", "hookshot-linux.txt")
         self.assertEqual(check.returncode, 0, check.stdout + check.stderr)
 
@@ -603,13 +603,15 @@ class ReleaseScripts(unittest.TestCase):
     # release_files.sh table
 
     def test_table_names_every_file(self):
-        # (recompzel: the table sends Windows players to the RecompZel Launcher, and says which files are for the updaters)
-        for tag in ("v2.1.0-rc.3", "nightly"):
+        # (the RecompLauncher zip is on every release: the table says what it is for, and what Windows players want)
+        for tag, zip_name in (("v2.1.0-rc.3", "`Hookshot-v2.1.0-rc.3-Windows-x64.zip`"), ("nightly", "the `-Windows-x64.zip`")):
             with self.subTest(tag=tag):
                 r = self.run_script("release_files.sh", "table", tag)
                 self.assertEqual(r.returncode, 0, r.stderr)
-                for name in ("`RecompZel-Launcher.exe`", "`hookshot-setup.txt`", "`hookshot-linux.txt`", "`.zsync`", "SHA256SUMS"):
+                for name in ("`HookshotBuilder.exe`", "`hookshot-setup.txt`", "`hookshot-linux.txt`", "`.zsync`",
+                             zip_name, "RecompLauncher", "SHA256SUMS"):
                     self.assertIn(name, r.stdout)
+                self.assertIn("for RecompLauncher: on Windows, download `HookshotBuilder.exe` instead", r.stdout)
 
     def test_finish_puts_the_table_with_the_zip_under_the_notes_once(self):
         zip_name = "Hookshot-v2.1.0-Windows-x64.zip"
@@ -618,8 +620,9 @@ class ReleaseScripts(unittest.TestCase):
             r = self.run_script("release_files.sh", "finish", "v2.1.0")
             self.assertEqual(r.returncode, 0, r.stderr)
         body = self.state()["releases"][0]["body"]
-        self.assertEqual(body.count("Qual arquivo baixar?"), 1)
-        self.assertLess(body.index("notes"), body.index("Qual arquivo baixar?"))
+        self.assertEqual(body.count("Which file do I download?"), 1)
+        self.assertIn("`%s` (the setup and its `recomplauncher.json`) for RecompLauncher" % zip_name, body)
+        self.assertLess(body.index("notes"), body.index("Which file do I download?"))
 
     def test_publish_refuses_a_rolling_release(self):
         for tag in ("rc", "nightly"):
@@ -669,7 +672,7 @@ class ReleaseScripts(unittest.TestCase):
         self.assertEqual(self.state()["tags"]["rc"], "b" * 40)
         self.assertIn("[v2.1.0-rc.3](https://github.com/%s/releases/tag/v2.1.0-rc.3)" % REPO, rc["body"])
         self.assertLess(len(rc["body"]), 800)
-        self.assertNotIn("Qual arquivo baixar?", rc["body"])
+        self.assertNotIn("Which file do I download?", rc["body"])
         # (the others are as they were)
         for x in self.state()["releases"]:
             if x["tag_name"] != "rc":

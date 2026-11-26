@@ -25,7 +25,7 @@ def main():
     lock = bind.index("ParLock")
     if bind.index("bind_memo_hit(") > lock:
         raise SystemExit("a read bind takes the pool lock before checking the remembered one")
-    if "if (!written" not in bind[: bind.index("bind_memo_hit(")]:   # (Triforce: "if (!written && !mirror_use_on())")
+    if "if (!written)" not in bind[: bind.index("bind_memo_hit(")]:
         raise SystemExit("a written bind can be served from the remembered read")
     store = bind.index("bind_memo[bind_slot(guest, size)] =")
     if "gpu_bind_stamp()" not in bind[store : store + 160]:
