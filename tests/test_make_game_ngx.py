@@ -7,6 +7,7 @@ import importlib.util
 import io
 import os
 from pathlib import Path
+import shutil
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -29,7 +30,7 @@ class NgxRuntimeTests(unittest.TestCase):
         (self.out / "bin").mkdir(parents=True)
         self.ngx = make_game.ngx_script()
 
-    def sdk_files(self, platform, runtime=True):
+    def sdk_files(self, platform, runtime=True, framegen=True):
         lib = Path(self.ngx.library(str(self.sdk), platform))
         lib.parent.mkdir(parents=True, exist_ok=True)
         lib.write_bytes(b"lib")
@@ -37,18 +38,25 @@ class NgxRuntimeTests(unittest.TestCase):
             rt = Path(self.ngx.runtime(str(self.sdk), platform))
             rt.parent.mkdir(parents=True, exist_ok=True)
             rt.write_bytes(b"runtime")
+            if framegen:
+                Path(self.ngx.runtime(str(self.sdk), platform, "framegen")).write_bytes(b"framegen")
 
-    def place(self, platform, sdk=None):
+    def place(self, platform, sdk=None, said=None):
         env = {"HOOKSHOT_NGX_SDK": str(self.sdk) if sdk is None else sdk}
         with mock.patch.object(make_game, "LINUX", platform == "linux"), mock.patch.dict(os.environ, env), \
-                mock.patch("sys.stdout", io.StringIO()):
-            return make_game.place_ngx_runtime(str(self.out))
+                mock.patch("sys.stdout", io.StringIO()) as out:
+            dst = make_game.place_ngx_runtime(str(self.out))
+        if said is not None:
+            said.append(out.getvalue())
+        return dst
 
     def test_windows_runtime_goes_to_the_ngx_folder(self):
         self.sdk_files("windows")
         dst = self.place("windows")
         self.assertEqual(Path(dst), self.out / "ngx" / "nvngx_dlss.dll")
         self.assertEqual(Path(dst).read_bytes(), b"runtime")
+        # (DLSS Frame Generation's runtime beside it, where NGX looks before the driver's own copy)
+        self.assertEqual((self.out / "ngx" / "nvngx_dlssg.dll").read_bytes(), b"framegen")
         self.assertEqual(sorted(p.name for p in self.out.iterdir()), ["bin", "ngx"])
         self.assertEqual(list((self.out / "bin").iterdir()), [])   # (nothing beside the exe)
         self.assertFalse([p for p in self.out.rglob("*") if p.name.lower() == "_nvngx.dll"])
@@ -84,12 +92,21 @@ class NgxRuntimeTests(unittest.TestCase):
     def test_linux_runtime(self):
         self.sdk_files("linux")
         self.assertEqual(Path(self.place("linux")), self.out / "ngx" / "libnvidia-ngx-dlss.so.310.9.16")
+        self.assertTrue((self.out / "ngx" / "libnvidia-ngx-dlssg.so.310.9.16").is_file())
 
     def test_rebuilding_without_dlss_removes_stale_runtime(self):
         self.sdk_files("linux")
         self.assertTrue((Path(self.place("linux"))).is_file())
         self.assertIsNone(self.place("linux", sdk=""))
-        self.assertFalse((self.out / "ngx").exists())
+        self.assertFalse((self.out / "ngx").exists())   # (both runtimes gone, and the folder)
+
+    def test_an_older_sdk_folder_says_how_to_get_frame_generations_runtime(self):
+        self.sdk_files("windows", framegen=False)
+        said = []
+        self.assertEqual(Path(self.place("windows", said=said)), self.out / "ngx" / "nvngx_dlss.dll")
+        self.assertEqual([p.name for p in (self.out / "ngx").iterdir()], ["nvngx_dlss.dll"])
+        self.assertIn("has no nvngx_dlssg.dll yet", said[0])
+        self.assertIn("scripts/ngx_sdk.py", said[0])
 
     def test_nothing_without_the_sdk_or_its_platform(self):
         self.assertIsNone(self.place("windows", sdk=""))
@@ -118,9 +135,11 @@ class FetchGateTests(unittest.TestCase):
         self.assertIn("@@error", out)
         self.assertIn("license", out)
 
-    def test_needs_the_sdk_folder(self):
+    def test_without_the_variable_the_sdk_goes_to_work_ngx_sdk(self):
+        # (the Builder's --cli drops HOOKSHOT_NGX_SDK, so a launcher's --fetch-ngx-sdk has to work without it)
         calls, code, _ = self.fetch(True, sdk="")
-        self.assertEqual((calls, code), ([], 1))
+        folder = os.path.join(make_game.ROOT, "work", "ngx-sdk")
+        self.assertEqual((calls, code), ([(folder, make_game.ngx_platform())], 0))
 
     def test_fetches_this_platforms_files_after_the_notice(self):
         calls, code, out = self.fetch(True)
@@ -189,16 +208,17 @@ class LinuxBuilderDlssTests(unittest.TestCase):
     def test_license_prompt_and_env(self):
         self.assertIn("https://github.com/NVIDIA/DLSS/blob/", self.builder.DLSS_LICENSE)
         self.assertIn("never share a game folder built with them", self.builder.DLSS_LICENSE)
-        with mock.patch.dict(os.environ, {"HOOKSHOT_BUILDER_HOME": str(self.root)}):
-            sdk = str(self.root / "hookshot" / "builder" / "ngx-sdk")
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": str(self.root)}):
+            sdk = str(self.root / "hookshot-builder" / "ngx-sdk")   # (the builder's cache folder, not the game's data folder)
             self.assertEqual(self.builder.ngx_sdk_dir(), sdk)
-            env_off = self.builder.make_game_env(False, {"HOOKSHOT_NGX_SDK": "/stale", "HOOKSHOT_VK_PREBUILT": "/app/hookshot_vk.so"})
+            # (every build compiles the Vulkan back end: no prebuilt one for the environment to pick or drop)
+            env_off = self.builder.make_game_env(False, {"HOOKSHOT_NGX_SDK": "/stale", "PATH": "/usr/bin"})
             self.assertNotIn("HOOKSHOT_NGX_SDK", env_off)
-            self.assertEqual(env_off["HOOKSHOT_VK_PREBUILT"], "/app/hookshot_vk.so")
+            self.assertEqual(env_off["PATH"], "/usr/bin")
             self.assertEqual(self.builder.dlss_args(False), [])
-            env_on = self.builder.make_game_env(True, {"HOOKSHOT_VK_PREBUILT": "/app/hookshot_vk.so"})
+            env_on = self.builder.make_game_env(True, {"PATH": "/usr/bin"})
             self.assertEqual(env_on["HOOKSHOT_NGX_SDK"], sdk)
-            self.assertNotIn("HOOKSHOT_VK_PREBUILT", env_on)
+            self.assertEqual(env_on["PATH"], "/usr/bin")
             self.assertEqual(self.builder.dlss_args(True), ["--fetch-ngx-sdk", "--accept-nvidia-license"])
 
     def test_declining_license_turns_dlss_back_off(self):
@@ -210,6 +230,7 @@ class LinuxBuilderDlssTests(unittest.TestCase):
         self.assertFalse(win.dlss.get())
         self.assertFalse(win.dlss_toggled)
         self.assertEqual(saved.get("dlss"), "0")
+        self.assertNotIn("nvidia_license", saved)
 
     def test_accepting_license_saves_and_marks_toggled(self):
         saved = {}
@@ -220,18 +241,52 @@ class LinuxBuilderDlssTests(unittest.TestCase):
         self.assertTrue(win.dlss.get())
         self.assertTrue(win.dlss_toggled)
         self.assertEqual(saved.get("dlss"), "1")
+        self.assertEqual(saved.get("nvidia_license"), "1")   # (in the settings: the SDK's folder is a cache)
 
     def test_folder_has_dlss_needs_runtime_and_accepted_license(self):
         game = self.root / "game"
         (game / "ngx").mkdir(parents=True)
-        with mock.patch.dict(os.environ, {"HOOKSHOT_BUILDER_HOME": str(self.root)}):
+        config = self.root / "config" / "builder.ini"
+        with mock.patch.dict(os.environ, {"HOOKSHOT_BUILDER_HOME": str(self.root / "data"), "XDG_CACHE_HOME": str(self.root / "cache")}), \
+                mock.patch.object(self.builder, "CONFIG", str(config)):
             self.assertFalse(self.builder.folder_has_dlss(str(game)))
             (game / "ngx" / "libnvidia-ngx-dlss.so.310.9.16").write_bytes(b"rt")
             self.assertFalse(self.builder.folder_has_dlss(str(game)))
+            # (the SDK in the cache says nothing: the cache can be emptied, and the license was accepted or not all the same)
             lic = Path(self.builder.ngx_sdk_dir()) / "LICENSE.txt"
             lic.parent.mkdir(parents=True, exist_ok=True)
             lic.write_text("NVIDIA RTX SDKs license", encoding="utf-8")
+            self.assertFalse(self.builder.folder_has_dlss(str(game)))
+            self.builder.save_config({"nvidia_license": "1"})
             self.assertTrue(self.builder.folder_has_dlss(str(game)))
+            shutil.rmtree(Path(self.builder.ngx_sdk_dir()))   # (the cache emptied: an update keeps DLSS, and fetches the SDK again)
+            self.assertTrue(self.builder.folder_has_dlss(str(game)))
+
+    def test_old_sdk_moves_to_the_cache_and_its_license_is_recorded(self):
+        config = self.root / "config" / "builder.ini"
+        with mock.patch.dict(os.environ, {"HOOKSHOT_BUILDER_HOME": str(self.root / "data"), "XDG_CACHE_HOME": str(self.root / "cache")}), \
+                mock.patch.object(self.builder, "CONFIG", str(config)):
+            old = Path(self.builder.old_ngx_sdk_dir())
+            self.assertEqual(old, self.root / "data" / "hookshot" / "builder" / "ngx-sdk")
+            self.builder.move_old_ngx_sdk()   # (nothing there: nothing done, nothing recorded)
+            self.assertFalse(config.exists())
+            (old / "runtime").mkdir(parents=True)
+            (old / "LICENSE.txt").write_text("NVIDIA RTX SDKs license", encoding="utf-8")
+            (old / "runtime" / "libnvidia-ngx-dlss.so.310.9.16").write_bytes(b"rt")
+            self.builder.save_config({"out": "/games/hookshot"})
+            self.assertTrue(self.builder.license_accepted())   # (accepted before the record: the old SDK says so)
+            self.builder.move_old_ngx_sdk()
+            new = Path(self.builder.ngx_sdk_dir())
+            self.assertFalse(old.exists())
+            self.assertEqual((new / "runtime" / "libnvidia-ngx-dlss.so.310.9.16").read_bytes(), b"rt")
+            self.assertEqual(self.builder.load_config(), {"out": "/games/hookshot", "nvidia_license": "1"})
+            self.assertTrue(self.builder.license_accepted())
+            # (an SDK in both places: the cache's is kept, the old one goes)
+            (old).mkdir(parents=True)
+            (old / "LICENSE.txt").write_text("old", encoding="utf-8")
+            self.builder.move_old_ngx_sdk()
+            self.assertFalse(old.exists())
+            self.assertEqual((new / "LICENSE.txt").read_text(encoding="utf-8"), "NVIDIA RTX SDKs license")
 
     def test_toggling_dlss_on_up_to_date_folder_offers_update(self):
         game = self.root / "game"
@@ -250,7 +305,9 @@ class LinuxBuilderDlssTests(unittest.TestCase):
 
     def test_build_and_appimage_package_dlss_sources(self):
         build_py = (ROOT / "nx2" / "build.py").read_text(encoding="utf-8")
-        self.assertIn('vk_prebuilt = "" if NGX_SDK else os.environ.get("HOOKSHOT_VK_PREBUILT", "")', build_py)
+        # (with DLSS or without, the back end is compiled from the sources: no prebuilt one to set aside)
+        self.assertIn("build_vk = a.standalone and vk_headers and spirv_headers and vma_headers", build_py)
+        self.assertIn("NGX_SDK = ngx_sdk(", build_py)
         appimage = (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8")
         for piece in ("cp scripts/ngx_sdk.py", "cp -a gpu/vk gpu/compat gpu/third_party", "third_party/imgui", "libstdc++.a"):
             self.assertIn(piece, appimage)

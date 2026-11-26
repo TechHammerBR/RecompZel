@@ -24,6 +24,8 @@ public partial class MainWindow : Window
     readonly DispatcherTimer clock = new() { Interval = TimeSpan.FromSeconds(1) };
     readonly Stopwatch elapsed = new();
     readonly Stopwatch compileClock = new();
+    readonly Stopwatch shaderClock = new();   // (the shaders' step, for its countdown: ShaderStep.Left)
+    readonly Stopwatch shaderSaidAt = new();   // (since the game's last "about N s left")
     readonly Dictionary<string, StepRow> rows = new();
     readonly Dictionary<string, (bool Ok, string Text)?> checks = new(StringComparer.OrdinalIgnoreCase);
     readonly List<Dump> dumps = new();
@@ -41,17 +43,15 @@ public partial class MainWindow : Window
     int filesDone, filesOf;
     int filesChanged = -1, filesCompiled;
     double compileEta = -1;
+    double shaderFraction, shaderSaid = -1;
     long thisCompile, previousTotal = -1;
     string lastFailure = "";
 
     public MainWindow()
     {
         InitializeComponent();
-        // (the texts the window sets itself, in Portuguese when the language is Portuguese: Strings.Translate)
-        var localizer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
-        localizer.Tick += (_, _) => { if (original.Count > 0 || lang.Code.StartsWith("pt", StringComparison.OrdinalIgnoreCase)) LocalizeTree(this); };
-        localizer.Start();
-        OutPath.Text = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Games", "RecompZel");
+        OutPath.Text = BuilderHome.DefaultGame;
+        if (BuilderHome.Portable) DesktopTick.IsChecked = StartTick.IsChecked = false;
         LanguageBox.ItemsSource = Strings.All;
         LanguageBox.SelectedItem = lang;
         WorkerBox.ItemsSource = BuildWorkers.Choices(Environment.ProcessorCount);
@@ -61,6 +61,10 @@ public partial class MainWindow : Window
         TrackBox.ItemsSource = TrackNames;
         TrackBox.SelectedIndex = Array.IndexOf(TrackIds, Track);
         TrackBox.SelectionChanged += TrackChanged;
+        pinned = BuilderSettings.Load(SettingsPath)?.Version;
+        FillVersions(null);
+        VersionBox.DropDownOpened += VersionsOpened;
+        VersionBox.SelectionChanged += VersionChanged;
         clock.Tick += (_, _) => Tick();
         Drop += Dropped;
         SourceInitialized += (_, _) =>
@@ -119,15 +123,44 @@ public partial class MainWindow : Window
         if (wait > 0) await Task.Delay(wait);
         ApplySettings();
         FillDumps();
+        FillSaves();
+        filesReady = true;
         ShowMain();
         if (Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") is { Length: > 0 } preview) { Preview(preview); return; }
         CheckAll();
-        latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag(Track);
+        latestTag = await NewestTag();
         RefreshMode();
     }
 
+    bool filesReady;   // (the first page has its game files and saved choices: a start with --update or --launch goes past that)
+
+    /// The first page again, from a build or an update that stopped or was cancelled. RefreshMode leaves the button alone while
+    /// an update runs, and one that stopped left it so for good: the page kept the button it had before. After a start with
+    /// --update (the game's or the setup's, once the new builder is in) that was a grey "Build the game" over a page with no
+    /// game files and no saved choices, and the Update button only came back when the app was closed and opened again (#2129).
+    /// The update is over here: the page is set up if it never was, for the update's folder, and its button says what that needs
+    async void ToFiles()
+    {
+        SetStep(0);
+        ShowPage(FilesPage);
+        if (!updating) return;
+        updating = false;
+        if (!filesReady)
+        {
+            filesReady = true;
+            var folder = OutPath.Text;   // (the update's: the saved one is the last build's)
+            dumps.AddRange(await Task.Run(Finder.FindDumps));
+            ApplySettings();
+            OutPath.Text = folder;
+            FillDumps();
+            CheckAll();
+            latestTag ??= await NewestTag();
+        }
+        Refresh();
+    }
+
     // ================= what the button does: build, update the game, play it, or get the newer builder =================
-    // (as NX2navi's launcher: whatever version the player opens, it checks the latest release and says what is there)
+    // (as a game launcher does: whatever version the player opens, it checks the latest release and says what is there)
 
     enum Mode { Build, UpdateGame, UpToDate, UpdateBuilder }
     Mode mode = Mode.Build;
@@ -154,29 +187,43 @@ public partial class MainWindow : Window
         var game = OutPath.Text.Length > 2 ? GameVersion(OutPath.Text) : null;
         var builder = Tools.Find()?.Version;
         // (the newest release known: GitHub's, else this builder's own. v2.0.0 took a GitHub that did not answer for "up to date")
-        updateTarget = Updater.Target(latestTag, builder, Track);
+        updateTarget = pinned ?? Updater.Target(latestTag, builder, Track);
         if (game != null && updateTarget != null && game != updateTarget && !sourcePicked) mode = Mode.UpdateGame;
         else if (game != null && !sourcePicked) mode = Mode.UpToDate;
         else if (latestTag != null && builder != null && builder != updateTarget) mode = Mode.UpdateBuilder;
         else mode = Mode.Build;
+        // (an up-to-date game without an upscaler ticked here: Update builds it again with it, as Play would change nothing)
+        var lacking = mode == Mode.UpToDate
+            ? UpscalerParts.Missing(OutPath.Text, DlssTick.IsChecked == true, FsrTick.IsChecked == true, fsrLicense)
+            : new List<string>();
+        if (lacking.Count > 0) mode = Mode.UpdateGame;
         switch (mode)
         {
+            case Mode.UpdateGame when lacking.Count > 0:
+                FilesTitle.Text = "Update to add " + string.Join(" and ", lacking);
+                FilesSub.Text = $"Your game was built without {string.Join(" and ", lacking)}. Update builds it again from the game " +
+                                "files kept in its folder, with what is ticked below. Your saves stay.";
+                BuildButton.Content = "Update";
+                break;
             case Mode.UpdateGame:
                 FilesTitle.Text = "Update available";
-                FilesSub.Text = $"RecompZel {updateTarget} is available. Your game is {game}: Update builds it again from the game files kept in " +
-                                "its folder, compiling only what changed.";
+                FilesSub.Text = (pinned != null ? $"You chose Hookshot {pinned} in the Version menu." : $"Hookshot {updateTarget} is available.") +
+                                $" Your game is {game}: Update builds it again from the game files kept in its folder, compiling only what changed.";
                 BuildButton.Content = "Update";
                 break;
             case Mode.UpToDate:
                 FilesTitle.Text = "Your game is up to date";
                 FilesSub.Text = latestTag == null
-                    ? $"Your game is {game}, as this builder. GitHub did not answer, so newer versions could not be checked."
+                    ? $"Your game is {game}, as this builder. git.notrexed.dev did not answer, so newer versions could not be checked."
+                    : pinned != null ? $"{game} is the version chosen in the Version menu. Pick game files below only to build it again from scratch."
                     : $"{game} is the latest version. Pick game files below only to build it again from scratch.";
                 BuildButton.Content = "Play";
                 break;
             case Mode.UpdateBuilder:
                 FilesTitle.Text = "Build your game";
-                FilesSub.Text = $"RecompZel Builder {updateTarget} is available (this one is {builder}): update it first, then build.";
+                FilesSub.Text = pinned != null
+                    ? $"You chose Hookshot {pinned} in the Version menu (this builder is {builder}): install it first, then build."
+                    : $"Hookshot Builder {updateTarget} is available (this one is {builder}): update it first, then build.";
                 BuildButton.Content = "Update builder";
                 break;
             default:
@@ -208,9 +255,9 @@ public partial class MainWindow : Window
         LaunchVersion.Text = (game != null ? $"RecompZel {game}" : "RecompZel") + " · " + folder;
         LaunchPlay.IsEnabled = File.Exists(GameExe(folder));
         ShowPage(LaunchPage);
-        latestTag = Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake) : await Updater.LatestTag(Track);
-        updateTarget = Updater.Target(latestTag, Tools.Find()?.Version, Track);   // (GitHub's newest, else this builder's own)
-        if (updateTarget == null) LaunchStatus.Text = "Could not check for updates (GitHub did not answer)";
+        latestTag = await NewestTag();
+        updateTarget = pinned ?? Updater.Target(latestTag, Tools.Find()?.Version, Track);   // (the chosen version, the server's newest, else this builder's own)
+        if (updateTarget == null) LaunchStatus.Text = "Could not check for updates (git.notrexed.dev did not answer)";
         else if (game != null && game != updateTarget && GameVersion(folder) != null)
         {
             LaunchStatus.Text = $"Update available: {updateTarget}";
@@ -219,8 +266,8 @@ public partial class MainWindow : Window
             LaunchUpdate.Visibility = Visibility.Visible;
         }
         else if (game != null && game != updateTarget)
-            LaunchStatus.Text = $"{updateTarget} is out: build this folder again with the RecompZel Builder to get it";
-        else LaunchStatus.Text = latestTag == null ? "Up to date with this builder (GitHub did not answer)" : "Up to date";
+            LaunchStatus.Text = $"{updateTarget} is out: build this folder again with the Hookshot Builder to get it";
+        else LaunchStatus.Text = latestTag == null ? "Up to date with this builder (git.notrexed.dev did not answer)" : "Up to date";
     }
 
     /// (a folder built before it kept its game files has a version too: only shown)
@@ -236,11 +283,7 @@ public partial class MainWindow : Window
     }
 
     /// The game in a folder: bin\hookshot.exe below its launcher (hookshot.exe), or hookshot.exe in a folder built before the launcher
-    static string GameExe(string folder)
-    {
-        var game = System.IO.Path.Combine(folder, "bin", "hookshot.exe");
-        return File.Exists(game) ? game : System.IO.Path.Combine(folder, "hookshot.exe");
-    }
+    static string GameExe(string folder) => PatchBuilds.GameExe(folder);   // (bin\hookshot.exe, or a newer development build's own)
 
     /// (the launcher already checked for updates: the game does not ask again)
     static void StartGame(string folder)
@@ -268,17 +311,71 @@ public partial class MainWindow : Window
             return saved != null && TrackIds.Contains(saved) ? saved : Updater.TrackOf(Tools.Find()?.Version);
         }
     }
-    /// (a track other than these tools' own: its newest is installed, even an older version)
-    bool Switching => Track != Updater.TrackOf(Tools.Find()?.Version);
+    /// (a track other than these tools' own: its newest is installed, even an older version; or a version chosen in the Version
+    /// menu: that one, older or newer)
+    bool Switching => pinned != null || Track != Updater.TrackOf(Tools.Find()?.Version);
+
+    /// The version to update to as far as the server says: the one chosen in the Version menu, else the track's newest (null: the
+    /// server did not answer)
+    async Task<string?> NewestTag() =>
+        pinned ?? (Environment.GetEnvironmentVariable("HOOKSHOT_LATEST_TAG") is { Length: > 0 } fake ? (fake == "none" ? null : fake)
+                   : await Updater.LatestTag(Track));
+
+    // ---- the Version menu (ReleaseList.cs): "Newest" (the track's newest, as before) or any release on git.notrexed.dev, older ones
+    // too, read from the server page by page when the menu is first opened. The choice is saved (builder-settings.json Version):
+    // the builder installs that release and builds the game with it, and offers no other until Newest or another is chosen ----
+    string? pinned;
+    List<ReleaseList.Entry>? releases;
+    bool versionsFilling, versionsAsked;
+
+    void FillVersions(string? note)
+    {
+        versionsFilling = true;
+        VersionBox.Items.Clear();
+        VersionBox.Items.Add(new ComboBoxItem { Content = "Newest on the update track", Tag = null });
+        if (note != null) VersionBox.Items.Add(new ComboBoxItem { Content = note, IsEnabled = false });
+        if (pinned != null && releases?.Any(r => r.Tag == pinned) != true)
+            VersionBox.Items.Add(new ComboBoxItem { Content = pinned, Tag = pinned });   // (the saved one, before the list is read)
+        foreach (var r in releases ?? new List<ReleaseList.Entry>())
+            VersionBox.Items.Add(new ComboBoxItem { Content = r.Label, Tag = r.Tag, IsEnabled = r.Installable || r.Tag == pinned,
+                                                    ToolTip = r.Installable ? null : "The builder can't install this release: its setup or setup list is missing, or it is older than v2.0.6" });
+        VersionBox.SelectedItem = VersionBox.Items.Cast<ComboBoxItem>().FirstOrDefault(i => (string?)i.Tag == pinned) ?? VersionBox.Items[0];
+        versionsFilling = false;
+    }
+
+    async void VersionsOpened(object? sender, EventArgs e)
+    {
+        if (versionsAsked) return;
+        versionsAsked = true;
+        FillVersions("Reading the releases from git.notrexed.dev…");
+        releases = await ReleaseList.Fetch();
+        if (releases == null) versionsAsked = false;   // (asked again at the next opening)
+        FillVersions(releases == null ? "git.notrexed.dev did not answer: open the menu again to retry" : null);
+    }
+
+    async void VersionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (versionsFilling || VersionBox.SelectedItem is not ComboBoxItem { IsEnabled: true } item) return;
+        var tag = item.Tag as string;
+        if (tag == pinned) return;
+        pinned = tag;
+        SaveSettings();
+        latestTag = null;
+        RefreshMode();
+        latestTag = await NewestTag();
+        RefreshMode();
+    }
 
     async void TrackChanged(object sender, SelectionChangedEventArgs e)
     {
         if (TrackBox.SelectedIndex < 0 || TrackIds[TrackBox.SelectedIndex] == Track) return;
         chosenTrack = TrackIds[TrackBox.SelectedIndex];
+        pinned = null;   // (a track chosen: its newest, not a version chosen before)
+        FillVersions(null);
         SaveSettings();
         latestTag = null;
         RefreshMode();
-        latestTag = await Updater.LatestTag(Track);
+        latestTag = await NewestTag();
         RefreshMode();
     }
 
@@ -294,30 +391,148 @@ public partial class MainWindow : Window
         Application.Current.Shutdown();
     }
 
+    // ---- Mods + Editor (ToolsPage): the game folder's mods and its saves; Back comes back to the page it was opened from, and
+    // Save and play starts the game as Play does there ----
+    string? keepPatchBuild;   // (a build the Mods page asked for: its mix of code patches kept once it is in, PatchBuilds)
+
+    void OpenTools(string folder, FrameworkElement from, Action<string> play)
+    {
+        ToolsPage.Back = () => ShowPage(from);
+        ToolsPage.Play = play;
+        ToolsPage.Rebuild = RebuildForMods;
+        ToolsPage.Open(Tools.Find(), folder);
+        ShowPage(ToolsPage);
+    }
+
+    void LaunchToolsClick(object sender, RoutedEventArgs e) =>
+        OpenTools(launchFolder, LaunchPage, folder => { StartGame(folder); Application.Current.Shutdown(); });
+
+    void ReadyToolsClick(object sender, RoutedEventArgs e) =>
+        OpenTools(finished, ReadyPage, folder => { ShowPage(ReadyPage); StartGame(folder); WindowState = WindowState.Minimized; });
+
     void LaunchFolderClick(object sender, RoutedEventArgs e) =>
         Process.Start(new ProcessStartInfo(launchFolder) { UseShellExecute = true });
 
+    // ---- Save my pipeline list: the game folder's pipeline list and the "Submit your pipelines" issue's template, filled in,
+    // zipped into the Downloads folder by nx2/pipeline_share.py (as the Linux builder and the game's menu do), then the template
+    // on the clipboard, the zip shown in its folder and the issue opened. Nothing is uploaded: the player attaches the zip ----
+    const string ShareIssue = "https://github.com/NotRexed/Hookshot/issues/2034";
+
+    async void LaunchShareClick(object sender, RoutedEventArgs e)
+    {
+        var tools = Tools.Find();
+        LaunchShareStatus.Visibility = Visibility.Visible;
+        if (tools == null)
+        {
+            LaunchShareStatus.Text = "The builder's tools were not found: start it again from its own folder.";
+            return;
+        }
+        LaunchShare.IsEnabled = false;
+        LaunchShareStatus.Text = "Saving…";
+        var folder = launchFolder;
+        var (zip, template, count, error) = await Task.Run(() => SharePipelines(tools, folder, DownloadsFolder()));
+        LaunchShare.IsEnabled = true;
+        if (zip == null)
+        {
+            LaunchShareStatus.Text = error ?? "The pipeline list could not be saved.";
+            return;
+        }
+        var copied = false;
+        try { Clipboard.SetText(template ?? ""); copied = true; } catch (Exception) { }
+        var explorer = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe");   // (not one found on the path)
+        try { Process.Start(new ProcessStartInfo(File.Exists(explorer) ? explorer : "explorer.exe", $"/select,\"{zip}\"") { UseShellExecute = true }); } catch (Exception) { }
+        var opened = false;
+        try { Process.Start(new ProcessStartInfo(ShareIssue) { UseShellExecute = true }); opened = true; } catch (Exception) { }
+        LaunchShareStatus.Text = $"Saved {System.IO.Path.GetFileName(zip)} ({count} pipelines) in {System.IO.Path.GetDirectoryName(zip)}. " +
+            (copied ? "The report is copied. " : "The report is in the zip. ") +
+            (opened ? "Issue #2034 is open in your browser: attach" : $"Open {ShareIssue} and attach") +
+            " the zip to a comment, then paste the report and say where you played.";
+    }
+
+    /// nx2/pipeline_share.py --json: (the zip, the template, the pipelines) or the reason there is none
+    static (string? Zip, string? Template, int Count, string? Error) SharePipelines(Tools tools, string folder, string outDir)
+    {
+        var si = new ProcessStartInfo(tools.Python)
+        {
+            WorkingDirectory = tools.Root,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+        };
+        si.Environment["PYTHONIOENCODING"] = "utf-8";
+        foreach (var a in tools.PythonArgs ?? Array.Empty<string>()) si.ArgumentList.Add(a);
+        si.ArgumentList.Add("-I");
+        si.ArgumentList.Add(System.IO.Path.Combine(tools.Root, "nx2", "pipeline_share.py"));
+        si.ArgumentList.Add(folder);
+        si.ArgumentList.Add("--out-dir");
+        si.ArgumentList.Add(outDir);
+        si.ArgumentList.Add("--json");
+        try
+        {
+            using var p = Process.Start(si)!;
+            var stderr = p.StandardError.ReadToEndAsync();   // (drained, so a long complaint cannot stall it)
+            var line = p.StandardOutput.ReadToEnd().Trim().Split('\n').LastOrDefault() ?? "";
+            p.WaitForExit();
+            if (!line.StartsWith("{"))   // (the script stopped before its answer: what it said last)
+            {
+                var last = stderr.Result.Trim().Split('\n').LastOrDefault()?.Trim();
+                return (null, null, 0, "The pipeline list could not be saved" + (string.IsNullOrEmpty(last) ? "." : ": " + last));
+            }
+            using var doc = System.Text.Json.JsonDocument.Parse(line);
+            var r = doc.RootElement;
+            if (r.GetProperty("ok").GetBoolean())
+                return (r.GetProperty("zip").GetString(), r.GetProperty("template").GetString(), r.GetProperty("pipelines").GetInt32(), null);
+            return (null, null, 0, r.GetProperty("error").GetString());
+        }
+        catch (Exception ex)
+        {
+            return (null, null, 0, tools.OwnPythonMissing ? Tools.OwnPythonMissingText : "The pipeline list could not be saved: " + ex.Message);
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, ExactSpelling = true)]
+    static extern int SHGetKnownFolderPath([System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPStruct)] Guid id,
+                                           uint flags, IntPtr token, out string path);
+
+    /// Where a browser's file picker opens: the Downloads folder, else the user's own
+    static string DownloadsFolder()
+    {
+        try
+        {
+            if (SHGetKnownFolderPath(new Guid("374DE290-123F-4565-9164-39C4925E467B"), 0, IntPtr.Zero, out var path) == 0 && Directory.Exists(path))
+                return path;
+        }
+        catch (Exception) { }
+        return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    }
+
     // ---- what the player chose last time (BuilderSettings.cs): builder-settings.json beside the versions ----
-    static string SettingsPath => System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "builder-settings.json");
+    static string SettingsPath => System.IO.Path.Combine(Storage.Base, "builder-settings.json");
 
     void ApplySettings()
     {
         var s = BuilderSettings.Load(SettingsPath);
         if (s == null) return;
+        s.Out = BuilderHome.LoadPath(s.Out);
+        s.Nup = BuilderHome.LoadPath(s.Nup);
+        s.Romfs = BuilderHome.LoadPath(s.Romfs);
+        s.Exefs = BuilderHome.LoadPath(s.Exefs);
         PrepareTick.IsChecked = !s.PrepareLater;
         if (!string.IsNullOrEmpty(s.Out)) OutPath.Text = s.Out;
         DlssTick.IsChecked = s.Dlss;
+        dlssLicenseAccepted = s.DlssLicense;
         FsrTick.IsChecked = s.Fsr;
         fsrLicense = s.FsrLicense;
         MemoryBox.SelectedItem = BuildMemory.Saved(MemoryBox.ItemsSource.Cast<object>(), s.MemoryGb);
-        if (s.Romfs != null && s.Exefs != null && Directory.Exists(s.Romfs) && File.Exists(System.IO.Path.Combine(s.Exefs, "main")))
+        if (s.Romfs != null && s.Exefs != null && DumpSearch.Exists(s.Romfs, true) && DumpSearch.Exists(System.IO.Path.Combine(s.Exefs, "main"), false))
         {
             romfs = s.Romfs;
             exefs = s.Exefs;
             foldersNote = $"Using the folders {romfs} and {exefs} (as last time)";
         }
-        else if (s.Nup != null && File.Exists(s.Nup))
+        else if (s.Nup != null && DumpSearch.Exists(s.Nup, false))
         {
             if (!dumps.Any(d => string.Equals(d.Path, s.Nup, StringComparison.OrdinalIgnoreCase)))
             {
@@ -332,12 +547,15 @@ public partial class MainWindow : Window
     {
         try
         {
-            var s = new BuilderSettings { Out = OutPath.Text, Nup = romfs == null ? chosenNup : null, Romfs = romfs, Exefs = exefs,
-                                          Dlss = DlssTick.IsChecked == true, Fsr = FsrTick.IsChecked == true,
+            var s = new BuilderSettings { Out = BuilderHome.SavePath(OutPath.Text),
+                                          Nup = BuilderHome.SavePath(romfs == null ? chosenNup : null),
+                                          Romfs = BuilderHome.SavePath(romfs), Exefs = BuilderHome.SavePath(exefs),
+                                          Dlss = DlssTick.IsChecked == true, DlssLicense = dlssLicenseAccepted,
+                                          Fsr = FsrTick.IsChecked == true,
                                           FsrLicense = fsrLicense,
                                           PrepareLater = PrepareTick.IsChecked != true,
                                           MemoryGb = MemoryBox.SelectedItem is int gb ? gb : null,
-                                          Track = chosenTrack ?? BuilderSettings.Load(SettingsPath)?.Track };
+                                          Track = chosenTrack ?? BuilderSettings.Load(SettingsPath)?.Track, Version = pinned };
             Directory.CreateDirectory(System.IO.Path.GetDirectoryName(SettingsPath)!);
             File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(s));
         }
@@ -452,7 +670,7 @@ public partial class MainWindow : Window
 
     void ShowPage(FrameworkElement page)
     {
-        foreach (var p in new FrameworkElement[] { FilesPage, BuildPage, ReadyPage, ProblemPage, LaunchPage })
+        foreach (var p in new FrameworkElement[] { FilesPage, BuildPage, ReadyPage, ProblemPage, LaunchPage, ToolsPage })
             p.Visibility = p == page ? Visibility.Visible : Visibility.Collapsed;
         page.Opacity = 0;
         page.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(250)));
@@ -473,7 +691,7 @@ public partial class MainWindow : Window
         {
             DumpList.Children.Add(new TextBlock
             {
-                Text = "No .nup files in Downloads, Desktop, Documents or the top folders of your drives. Browse to yours, or drop it on this window.",
+                Text = "No .nup or .nx files in Downloads, Desktop, Documents or the top folders of your drives. Browse to yours, or drop it on this window.",
                 Style = (Style)FindResource("Note"), Margin = new Thickness(16, 14, 16, 14),
             });
             return;
@@ -612,7 +830,7 @@ public partial class MainWindow : Window
         if (runner != null || e.Data.GetData(DataFormats.FileDrop) is not string[] { Length: > 0 } paths) return;
         foreach (var p in paths)
         {
-            if (p.EndsWith(".nup", StringComparison.OrdinalIgnoreCase) && File.Exists(p)) AddDump(p, "Dropped");
+            if (Finder.IsGameFile(p) && File.Exists(p)) AddDump(p, "Dropped");
             else if (Directory.Exists(System.IO.Path.Combine(p, "romfs")) && Directory.Exists(System.IO.Path.Combine(p, "exefs")))
                 UseFolders(System.IO.Path.Combine(p, "romfs"), System.IO.Path.Combine(p, "exefs"));
         }
@@ -620,7 +838,7 @@ public partial class MainWindow : Window
 
     void BrowseNup(object sender, RoutedEventArgs e)
     {
-        var d = new OpenFileDialog { Filter = "Game file (*.nup)|*.nup", Title = "Choose your game file" };
+        var d = new OpenFileDialog { Filter = "Game file (*.nup, *.nx)|*.nup;*.nx", Title = "Choose your game file" };
         if (d.ShowDialog(this) == true) AddDump(d.FileName, "Chosen");
     }
 
@@ -756,7 +974,8 @@ public partial class MainWindow : Window
             case Mode.UpdateGame:   // (the kept game files; the newer builder first when this one is older)
                 if (!OlderOk(GameVersion(OutPath.Text))) return;
                 SaveSettings();
-                Updater.UpdateFolder(this, OutPath.Text, updateTarget, fetched: false, named: Switching);
+                // (an up-to-date game built again for an upscaler it lacks: its own version, also when git.notrexed.dev did not answer)
+                Updater.UpdateFolder(this, OutPath.Text, updateTarget ?? GameVersion(OutPath.Text), fetched: false, named: Switching);
                 return;
             case Mode.UpToDate:
                 finished = OutPath.Text;
@@ -797,9 +1016,16 @@ public partial class MainWindow : Window
         "NVIDIA DLSS is NVIDIA's, not RecompZel's. With it ticked, the build downloads NVIDIA's DLSS SDK (release v310.9.16) from " +
         "github.com/NVIDIA/DLSS, under NVIDIA's own license, the NVIDIA RTX SDKs license:\n\n" +
         "https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/LICENSE.txt\n\n" +
-        "Its files stay on this PC (in the builder's ngx-sdk folder, and nvngx_dlss.dll in the game folder's ngx folder). " +
-        "RecompZel never includes or shares them: never share a game folder built with them.\n\n" +
+        "Its files stay on this PC (in the builder's ngx-sdk folder, and nvngx_dlss.dll and nvngx_dlssg.dll in the game " +
+        "folder's ngx folder). " +
+        "Hookshot never includes or shares them: never share a game folder built with them.\n\n" +
         "Do you accept NVIDIA's license?";
+
+    /// Whether NVIDIA's license was accepted on the DLSS tick, kept in the settings (BuilderSettings.DlssLicense): an update
+    /// keeps a folder's DLSS by it. The record used to be the SDK's LICENSE.txt, a download: once the SDK's files were gone,
+    /// the update built the folder without DLSS and removed its DLSS runtime. (DlssLicense, the constant above, is the
+    /// license dialog's text)
+    bool dlssLicenseAccepted;
 
     /// The NVIDIA DLSS tick: NVIDIA's license first, and the tick stays only when it is accepted
     void DlssChanged(object sender, RoutedEventArgs e)
@@ -807,7 +1033,10 @@ public partial class MainWindow : Window
         if (DlssTick.IsChecked == true &&
             MessageBox.Show(this, DlssLicense, "NVIDIA DLSS", MessageBoxButton.YesNo, MessageBoxImage.Information) != MessageBoxResult.Yes)
             DlssTick.IsChecked = false;
+        else if (DlssTick.IsChecked == true)
+            dlssLicenseAccepted = true;
         SaveSettings();   // (kept at once, not only when Build is pressed: ticked and closed, it is still ticked next time)
+        RefreshMode();    // (a game built without it: Update, not Play)
     }
 
     const string FsrLicense =
@@ -834,6 +1063,7 @@ public partial class MainWindow : Window
             if (!fsrLicense) FsrTick.IsChecked = false;
         }
         SaveSettings();
+        RefreshMode();   // (a game built without it: Update, not Play)
     }
 
     static readonly (string Id, string Build, string Update)[] Stages =
@@ -906,6 +1136,9 @@ public partial class MainWindow : Window
         }
         log.Clear();
         Log.Clear();
+        // (an AMD FSR 4 tick saved before the builder asked for AMD's license builds with FSR 4 but fetches nothing: say so)
+        if (!fsr && FsrTick.IsChecked == true && !fsrLicense)
+            AddLog("AMD's license not accepted yet: tick AMD FSR 4 again to have its runtime fetched");
         current = null;
         finished = "";
         compiled = 0;
@@ -913,6 +1146,9 @@ public partial class MainWindow : Window
         filesChanged = -1;
         filesCompiled = 0;
         compileEta = -1;
+        shaderFraction = 0;
+        shaderSaid = -1;
+        shaderClock.Reset();
         thisCompile = 0;
         previousTotal = -1;
         shadersBegan = false;
@@ -946,7 +1182,7 @@ public partial class MainWindow : Window
             current = id;
             if (rows.TryGetValue(id, out var row)) row.Begin();
             if (id == "compile") compileClock.Restart();
-            if (id == ShaderStep.Id) shadersBegan = true;
+            if (id == ShaderStep.Id) { shadersBegan = true; shaderClock.Restart(); }
             if (Weight.TryGetValue(id, out var w)) SetProgress(w.From);
         }
         else if (line.StartsWith("@@progress "))
@@ -955,6 +1191,7 @@ public partial class MainWindow : Window
                 && Weight.TryGetValue(current, out var w))
             {
                 if (current == "compile") compiled = f;
+                if (current == ShaderStep.Id) shaderFraction = f;
                 SetProgress(w.From + w.Size * Math.Clamp(f, 0, 1));
             }
             return;
@@ -965,7 +1202,8 @@ public partial class MainWindow : Window
             return;
         }
         else if (line.StartsWith("@@done ")) finished = line[7..];
-        else if (ShaderStep.Reason(line) is { } later) shadersLater = later;
+        else if (ShaderStep.Note(line) is { } later) shadersLater = later;
+        else if (ShaderStep.LeftIn(line) is double said && said >= 0) { shaderSaid = said; shaderSaidAt.Restart(); }
         else if (FilesLine.Match(line) is { Success: true } m) filesOf = int.Parse(m.Groups[1].Value);
         else if (FileLine.IsMatch(line)) filesDone++;
         if (current == "compile" && filesChanged < 0 && filesOf > 0 && rows.TryGetValue("compile", out var c))
@@ -1050,7 +1288,15 @@ public partial class MainWindow : Window
             BuildNote.Text = $"Compiling {Clock(compileClock.Elapsed)} · {left}{tail}";
             return;
         }
-        BuildNote.Text = (updating ? "Working…" : "Usually about 45 minutes") + tail;
+        if (current == ShaderStep.Id)
+        {
+            // (the shaders' own countdown: on a slow PC this step alone can take an hour, and the line said "about 45 minutes")
+            var s = ShaderStep.Left(shaderSaid, shaderSaid >= 0 ? shaderSaidAt.Elapsed.TotalSeconds : -1, shaderFraction,
+                                    shaderClock.Elapsed.TotalSeconds);
+            BuildNote.Text = $"Preparing shaders {Clock(shaderClock.Elapsed)} · {(s >= 0 ? TimeLeft(s) : "Estimating…")}{tail}";
+            return;
+        }
+        BuildNote.Text = (updating ? "Working…" : "About 45 minutes on a fast PC, longer on a slower one") + tail;
     }
 
     static string Clock(TimeSpan t) => $"{(int)t.TotalMinutes}:{t.Seconds:00}";
@@ -1082,8 +1328,7 @@ public partial class MainWindow : Window
         }
         if (failure == "cancelled")
         {
-            SetStep(0);
-            ShowPage(FilesPage);
+            ToFiles();
             return;
         }
         if (current != null && rows.TryGetValue(current, out var row)) row.Stopped();
@@ -1127,7 +1372,62 @@ public partial class MainWindow : Window
         }
         if (Finder.ShortcutError != null) AddLog("shortcut not made: " + Finder.ShortcutError);
         ShowPage(ReadyPage);
+        if (keepPatchBuild != null && string.Equals(keepPatchBuild, finished, StringComparison.OrdinalIgnoreCase))
+        {
+            var kept = keepPatchBuild;
+            _ = Task.Run(() => { try { PatchBuilds.Store(kept); } catch (Exception ex) { Dispatcher.BeginInvoke(() => AddLog("patch build not kept: " + ex.Message)); } });
+        }
+        keepPatchBuild = null;
         _ = FreeAfterBuild();
+        _ = BringInSave();
+    }
+
+    // ================= Bring in a save (Saves.cs) =================
+
+    FoundSave? chosenSave;   // (none: a new game)
+
+    /// The form's save rows: Start a new game, then each save found on this PC. The section stays hidden when there is none
+    async void FillSaves()
+    {
+        if (Tools.Find() is not { } tools) return;
+        var found = await Task.Run(() => Saves.Find(tools));
+        SaveList.Children.Clear();
+        if (found.Count == 0) return;
+        RadioButton Row(UIElement content, FoundSave? save, bool on)
+        {
+            var row = new RadioButton { Style = (Style)FindResource("DumpRow"), GroupName = "Saves", Content = content, IsChecked = on };
+            row.Checked += (_, _) => chosenSave = save;
+            return row;
+        }
+        SaveList.Children.Add(Row(new TextBlock { Text = "Start a new game", FontWeight = FontWeights.SemiBold }, null, true));
+        foreach (var s in found)
+        {
+            SaveList.Children.Add(new Border { Height = 1, Background = (Brush)FindResource("GlassLine") });
+            var texts = new StackPanel();
+            texts.Children.Add(new TextBlock { Text = $"Continue from {s.Shown}", FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
+            texts.Children.Add(new TextBlock { Text = s.Slots, Style = (Style)FindResource("Faint"), TextTrimming = TextTrimming.CharacterEllipsis });
+            if (s.Waiting)
+                texts.Children.Add(new TextBlock { Text = "Start that game and quit it from its menu once first: it still has a save waiting.",
+                                                   Style = (Style)FindResource("Faint"), Foreground = (Brush)FindResource("Warn"), TextWrapping = TextWrapping.Wrap });
+            var row = Row(texts, s, false);
+            row.ToolTip = s.Path;
+            row.IsEnabled = !s.Waiting;
+            SaveList.Children.Add(row);
+        }
+        SaveSection.Visibility = Visibility.Visible;
+    }
+
+    /// After a build: the chosen save copied into the new game folder (its own save backed up first), said under the title
+    async Task BringInSave()
+    {
+        SaveNote.Visibility = Visibility.Collapsed;
+        if (updating || chosenSave is not { } save || Tools.Find() is not { } tools) return;
+        var (ok, text) = await Task.Run(() => Saves.Import(tools, save, finished));
+        AddLog(text);
+        SaveNote.Text = text;
+        SaveNote.Foreground = (Brush)FindResource(ok ? "Go" : "Warn");
+        SaveNote.Visibility = Visibility.Visible;
+        if (ok) chosenSave = null;   // (once: an update of this folder later keeps the game's own save)
     }
 
     // (issue: 5 GB and more left in %LOCALAPPDATA% and never said. Said here, with the way to let it go)
@@ -1217,7 +1517,7 @@ public partial class MainWindow : Window
             ProblemTitle.Text = "The build tools need repairing";
             ProblemHead.Text = "Your antivirus removed part of the build tools";
             ProblemText.Text = why + "\n\nAntivirus programs sometimes flag unsigned developer tools by mistake.";
-            var base_ = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder");
+            var base_ = Storage.Base;
             foreach (var (n, s) in new[]
                      {
                          (1, "Open Windows Security → Protection history, and restore the removed files."),
@@ -1258,11 +1558,7 @@ public partial class MainWindow : Window
         try { Clipboard.SetText(text); CopyReport.Content = "Copied"; } catch (Exception) { }
     }
 
-    void Back(object sender, RoutedEventArgs e)
-    {
-        SetStep(0);
-        ShowPage(FilesPage);
-    }
+    void Back(object sender, RoutedEventArgs e) => ToFiles();
 
     /// The setup (HookshotBuilder-Setup.exe beside this app) checks every part against its checksum and downloads the missing ones
     void Repair(object sender, RoutedEventArgs e)
@@ -1274,7 +1570,7 @@ public partial class MainWindow : Window
             Application.Current.Shutdown();
             return;
         }
-        Process.Start(new ProcessStartInfo("https://github.com/TechHammerBR/RecompZel/releases/latest") { UseShellExecute = true });
+        Process.Start(new ProcessStartInfo("https://git.notrexed.dev/Hookshot/Hookshot/releases/latest") { UseShellExecute = true });
     }
 
     // ================= the update (Updater.cs): the game started this app with --update <folder> =================
@@ -1328,25 +1624,59 @@ public partial class MainWindow : Window
     }
 
     /// The new tools are here: the folder built again with them (only what changed is compiled)
+    /// (the Mods page's Rebuild) the folder built again for its mods' code patches, the way it was built (BuildRecord.cs): its own
+    /// version, tools and work folder, so only what the patches change is done again. Never another version, never a download
+    void RebuildForMods(string folder)
+    {
+        var (rec, why) = BuildRecord.Find(folder);
+        if (rec != null && !rec.AppliesPatches)
+            why = $"This game's version ({rec.Version}) does not apply the mods' code patches yet: update the game first, then Rebuild.";
+        if (rec == null || why != null)
+        {
+            MessageBox.Show(this, why ?? "This game cannot be rebuilt here.", "Hookshot", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        keepPatchBuild = folder;
+        BeginUpdate(folder, rec.Version);
+        BuildTitle.Text = "Rebuilding for your mods";
+        BuildNote.Text = "The same version, built again with your mods' code patches. Your current game stays as it is until the new one is complete.";
+        if (rows.TryGetValue("download", out var d)) { d.Done(); d.Small("This game's own build tools: nothing to download"); }
+        var saved = BuilderSettings.Load(SettingsPath);
+        var dlss = File.Exists(System.IO.Path.Combine(folder, "ngx", "nvngx_dlss.dll")) &&
+                   (saved?.DlssLicense == true || File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt")) ||
+                    rec.Tools.Env?.ContainsKey("HOOKSHOT_NGX_SDK") == true);
+        var args = new List<string> { "--update", folder };
+        if (!string.IsNullOrEmpty(rec.Work)) { args.Add("--work"); args.Add(rec.Work); }
+        if (rec.Fsr) args.Add("--fsr");
+        Run(rec.Tools, ShaderStep.Args(args, prepareNow), keepRows: true, dlss: dlss, fsr: rec.Fsr);
+    }
+
     internal void UpdateBuild(Tools tools, string folder)
     {
         download = null;
         if (rows.TryGetValue("download", out var d)) { d.Done(); d.Small("Build tools checked"); }
         // (the saved tick also opts an existing game into DLSS. After a self-update ApplySettings has not run yet;
-        // a folder already built with DLSS keeps it, its license accepted then)
-        var dlss = BuilderSettings.Load(SettingsPath)?.Dlss == true ||
+        // a folder already built with DLSS keeps it, its license accepted then: the settings' record, or for a license accepted
+        // before the record, the SDK's LICENSE.txt)
+        var saved = BuilderSettings.Load(SettingsPath);
+        var dlss = saved?.Dlss == true ||
                    (File.Exists(System.IO.Path.Combine(folder, "ngx", "nvngx_dlss.dll")) &&
-                    File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt")));
+                    (saved?.DlssLicense == true || File.Exists(System.IO.Path.Combine(Storage.NgxSdk, "LICENSE.txt"))));
         // (AMD FSR 4, the same: the saved tick with AMD's license accepted, or a folder built with FSR 4 whose AMD runtime
         // was fetched, AMD's license saved beside it then, keeps it and its runtime)
-        var saved = BuilderSettings.Load(SettingsPath);
         var fsr = (saved?.Fsr == true && saved.FsrLicense) ||
                   (File.Exists(System.IO.Path.Combine(folder, ".hookshot_fsr")) &&
                    File.Exists(System.IO.Path.Combine(folder, "amd_fidelityfx_upscaler_vk.dll")) &&
                    File.Exists(System.IO.Path.Combine(folder, "LICENSE-AMD-FSR-SDK.md")));
+        // (the saved tick builds with FSR 4 whether AMD's license was accepted or not, as StartBuild does: the license only
+        // decides whether AMD's runtime is fetched. A tick saved before the license was asked (Fsr, no FsrLicense) on a folder
+        // without make_game.py's mark was offered "Update to add AMD FSR 4" (UpscalerParts.Missing), and the update passed no
+        // --fsr: the folder was built again without FSR 4, the mark never written, and Update offered again, for good)
+        var args = new List<string> { "--update", folder };
+        if (saved?.Fsr == true) args.Add("--fsr");
         // (prepareNow: the saved choice, read in BeginUpdate. The launcher's Update and the --update start after a self-update never
         // ran ApplySettings, so the tick there is only its default)
-        Run(tools, ShaderStep.Args(new List<string> { "--update", folder }, prepareNow), keepRows: true, dlss: dlss, fsr: fsr);
+        Run(tools, ShaderStep.Args(args, prepareNow), keepRows: true, dlss: dlss, fsr: fsr);
     }
 
     // ================= the window =================

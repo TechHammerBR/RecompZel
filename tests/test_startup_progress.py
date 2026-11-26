@@ -36,6 +36,16 @@ int main() {
     CHECK(version_text("v2.0.5") == "v2.0.5");
     CHECK(version_text("v2.0.5-2-g619c897-dirty (source 2c44105b)") == "v2.0.5 dev");
     CHECK(version_text("movie-sync (source 1a2b3c4d)") == "movie-sync");
+    // (Hookshot's names: a release candidate as its tag, a nightly as the launcher names it, a build between tags as "dev")
+    CHECK(version_text("v3.0.0-rc.1 (source 1a2b3c4d)") == "v3.0.0-rc.1");
+    CHECK(version_text("v3.0.0-rc.12") == "v3.0.0-rc.12");
+    CHECK(version_text("v3.0.0-rc.1-5-gabc1234-dirty (source 1a2b3c4d)") == "v3.0.0-rc.1 dev");
+    CHECK(version_text("v3.0.0-5-gabc1234") == "v3.0.0 dev");
+    CHECK(version_text("v3.10.2") == "v3.10.2");
+    CHECK(version_text("nightly-46-434712bb (source 6c70b6d8)") == "Nightly 46 \xc2\xb7 434712bb");
+    CHECK(version_text("nightly-46-434712bb-dirty") == "Nightly 46 \xc2\xb7 434712bb dev");
+    CHECK(version_text("nightly-46-xyz") == "nightly-46-xyz");
+    CHECK(version_text("v3.0") == "v3.0");
     CHECK(version_text("unknown") == "unknown");
     CHECK(percent_text(0, 0).empty());
     CHECK(percent_text(12345, 38809) == "31%");
@@ -63,6 +73,15 @@ int main() {
         warm.secs = 3, warm.stage = 2, warm.done = 100, warm.total = 3822;
         v = startup_view(warm);
         CHECK(v.step.empty() && v.title == "Loading pipelines" && v.hint.empty());
+        // every pipeline counted, the start not over yet: what it still does, not "a few seconds left" for as long as that
+        // takes (#714)
+        warm.done = 3822, warm.left = 0;
+        v = startup_view(warm);
+        CHECK(v.pct == "100%" && v.right == "Getting the game ready");
+        warm.saving = true;
+        CHECK(startup_view(warm).right == "Saving the pipeline cache");
+        warm.saving = false, warm.done = 100, warm.left = 4;
+        CHECK(startup_view(warm).right == "a few seconds left");
         warm.finished = true;
         CHECK(startup_view(warm).title == "Starting the game");
         warm.secs = 0.4;   // (over before the first second: the wordmark alone, no flash of text)
@@ -140,6 +159,10 @@ int main() {
         st.total = 0;   // (the prediction deciding: the bar stays, with the whole's share)
         v = startup_view(st);
         CHECK(v.fraction == 0.5 && v.left == "Reading the pipeline notes");
+        st.total = 45882, st.done = 45882, st.whole = 1;   // (the whole bar full: what is left is not counted, #714)
+        CHECK(startup_view(st).right == "Getting the game ready");
+        st.whole = 0.9, st.left = 3;   // (this part counted, the whole not: the time left)
+        CHECK(startup_view(st).right == "a few seconds left");
         // a start with nothing to prepare: the pipelines alone fill the bar
         PrepareBar w;
         w.guess(0, 38809), w.guess(1, 38809), w.guess(2, 100);
@@ -161,9 +184,9 @@ def main():
     main_cpp = (ROOT / "gpu" / "vk" / "vk_main.cpp").read_text(encoding="utf-8")
     draw = (ROOT / "gpu" / "vk" / "vk_draw.cpp").read_text(encoding="utf-8")
     started = main_cpp[main_cpp.index("bool started_up() {"):main_cpp.index("int start(void* hwnd) {")]
-    if "if (!dev.offscreen && screen_wanted())" not in started:
+    if "if (!dev.offscreen) {\n            prepare_with_screen();" not in started:
         raise SystemExit("a windowed start no longer prepares the shaders behind the start-up screen")
-    if started.index("screen_wanted()") > started.index("if (console) CloseHandle(console)"):
+    if started.index("prepare_with_screen();") > started.index("if (console) CloseHandle(console)"):
         raise SystemExit("the start-up screen is chosen after the headless preparation")
     screen = main_cpp[main_cpp.index("void prepare_with_screen() {"):main_cpp.index("bool started_up() {")]
     for need, why in (("std::thread worker(", "the preparation runs on the window's own thread"),

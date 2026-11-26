@@ -4,11 +4,16 @@
 #include "hos.h"
 #include "hos_paths.h"
 #include "hos_wide_size.h"
+#include "options_path.h"
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <windows.h>   /* (the exe's folder; the browser build: the Microsoft C runtime's time functions) */
+#include "hos_atomic_file.h"   /* (language.txt's first write is whole or not at all) */
 
 static int64_t boot_ns;
 
@@ -51,7 +56,7 @@ static const char *desired_language(void) {
                 if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) p += 3;   /* (a BOM: Notepad's UTF-8) */
                 while (*p == ' ' || *p == '\t') p++;
                 if (*p == '#' || *p == '\r' || *p == '\n' || !*p) continue;
-                /* (only a code the game has: a stray line was taken before, and the game stayed in English, Hookshot issue 75) */
+                /* (only a code the game has: a stray line was taken before, and the game stayed in English) */
                 char code[32];
                 snprintf(code, sizeof code, "%s", p);
                 code[strcspn(code, " \t\r\n")] = 0;
@@ -64,10 +69,12 @@ static const char *desired_language(void) {
                 break;
             }
             fclose(f);
-        } else if ((f = fopen(path, "w")) != NULL) {
-            fputs("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\nen-US\n\n", f);
-            for (size_t i = 0; i < sizeof languages / sizeof *languages; i++) fprintf(f, "# %-8s %s\n", languages[i].code, languages[i].name);
-            fclose(f);
+        } else {   /* (written whole or not at all: half a template has no language line) */
+            char text[2048];
+            size_t n = (size_t)snprintf(text, sizeof text, "# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\nen-US\n\n");
+            for (size_t i = 0; i < sizeof languages / sizeof *languages && n < sizeof text; i++)
+                n += (size_t)snprintf(text + n, sizeof text - n, "# %-8s %s\n", languages[i].code, languages[i].name);
+            if (n < sizeof text) hos_atomic_write(path, text, n);
         }
     }
     want[strcspn(want, " \t\r\n")] = 0;
@@ -79,6 +86,8 @@ static const char *desired_language(void) {
     else hos_log("oe: language %s (%s)", lang, from);
     return lang;
 }
+/* (host/oot_pause_menu.c: the Recomp options button's text in the game's language) */
+const char *hos_game_language(void) { return desired_language(); }
 HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
     uint64_t v = 0;
     memcpy(&v, desired_language(), strlen(desired_language()));
@@ -88,15 +97,11 @@ HLE(_ZN2nn2oe18GetDesiredLanguageEv) {
    (MKW docked composes 3840 x 2160) */
 int hos_ini_option(const char *key, int otherwise);
 #define ini_option hos_ini_option
-/* (hookshot) An option's text in hookshot_options.ini, the game folder's (the Insert menu's choices, gpu/vk/vk_menu.cpp), the last
-   line that sets it, its line end cut: whether there was one */
+/* (hookshot) An option's text in hookshot_options.ini (the Insert menu's choices, gpu/vk/vk_menu.cpp; where it is:
+   host/options_path.c), the last line that sets it, its line end cut: whether there was one */
 static int ini_text(const char *key, char *out, size_t size) {
-    char path[MAX_PATH];
-    const DWORD n = hos_game_path_a(path, MAX_PATH);
-    char *slash = n ? (strrchr(path, 92) ? strrchr(path, 92) : strrchr(path, 47)) : NULL;   /* (linux: '/'; the game folder's, not bin\\'s) */
-    if (!slash || !size) return 0;
-    snprintf(slash + 1, (size_t)(path + MAX_PATH - slash - 1), "hookshot_options.ini");
-    FILE *f = fopen(path, "r");
+    if (!size) return 0;
+    FILE *f = fopen(hos_options_file(), "r");
     if (!f) return 0;
     char line[80];
     const size_t len = strlen(key);
@@ -116,18 +121,23 @@ int hos_ini_option(const char *key, int otherwise) {   /* (hookshot: the Insert 
 }
 static int handheld(void) {
     static int v = -1;
-    if (v < 0) v = getenv("HOS_HANDHELD") ? atoi(getenv("HOS_HANDHELD")) != 0 : ini_option("handheld_profile", 0) != 0;
+    if (v < 0) {
+        const char *e = getenv("HOS_HANDHELD");
+        v = e ? !env_value_off(e) : ini_option("handheld_profile", 0) != 0;
+    }
     return v;
 }
 /* (hookshot) The Insert menu's Output resolution (output_res=, HOS_OUTPUT_RES over it), docked only: a size, "<width>x<height>",
    each side a multiple of 8 (rounded down to one), at least 640 x 360, at most 5120 x 2880's pixels (the largest the render
    targets' pool, hos_rt_pool_size, was played at) and between 5:4 and 48:9 in shape (host/hos_main.c's screen shapes); anything
-   else is the game's own size, said in the log. The menu offers 1920x1080, 2048x1152, 2560x1440, 3840x2160, 5120x1440 and
-   5120x2880, and any other size as its own choice. The numbers it saved before are read as their sizes: 0 the game's
+   else is the game's own size, said in the log. The menu offers 2048x1152 and the screen's display modes (gpu/vk/display_modes.h;
+   where they are not known 1920x1080, 2560x1440, 3840x2160, 5120x1440 and 5120x2880), and any other size as its own choice. The numbers it saved before are read as their sizes: 0 the game's
    2048 x 1152, 1 2560 x 1440, 2 3840 x 2160, 3 1920 x 1080, 4 5120 x 1440, 5 5120 x 2880. The game's frame is its display size
    (2560 x 1440 as shipped; nx2/oot_patches.py apply_output_size asks hos_output_size) times its graphics scale
-   (GetCurrentGraphicsScale: 0 x1, 1 x0.8, 2 x0.667). Here it saw scale 1 (x0 left at the call before's answer), so 2048 x 1152,
-   the game's own, which 2048x1152 asks for; each other size uses x1. */
+   (GetCurrentGraphicsScale's tier: 0 x1, 1 x0.8, 2 x0.667). The tier is not the operation mode: the console's library maps
+   the system's graphics scaling parameter (10, 20, 30) to it, and 0 is the full picture. 2048x1152 asks for tier 1, the game's
+   own reduced size (what every run drew before, from x0 left at the call before's answer); each other size, and none chosen
+   (hos_output_default), uses tier 0. */
 int hos_output_parse(const char *text, uint32_t *w, uint32_t *h) {   /* (an explicit size: 1, and *w x *h; the game's own: 0) */
     static const uint32_t old[][2] = {{0, 0}, {2560, 1440}, {3840, 2160}, {1920, 1080}, {5120, 1440}, {5120, 2880}};
     unsigned a = 0, b = 0;
@@ -158,9 +168,21 @@ static int output_mode(void) {   /* (an explicit size: 1; the game's own: 0) */
         read = 1;
         char text[80] = "";
         const char *e = getenv("HOS_OUTPUT_RES");
-        if (!handheld() && (e || ini_text("output_res", text, sizeof text))) hos_output_parse(e ? e : text, &output_w, &output_h);
-        if (output_w) hos_log("oe: output resolution %ux%u", output_w, output_h);
-        else hos_log("oe: output resolution 2048x1152 (the game's)");
+        const int chosen = e || ini_text("output_res", text, sizeof text);
+        if (!handheld() && chosen) hos_output_parse(e ? e : text, &output_w, &output_h);
+        /* (none chosen, a new install: the game's 2560 x 1440, or the screen's size where that has fewer pixels,
+           hos_output_default; the menu's first start saves the same. A 2048 x 1152 screen: the game's own reduced size, as
+           hos_output_parse reads what the menu saves for it. The window's thread made the window before the game's thread
+           starts: the screen is known) */
+        const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+        const int fresh = !handheld() && !chosen;
+        if (fresh) hos_output_default(sw > 0 ? (uint32_t)sw : 0, sh > 0 ? (uint32_t)sh : 0, &output_w, &output_h);
+        if (output_w == 2048 && output_h == 1152) output_w = output_h = 0;
+        if (output_w)
+            hos_log("oe: output resolution %ux%u%s", output_w, output_h,
+                    !fresh ? "" : output_w == 2560 && output_h == 1440 ? " (none chosen: the game's)"
+                                                                       : " (none chosen: the screen's, smaller than the game's 2560x1440)");
+        else hos_log("oe: output resolution 2048x1152 (the game's at graphics scale 1)");
     }
     return output_w != 0;
 }
@@ -265,7 +287,9 @@ HLE(_ZN2nn4time19StandardSteadyClock3nowEv) { RET((uint64_t)(hos_now_ns() / 1000
 static void socket_poll(Ctx *c) {
     const uint64_t fds = ARG(0), n = ARG(1);
     const int timeout = (int)ARG(2);
-    for (uint64_t i = 0; fds && i < n && i < 4096; i++) *(uint16_t *)GP(fds + 8 * i + 6) = 0;   /* revents */
+    const uint64_t m = n < 4096 ? n : 4096;
+    if (fds && hos_guest_range(fds, 8 * m))   /* (hookshot: the descriptors in guest memory) */
+        for (uint64_t i = 0; i < m; i++) *(uint16_t *)GP(fds + 8 * i + 6) = 0;   /* revents */
     if (timeout != 0) {
         const int away = hos_vcore_away();
         hos_sleep_ns((int64_t)(timeout < 0 || timeout > 50 ? 50 : timeout) * 1000000);
@@ -407,7 +431,7 @@ HLE(_ZN2nn7account26GetNetworkServiceAccountIdEPNS0_23NetworkServiceAccountIdERK
     G64(ARG(0)) = 0;
     RET(0x7C7C);
 }
-/* nn::oe::GetCurrentGraphicsScale() -> float (docked/handheld render scale): 1.0 */
+/* nn::oe::GetCurrentGraphicsScale() -> a tier in w0, which the game sizes its frame by (0 x1, 1 x0.8, 2 x0.667: hos_output_parse) */
 HLE(_ZN2nn2oe23GetCurrentGraphicsScaleEv) {
     /* (hookshot) HOS_GRAPHICS_SCALE=<f>: another scale, a test of whether the game sizes its picture by it (4K, issue 68) */
     static float scale = 0;
@@ -419,7 +443,7 @@ HLE(_ZN2nn2oe23GetCurrentGraphicsScaleEv) {
     uint32_t bits;
     memcpy(&bits, &one, 4);
     c->vreg[0][0] = bits, c->vreg[0][1] = 0;
-    c->x[0] = output_mode() ? 0 : 1;   /* (the scale enum the game reads, w0: x1 for a chosen output, x0.8 as before) */
+    c->x[0] = output_mode() ? 0 : 1;   /* (the tier, w0: 0 for a size chosen or the default, 1 for 2048x1152 and the handheld profile) */
 }
 HLE(_ZN2nn2oe42SetGraphicsScaleChangedNotificationEnabledEb) {}
 HLE(_ZN2nn2oe31EnterExitRequestHandlingSectionEv) {}

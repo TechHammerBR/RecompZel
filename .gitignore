@@ -13,11 +13,17 @@ romfs/
 *.xci
 gamefile/
 *.nup
+# scripts/hookshot_bench.py's run folders: game screenshots and the full log
+bench-runs/
 *.nsz
 *.xcz
+# (saves: only the scrubbed ones in assets/saves, CONTRIBUTING.md)
+*.sav
+!/assets/saves/**/*.sav
 
 # ---- build output and caches ----
 build/
+/third_party_objects/
 __pycache__/
 *.pyc
 *.o

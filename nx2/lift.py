@@ -25,11 +25,21 @@ import time
 import capstone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
+import long_paths  # noqa: E402
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file)
 import kit
 import nso2  # noqa: F401  (DT_RELR)
 import insn
+import fastvec   # (hookshot) TBL/EXT, vector loads, DUP and FMUL by element as single vector instructions
+import oot_patches   # (hookshot) the game's patches: asked which functions they change (nx2/guest_locals.py)
+import guest_locals as local_regs   # (hookshot) registers and flags as C locals (A64_LOCAL_REGS, A64_LOCAL_FLAGS): nx2/guest_locals.py
+import dead_flags   # (hookshot) the kit's dead_flags, answered at once for a function that writes no flag
+import walk   # (hookshot) the kit's walk, with one shared entry per plain op's word
+import discover   # (hookshot) the discovery's walks in new processes where there is no fork
 import lift_fixes
+import entry_hooks
 import suyu_rt_fixes
+import fpxkeep   # (hookshot) NaN and infinite operands, exact-zero multiply-adds kept off the software bodies (A64_FPXKEEP)
 import chunks
 import standalone
 import adr_entries  # noqa: E402
@@ -42,8 +52,15 @@ import a64_lift
 import a64_rtgen
 
 insn.install()
+fastvec.install()   # (around the kit's vectorize_fpx, op_text and fpx_header)
+local_regs.install(oot_patches.touches)   # (around the kit's emit_function, its fast float regions' too, and localize_regs; the defaults; the patches asked)
+local_regs.install_plain()   # (around those: the functions the patches name keep the kit's context-flag text)
+dead_flags.install()
+walk.install()
 lift_fixes.install()
+entry_hooks.install()   # (host/*.c's ENTRY_HOOK_SYM hooks at the entry of their SDK functions: add() below)
 suyu_rt_fixes.install()
+fpxkeep.install()   # (after fastvec's: it edits the kit's lane routes and wraps fpx_header around fastvec's)
 
 
 def module_of(img, pc):
@@ -133,6 +150,12 @@ def main():
     a = p.parse_args()
     a.exefs = a.exefs or kit.need_exefs()
     t0 = time.time()
+    last = [t0]
+
+    def took(what):   # (each step's seconds, and the time since the start: where a lift's minutes go)
+        now = time.time()
+        print("lift: %s in %.1fs (%.0fs)" % (what, now - last[0], now - t0), flush=True)
+        last[0] = now
     hle = ()
     if a.standalone:
         hle, stubbed = standalone.hle_set(nso.load_exefs(a.exefs))
@@ -160,43 +183,79 @@ def main():
         print("ADR / ADRP+ADD code addresses outside the %d unwind-covered functions: %d, %d of them new entries" % (
             len(spans), len(refs), len(new)))
     L = a64_lift.Lifter(img)
+    if a.standalone:   # (hookshot) the host's memcpy, memset, ... first, the SDK's own kept behind them (nx2/entry_hooks.py)
+        entry_hooks.add(L, img)
     if a.standalone:   # (hookshot) widescreen and ultrawide: C after a few of the game's instructions
         import oot_wide
         oot_wide.install(L, img)
+        import oot_fov   # (the gameplay lens, before projection and culling are built)
+        oot_fov.install(L, img, next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), ""))
+        import oot_shadow   # (the sun's shadow resolution, after the game sizes its cascades)
+        oot_shadow.install(L, img, next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), ""))
+        import oot_gfx   # (view dists)
+        oot_gfx.install(L, img, next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), ""))
+        import oot_shadow_fit   # (the sun's nearest cascade kept steady: a world-fixed basis, a square on whole texels)
+        oot_shadow_fit.install(L, img, next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), ""))
         import oot_jitter   # (the temporal upscalers' camera jitter, DLSS's and FSR 3.1's: none unless one runs, host/rx_backend.c)
         oot_jitter.install(L, img)
-        import oot_occlusion   # (no occlusion queries when HOOKSHOT_OCCLUSION_OFF=1: Fritchii's Occlusion Off)
-        oot_occlusion.install(L, img)
-    L.discover(max_insns=a.max_func)
+    discover.discover(L, img_dir, chunks.file_jobs(), max_insns=a.max_func)
+    if a64_lift.local_regs() or a64_lift.local_flags():   # (C spliced after an instruction reads and writes the context)
+        print("locals: %d functions with spliced code kept in the context" % local_regs.keep_spliced(L))
+        print("locals: %d functions entered above their first block kept in the context" % local_regs.keep_entered_below(L))
+        print("locals: %d functions that hold an address the patches name kept in the context" % (
+            local_regs.keep_mentioned(L, oot_patches.mentioned_addresses())))
+        cold = local_regs.keep_not_ran(L)   # (locals only where play runs the code: nx2/ran_funcs.txt, A64_LOCAL_FUNCS)
+        print("locals: every function may have them (A64_LOCAL_FUNCS=all, or no nx2/ran_funcs.txt)" if cold is None else
+              "locals: %d functions no play session ran kept in the context (nx2/ran_funcs.txt)" % cold)
     print("discovered %d functions (%.0fs)" % (len(L.funcs), time.time() - t0))
-    total = coverage(L, img, img_dir)
-    jt = L.stats
-    print("jump tables %d (bounded %d, bounded by function %d, ADR table %d), BR without a table %d, PLT stubs %d" % (
-        len(L.jt), jt["jt_bounded"], jt["jt_unbounded"], jt["jt_adr_table"], len(L.jt_missing), len(L.plt)))
-    if jt["jt_table_reg_reused"]:
-        print("jump tables whose table register is reused before the br: %d" % jt["jt_table_reg_reused"])
-    for pc, reg in sorted(L.jt_missing.items()):
-        print("  BR without a table: %#x (x%d)" % (pc, reg))
-    with open(os.path.join(img_dir, "functions.json"), "w") as f:
-        json.dump({"%x" % e: [len(b), module_of(img, e)] for e, (b, _) in L.funcs.items()}, f)
-    if a.write:
+    last[0] = time.time()
+
+    def report():   # (reads the functions, writes none: with --write, run while the emit's new processes already work)
+        coverage(L, img, img_dir)
+        took("coverage")
+        jt = L.stats
+        print("jump tables %d (bounded %d, bounded by function %d, ADR table %d), BR without a table %d, PLT stubs %d" % (
+            len(L.jt), jt["jt_bounded"], jt["jt_unbounded"], jt["jt_adr_table"], len(L.jt_missing), len(L.plt)))
+        if jt["jt_table_reg_reused"]:
+            print("jump tables whose table register is reused before the br: %d" % jt["jt_table_reg_reused"])
+        for pc, reg in sorted(L.jt_missing.items()):
+            print("  BR without a table: %#x (x%d)" % (pc, reg))
+        with open(os.path.join(img_dir, "functions.json"), "w") as f:
+            json.dump({"%x" % e: [len(b), module_of(img, e)] for e, (b, _) in L.funcs.items()}, f)
+    if not a.write:
+        report()
+    else:
         if not a.no_polls:
             poll.install()
         gen = os.path.join(out_dir, "gen")
         files = chunks.write(L, gen, os.path.join(a.work, "image"), a.rechunk and not a.standalone,
-                             counters=[] if a.no_polls else [poll.stats])
-        import oot_patches
+                             counters=[] if a.no_polls else [poll.stats], took=took, beside=report)
         main_build = next((m["build_id"] for m in meta["modules"] if m["name"] == "main"), "")
-        chunks.edit_c(gen, L.stats, a.standalone and main_build == oot_patches.LIFE_BUILD_ID, whole=not a.max_func)
-        a64_rtgen.write(gen)
-        if a.standalone:
-            start, exit_ = standalone.write_image_c(gen, img, meta, a.exefs)
-            print("standalone: hos_image.c (thread hooks %#x, %#x), %d import stubs" % (
-                start, exit_, standalone.gen_stubs(gen, meta)))
-            nvn = standalone.nvn_exports(nso.load_exefs(a.exefs))
-            standalone.write_nvn_exports(gen, nvn)
-            print("standalone: nvn2_exports.c (%d sdk NVN functions routed to host/nvn2.c)" % len(nvn))
+        def tables():   # (the runtime tables and the standalone files: they read the image, not the lifted C)
+            lines = []
+            a64_rtgen.write(gen)
+            if a.standalone:
+                start, exit_ = standalone.write_image_c(gen, img, meta, a.exefs)
+                lines.append("standalone: hos_image.c (thread hooks %#x, %#x), %d import stubs" % (
+                    start, exit_, standalone.gen_stubs(gen, meta)))
+                nvn = standalone.nvn_exports(nso.load_exefs(a.exefs))
+                standalone.write_nvn_exports(gen, nvn)
+                lines.append("standalone: nvn2_exports.c (%d sdk NVN functions routed to host/nvn2.c)" % len(nvn))
+            return lines
+        # (made in a process of their own while the C is edited: 4-8 s that waited for the edits. Where there is no fork, after them)
+        side = chunks.start_side(tables)
+        chunks.edit_c(gen, L.stats, a.standalone and main_build == oot_patches.LIFE_BUILD_ID, whole=not a.max_func, took=took)
+        if a64_lift.local_regs() or a64_lift.local_flags():   # (nx2/guest_locals.py: the patched functions kept the context)
+            print("locals: %d functions kept in the context for the patches; %d patched functions checked in the written C" % (
+                L.stats["locals_kept_for_patches"], local_regs.check_patched(gen)))
+            took("locals check")
+        print("\n".join(chunks.end_side(side, tables)), flush=True)
+        took("runtime tables and standalone files (beside the edits)" if side else "runtime tables and standalone files")
         L.report()
+        if L.stats["entry_gotos"]:   # (nx2/lift_fixes.py, 4)
+            print("functions with code below their entry, started at it by a goto: %d" % L.stats["entry_gotos"])
+        if a.standalone:   # (nx2/entry_hooks.py: one per hook the lift found a function for)
+            print("entry hooks spliced: %d" % L.stats["entry_hooks"])
         print("interrupt polls: %d loop headers in %d functions" % (poll.stats["polls"], poll.stats["functions"]))
         print("wrote %d code files to %s (%.0fs)" % (len(files), gen, time.time() - t0))
     print("done (%.0fs)" % (time.time() - t0))

@@ -1,5 +1,6 @@
 """NVIDIA DLSS's small checks (gpu/vk/dlss_checks.h): which scene sizes DLSS takes for an output (the handheld profile's
-512x288 at Ultra Performance too, which a fixed 640x360 floor turned away), and Linux paths for NGX: which are ASCII (NGX's
+512x288 at Ultra Performance too, which a fixed 640x360 floor turned away), which quality mode takes a render size (one a
+pixel or two outside a mode's range, a rounded size, too), and Linux paths for NGX: which are ASCII (NGX's
 Linux library takes only those; the others go to it as /proc/self/fd/<n>), and UTF-8 decoded (accents, CJK, bytes that are
 not UTF-8). Built as C++ and run; also that vk_dlss.cpp and vk_draw.cpp use them. No game,
 GPU or NVIDIA SDK required.
@@ -33,6 +34,39 @@ def check_sources():
     # (NGX's Linux library converts its wide paths back in the "C" locale, ASCII only: a folder named otherwise goes to it
     # as /proc/self/fd/<n>)
     assert "dlss_checks::ascii(s)" in dlss and '"/proc/self/fd/"' in dlss, "wide(): non-ASCII folders by descriptor"
+    # (prepare picks the mode with mode_for, and lets the old feature go only once a mode takes the size: a refused size keeps
+    # it, rather than letting it go and making it again a frame later)
+    prepare = dlss[dlss.index("int prepare(VkCommandBuffer cmd"):dlss.index("bool start()")]
+    assert "dlss_checks::mode_for(rw, rh, ow, oh," in prepare, "prepare: the mode by dlss_checks::mode_for"
+    assert prepare.index("dlss_checks::mode_for(") < prepare.index("ReleaseFeature(old)"), \
+        "prepare: the old feature let go before a mode was found"
+    # (a feature that was not made, out of video memory after quick DLSS model switches, should not be -1: if this
+    # setting is on, it would turn DLSS off until a restart. It is the game's upscale until the preset, output or HDR
+    # changes, then made again)
+    assert '"its feature was not made", -1' not in prepare, "prepare: a failed creation turns DLSS off for the run"
+    # (a creation refused for want of video memory is retried after a bounded interval; another result, and the last
+    # try, stay until a DLSS setting changes. dlss_retry() and release() clear it)
+    assert "dlss_checks::retry::verdict(s.refusal, key, texture_frame_no())" in prepare, \
+        "prepare: a refusal is checked by dlss_checks::retry"
+    assert "dlss_checks::retry::failed(s.refusal, key, out_of_memory, texture_frame_no())" in prepare and \
+        "NVSDK_NGX_Result_FAIL_OutOfGPUMemory" in prepare, \
+        "prepare: an out-of-video-memory creation is recorded for a retry"
+    assert "dlss_checks::retry::made(s.refusal)" in prepare, "prepare: a made feature clears the refusal"
+    # (the two reset paths separately: a check that accepts either one would pass with the other's reset removed)
+    rel_start = dlss.index("void release() {")
+    release = dlss[rel_start:dlss.index("\nuint64_t memory()", rel_start)]
+    retry_start = dlss.index("void dlss_retry() { st().refusal")
+    retry = dlss[retry_start:dlss.index("}", retry_start) + 1]
+    assert "s.refusal = {}" in release, "release() clears the refusal"
+    assert "st().refusal = {}" in retry, "dlss_retry() clears the refusal"
+    # (issue 17: the DLSS model row stepped K, M, L made a feature for M too, and NGX kept both in video memory for
+    # seconds. The preset comes through PresetSettle, before anything compares it with the feature's)
+    assert re.search(r"const unsigned preset = s\.settle\.pick\(wanted_preset\(\), s\.feature_preset, s\.feature != nullptr,"
+                     r"\s*texture_frame_no\(\),", prepare), "prepare: the row's preset taken once it has held it"
+    assert prepare.index("s.settle.pick(") < prepare.index("s.feature_preset == preset"), \
+        "prepare: the settled preset is the one the feature is compared with"
+    assert "wanted_preset()" not in prepare.replace("s.settle.pick(wanted_preset()", ""), \
+        "prepare: the row's preset read only through the settle"
 
 
 def main():

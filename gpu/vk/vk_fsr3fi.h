@@ -1,5 +1,5 @@
 // (hookshot) AMD FSR 3.1 frame interpolation, and the optical flow it runs on, recorded as our own Vulkan compute passes:
-// the made frame between two of the game's when the Frame generation row is 2x.
+// the made frames between two of the game's, at any multiplier and at Frame generation's Auto.
 //
 // The renderer already makes frames: vk_framegen.cpp interpolates between the last two presented frames from colour alone.
 // This answers the same question with AMD's passes, which use the scene's depth and motion as well (vk_fsr3_inputs.h):
@@ -11,15 +11,23 @@
 // passes need, a frame without its inputs, a reset -- the renderer's own interpolation runs exactly as before. Nothing here
 // changes what the game submits.
 //
-// FSR 3.1's interpolation has no phase input (ffx_frameinterpolation.h fixes t at 0.5): it makes the midpoint and only the
-// midpoint, so it is used for one made frame a frame (2x). At 3x and above the renderer's own makes the frames, as more
-// copies of one midpoint would show the same picture twice and judder.
+// FSR 3.1's interpolation has no phase input of its own (ffx_frameinterpolation.h fixes t at 0.5): AMD's passes make the
+// midpoint and only the midpoint. The passes here are AMD's with t taken from the constant block instead
+// (scripts/fsr3_shaders.py FI_PATCHES), so a set has as many made frames as the multiplier asks, each at its own place
+// between the two game frames (1/3 and 2/3 at 3x; at Auto, each display refresh's), and the same passes keep the HUD where
+// it is (the game draws it into the same picture and has no HUD-less colour). The optical flow and the dilated inputs are
+// once a game frame; the rest once a made frame.
 #pragma once
 
 #include <cstdint>
 
 #include "fsr3_math.h"
 #include "vk_internal.h"
+
+namespace mkwvk {
+/// The most made frames between two of the game's: Frame generation's 8x (vk_framegen.cpp kMaxMult)
+constexpr uint32_t kFsr3fiMaxMade = 7;
+}
 
 namespace mkwvk::fsr3fi {
 
@@ -29,11 +37,22 @@ namespace mkwvk::fsr3fi {
 /// is given: the frame before it is kept here, because the interpolation needs both ends of the interval and the present
 /// path only ever hands over the newest one. The depth (reversed) and the motion are the scene's at the render size
 /// (vk_fsr3_inputs.h), with `motion_scale` taking a vector to render pixels, as the SDK's
-/// FFX_FRAMEINTERPOLATION_OPTION_LOW_RESOLUTION_MOTION_VECTORS permutation the vendored GLSL was compiled under expects.
+/// FFX_FRAMEINTERPOLATION_OPTION_LOW_RES_MOTION_VECTORS permutation the vendored GLSL was compiled under expects.
 struct Inputs {
     VkImageView color = VK_NULL_HANDLE;
     VkImage color_image = VK_NULL_HANDLE;
     VkFormat color_format = VK_FORMAT_UNDEFINED;
+    /// Encoding of the captured present, independent of its UNORM storage format.
+    bool native_pq = false;
+    /// (hookshot) The colour's alpha marks the HUD, 0 where the game drew it over its picture after the upscale
+    /// (vk_framegen.cpp hud_source): the interpolation keeps those pixels where they are. False: the alpha is 1, and the HUD
+    /// is guessed as the pixels the same in both frames
+    bool hud_mask = false;
+    /// (hookshot) The frame as presented, the HUD on it, when color is the picture before the HUD (vk_framegen.cpp
+    /// hud_source): AMD's HUD-less mode. The interpolation moves only the scene, and the made frame takes this frame's
+    /// pixels where they differ from color (the SDK's inpainting pass). Null: color is the presented frame itself
+    VkImageView present = VK_NULL_HANDLE;
+    float max_luminance = 1.0f; // Nits for PQ; ignored for the existing SDR path.
     uint32_t width = 0, height = 0;
 
     VkImageView depth = VK_NULL_HANDLE;
@@ -64,19 +83,28 @@ struct Inputs {
 /// cannot is logged once.
 [[nodiscard]] bool capable();
 
-/// Whether a made frame is asked for: the Frame generation row at 2x (RX_VK_FSR_FG=0 never, =1 over the row), on a device
-/// that is capable(). Read every frame: the row changes while the game runs.
+/// Whether made frames are asked for: Frame generation on, at FSR 3.1 FG or DLSS FG on the Frame generation by row (RX_VK_FSR_FG=0
+/// never, =1 over the row), on a device that is capable(). Read every frame: the rows change while the game runs. vk_framegen.cpp asks
+/// NVIDIA DLSS Frame Generation first; this makes what it does not.
 [[nodiscard]] uint32_t frames_wanted();
 
-/// Records the made frame between the frame before and this one into made_image(), making the pipelines and the images for
-/// these sizes first (again when the sizes or the presented format change). False when it cannot (the inputs not usable, a
-/// reset frame, anything not made), which leaves the caller to show whatever it would otherwise have shown.
-[[nodiscard]] bool generate(VkCommandBuffer cmd, const Inputs& in);
+/// Records `count` made frames between the frame before and this one, made frame i at times[i] (0: the frame before, 1: this
+/// one; kept within 0.01 to 0.99) into made_image(i), making the pipelines and the images for these sizes first (again when
+/// the sizes or the presented format change, and more made frames' images when a set asks for more). Returns how many were
+/// made: 0 when it cannot (the inputs not usable, a reset frame), which leaves the caller to show whatever it would otherwise
+/// have shown. Called once a game frame, with count 0 too (Auto, a refresh that shows the game's own frame): the history the
+/// next set interpolates from is kept either way.
+[[nodiscard]] uint32_t generate(VkCommandBuffer cmd, const Inputs& in, const float* times, uint32_t count);
 
-/// The made frame of the last `generate`, or null.
-[[nodiscard]] VkImage made_image();
+/// Made frame i of the last `generate`, or null.
+[[nodiscard]] VkImage made_image(uint32_t i);
 
 /// Forgets the sequence, so the next frame is made with the reset flag set: a cut, a load, a resize.
 void reset();
+
+/// (hookshot) Frame generation off or not this one (vk_framegen.cpp framegen_idle): the images let go once the GPU is done with
+/// them, and those of earlier sizes too (free_dead ran only in generate). The next generate makes them again. Every present
+/// while it is idle: nothing to do once they are gone
+void release();
 
 } // namespace mkwvk::fsr3fi

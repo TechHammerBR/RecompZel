@@ -1,0 +1,3 @@
+| Date | Build | OS / desktop | GPU / driver | CPU / RAM | Settings | Where | Result |
+|---|---|---|---|---|---|---|---|
+| 2026-11-17 | main @ 67efc4d3, default (47-function hot list at -O2, rest -O1) | Arch Linux, kernel 7.3.4, headless (no window) | AMD Radeon RX 9070 XT, RADV GFX1201, Vulkan 1.4, Mesa 26.2.7-arch1.1 | AMD Ryzen 9 9950X3D, 62 GB | 2560x1440 output, the game's own upscaler, HOS_DYNRES=0, HOS_FPS_MAX=1000, audio off, no frame generation | Link's house (repo save kokiri-start), standing still, 20 s warm-up then fps from the control bridge once a second for 40 s, four interleaved runs | runs hmain1-hmain4: median 91.8 fps (per-run 88.9, 91.8, 91.8, 92.9) |

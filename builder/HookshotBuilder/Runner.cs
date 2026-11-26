@@ -6,6 +6,10 @@ namespace HookshotBuilder;
 /// Where nx2/make_game.py and its Python are: a "tools" folder beside the app when packaged, or the source tree it sits in.
 sealed record Tools(string Root, string Python, string[]? PythonArgs = null)
 {
+    /// The toolchain's switches a game folder's build was made with (BuildRecord.cs): set over the others, so a rebuild is
+    /// that build again
+    public IReadOnlyDictionary<string, string>? Env { get; init; }
+
     /// Which release these tools are (tools/version.txt, written when the release is packed); null from the source tree
     public string? Version => File.Exists(Path.Combine(Root, "version.txt")) ? File.ReadAllText(Path.Combine(Root, "version.txt")).Trim() : null;
 
@@ -113,7 +117,8 @@ sealed class Runner
         si.Environment["PYTHONIOENCODING"] = "utf-8";
         BuildWorkers.Apply(si, workers);
         BuildMemory.Apply(si, memoryGb);
-        // (written into the game folder's hookshot_version.txt: the game starts this app again to update, host/hos_update.c)
+        // (written into the game folder's hookshot_version.txt: which builder made the folder)
+        BuilderHome.PassTo(si);
         if (Environment.ProcessPath != null) si.Environment["HOOKSHOT_BUILDER_EXE"] = Environment.ProcessPath;
         // (NVIDIA DLSS: only when ticked. Without it, one set on the PC is not passed on either: a build is with DLSS only when asked)
         if (ngxSdk != null) si.Environment["HOOKSHOT_NGX_SDK"] = ngxSdk;
@@ -121,13 +126,16 @@ sealed class Runner
         // (AMD FSR 4, the same: AMD's runtime kept in the builder's own folder only when ticked)
         if (ffxSdk != null) si.Environment["HOOKSHOT_FFX_SDK"] = ffxSdk;
         else si.Environment.Remove("HOOKSHOT_FFX_SDK");
+        // (Intel XeSS: the game loads the player's own libxess.dll; an SDK folder set on the PC is not passed on)
+        si.Environment.Remove("HOOKSHOT_XESS_SDK");
         // (the folder's own compiler, headers and libraries, when it has them: nothing of the PC's but Windows' own)
-        var sets = new[] { ("EMSDK", "emsdk"), ("RX_CPM", "cpm"), ("WGPU_NATIVE", "wgpu-native") };
+        var sets = new[] { ("EMSDK", "emsdk"), ("RX_CPM", "cpm") };
         foreach (var (name, folder) in sets)
         {
             var path = Path.Combine(tools.Root, folder);
             if (Directory.Exists(path)) si.Environment[name] = path;
         }
+        foreach (var (k, v) in tools.Env ?? new Dictionary<string, string>()) si.Environment[k] = v;
         foreach (var a in tools.PythonArgs ?? Array.Empty<string>()) si.ArgumentList.Add(a);
         si.ArgumentList.Add("-I");
         si.ArgumentList.Add(Path.Combine(tools.Root, "nx2", "make_game.py"));
@@ -145,7 +153,12 @@ sealed class Runner
                 process = p;
                 p.ErrorDataReceived += (_, e) => { if (e.Data != null) Line?.Invoke(e.Data); };
                 p.BeginErrorReadLine();
-                try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch (Exception) { }
+                // (normal priority, the read, the lift and the compilers with it: below normal, Windows kept the one-process steps
+                // on a hybrid Intel CPU's efficiency cores, an hour and more of the first build with the performance cores idle.
+                // HOOKSHOT_LOW_PRIORITY=1: below normal, as before, for a desktop
+                // that stays quick while the game builds)
+                if (Environment.GetEnvironmentVariable("HOOKSHOT_LOW_PRIORITY") == "1")
+                    try { p.PriorityClass = ProcessPriorityClass.BelowNormal; } catch (Exception) { }
                 while (p.StandardOutput.ReadLine() is { } line)
                 {
                     if (line.StartsWith("@@error ")) error = line[8..];

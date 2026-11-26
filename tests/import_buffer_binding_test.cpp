@@ -1,6 +1,7 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -24,7 +25,9 @@ struct Pool {
     VkBuffer buffer{}; VkDeviceMemory memory{}; VkDeviceAddress address = 0;
     std::vector<VkDeviceMemory> pieces;
 };
-struct { VkDevice device{}; VkPhysicalDeviceMemoryProperties memory{}; bool dma_buf_import = true, sparse_buffers = true; } dev;
+std::map<uint64_t, Pool> imported;   // (vk_memory.cpp's live imports: none here)
+size_t retired_pools_count() { return 0; }
+struct { VkDevice device{}; VkPhysicalDeviceMemoryProperties memory{}; bool dma_buf_import = true, sparse_buffers = true; VkDriverId driver_id{}; } dev;
 struct Host { uint8_t* guest_base() { static uint8_t bytes[4096]{}; return bytes; } } host_value;
 Host* host = &host_value;
 uint64_t max_import_size = UINT64_MAX;
@@ -36,9 +39,15 @@ int64_t now_ms = 100;
 int64_t import_now_ms() { return now_ms; }
 unsigned creates = 0, allocations = 0, binds = 0, address_queries = 0, destroyed_buffers = 0, freed_memory = 0;
 unsigned sparse_calls = 0;
+uint32_t host_bits[2] = {1, 1};   // (the types vkGetMemoryHostPointerPropertiesEXT returns: first pointer, later ones)
+unsigned property_calls = 0;
+VkMemoryRequirements buffer_requirements{4096, 1, ~0u};
+uint32_t allocated_type = UINT32_MAX;
 unsigned owner_releases = 0;
 uintptr_t next_id = 1;
 std::map<VkBuffer, int> buffers;
+// (vk_memory.cpp: every import asked for, and the table RX_VK_IMPORT_DIAG's line reads; no live or retired import here)
+int64_t st_imports_asked = 0;
 std::set<VkBuffer> bound_buffers;
 std::set<VkDeviceMemory> memories;
 std::vector<char> release_order;
@@ -46,14 +55,29 @@ constexpr VkBufferUsageFlags kUsage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 bool failing(Fault f, int kind) { return fault == f && (fail_kind == EveryMemory || fail_kind == kind); }
 void logf(const char*, ...) {}
 const char* getenv(const char*) { return nullptr; }
+bool env_on(const char* name) { const char* v = getenv(name); return v && !env_value_off(v); }   // (the switches through the stand-in)
 using SIZE_T = size_t;
 constexpr int MEM_COMMIT = 1, MEM_RESERVE = 2, PAGE_READWRITE = 4;
-struct MEMORY_BASIC_INFORMATION { uint8_t* BaseAddress; size_t RegionSize; int State; };
+struct MEMORY_BASIC_INFORMATION { uint8_t* BaseAddress; size_t RegionSize; unsigned long State, Protect, Type; };   // (DWORDs)
+// (the exe's optional exports, looked up by name: an exe without them, so none is called)
+void* GetModuleHandleA(const char*) { return nullptr; }
+void* GetProcAddress(void*, const char*) { return nullptr; }
 void* VirtualAlloc(void* p, size_t, int, int) { return p; }
+// (import_fence.h's stand-in: how many stood, and how many allocations were made while one did)
+unsigned fences = 0, fenced_allocations = 0;
+bool fence_up = false;
+struct ImportFence {
+    const bool on;
+    ImportFence(uint8_t*, uint64_t, bool on_) : on(on_) { assert(!fence_up); if (on) fences++, fence_up = true; }
+    ~ImportFence() { if (on) fence_up = false; }
+};
 size_t VirtualQuery(void*, MEMORY_BASIC_INFORMATION*, size_t) { return 0; }
 VkResult vkGetMemoryHostPointerPropertiesEXT(VkDevice, VkExternalMemoryHandleTypeFlagBits, const void*, VkMemoryHostPointerPropertiesEXT* hp) {
     if (fault == Fault::Properties) return VK_ERROR_OUT_OF_HOST_MEMORY;
-    hp->memoryTypeBits = 1; return VK_SUCCESS;
+    hp->memoryTypeBits = host_bits[std::min(property_calls++, 1u)]; return VK_SUCCESS;
+}
+void vkGetBufferMemoryRequirements(VkDevice, VkBuffer b, VkMemoryRequirements* req) {
+    assert(buffers.count(b)); *req = buffer_requirements;
 }
 VkResult vkCreateBuffer(VkDevice, const VkBufferCreateInfo* ci, const VkAllocationCallbacks*, VkBuffer* out) {
     creates++;
@@ -63,8 +87,9 @@ VkResult vkCreateBuffer(VkDevice, const VkBufferCreateInfo* ci, const VkAllocati
     if (failing(Fault::Create, allocation_kind)) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     *out = handle<VkBuffer>(next_id++); buffers.emplace(*out, allocation_kind); return VK_SUCCESS;
 }
-VkResult vkAllocateMemory(VkDevice, const VkMemoryAllocateInfo*, const VkAllocationCallbacks*, VkDeviceMemory* out) {
-    allocations++; *out = handle<VkDeviceMemory>(0xbeef);
+VkResult vkAllocateMemory(VkDevice, const VkMemoryAllocateInfo* ai, const VkAllocationCallbacks*, VkDeviceMemory* out) {
+    allocations++; if (ai) allocated_type = ai->memoryTypeIndex; *out = handle<VkDeviceMemory>(0xbeef);
+    if (fence_up) fenced_allocations++;
     if (failing(Fault::Allocate, allocation_kind)) return VK_ERROR_OUT_OF_HOST_MEMORY;
     *out = handle<VkDeviceMemory>(next_id++); memories.insert(*out); return VK_SUCCESS;
 }
@@ -97,7 +122,8 @@ constexpr int O_RDWR = 1, O_CLOEXEC = 2;
 void* RTLD_DEFAULT = nullptr;
 int memfd_stub() { return 4; }
 void* dlsym(void*, const char*) { return reinterpret_cast<void*>(&memfd_stub); }
-int open(const char*, int) { return 5; }
+unsigned opens = 0;
+int open(const char*, int) { opens++; return 5; }
 FILE* fopen(const char*, const char*) { return nullptr; }
 int mock_fscanf(FILE*, const char*, ...) { return 0; }
 VkDeviceMemory dma_buf_memory(uint64_t, uint64_t) {
@@ -112,6 +138,8 @@ bool import_dma_buf_pieces(uint64_t lo, uint64_t hi, uint64_t, Pool& p) {
     return true;
 }
 #define fscanf mock_fscanf
+[[maybe_unused]] static void radv_import_headroom(uint64_t) {}
+
 /* ACTUAL */
 #undef fscanf
 
@@ -136,13 +164,42 @@ void run(const std::string& route, const std::string& test) {
     if (test == "properties-error") fault = Fault::Properties;
     if (route == "pool" && test != "both-bind-fail") fail_kind = DmaMemory;
     Pool p;
+    if (test == "nvidia") {   // (NVIDIA's driver refuses the window's dma-bufs: no udmabuf opened, no dma-buf tried, host pointers)
+        dev.driver_id = VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+        if (route == "dma") {
+            assert(!call(route, p) && opens == 0 && creates == 0 && allocations == 0 && dmabuf_memfd == -1); empty(); return;
+        }
+        assert(call(route, p) && opens == 0 && creates == 1 && allocations == 1 && buffers.at(p.buffer) == HostMemory);
+        release(p); return;
+    }
     if (test == "sparse-delegation") {
         assert(call(route, p, 128ull << 20)); assert(sparse_calls == 1 && binds == 0 && address_queries == 1);
         release(p); return;
     }
+    if (test == "per-pointer-type" || test == "buffer-type-bits" || test == "buffer-too-big") {
+        // (VUID-VkMemoryAllocateInfo-memoryTypeIndex-01744: the type is one returned for this pointer; VUID-vkBindBufferMemory-memory-01035
+        // and None-10741: one the buffer allows, and the buffer fits in the memory)
+        dev.memory.memoryTypeCount = 2;
+        dev.memory.memoryTypes[1].propertyFlags = dev.memory.memoryTypes[0].propertyFlags;
+        if (test == "per-pointer-type") {
+            host_bits[1] = 2;
+            assert(call(route, p) && allocated_type == 0); release(p);
+            assert(call(route, p) && allocated_type == 1 && property_calls == 2); release(p); return;
+        }
+        if (test == "buffer-type-bits") {
+            host_bits[0] = 3; buffer_requirements.memoryTypeBits = 2;
+            assert(call(route, p) && allocated_type == 1); release(p); return;
+        }
+        buffer_requirements.size = 8192;
+        assert(!call(route, p) && allocations == 0 && binds == 0 && destroyed_buffers == 1 && !p.buffer);
+        empty(); assert(import_holds.rows.size() == 1); return;
+    }
     const bool success = call(route, p);
     assert(owner_releases == destroyed_buffers);   // Every factory rollback preserves main's owner hook.
+    // (a host-pointer import's allocation is made behind the fence, a dma-buf's without one, and none is left standing)
+    assert(!fence_up && fences == fenced_allocations && (route != "dma" || fences == 0));
     if (test == "healthy" || (route == "pool" && test != "both-bind-fail")) {
+        assert(route == "dma" || fences == 1);
         assert(success && p.buffer && p.memory && p.address && address_queries == 1);
         assert(buffers.size() == 1 && memories.size() == 1 && import_holds.rows.empty());
         if (route == "pool") {

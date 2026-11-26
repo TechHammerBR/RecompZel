@@ -18,11 +18,20 @@ constexpr VkBufferUsageFlags VK_BUFFER_USAGE_STORAGE_BUFFER_BIT = 1;
 constexpr VkBufferUsageFlags VK_BUFFER_USAGE_TRANSFER_DST_BIT = 2;
 constexpr VkBufferUsageFlags VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT = 4;
 constexpr VkBufferUsageFlags VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT = 8;
+constexpr VkBufferUsageFlags VK_BUFFER_USAGE_TRANSFER_SRC_BIT = 16;
 constexpr int VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO = 1;
 struct VkBufferDeviceAddressInfo { int sType; VkBuffer buffer = 0; };
 struct { int device = 1; } dev;
 namespace Shader::Backend::SPIRV {
 constexpr uint64_t MESH_FALLBACK_CAPACITY = 5, MESH_FALLBACK_HEADER_WORDS = 8, MESH_FALLBACK_RECORD_WORDS = 16;
+// (mma_layout.h mesh_fallback_global_attributes: the records buffer then holds the attribute regions' pool past the records)
+constexpr uint64_t MESH_FALLBACK_POOL_OFFSET = 128, MESH_FALLBACK_POOL_BYTES = 64;
+constexpr uint64_t MESH_FALLBACK_RECORDS_LIMIT = 1024;   // (the largest records buffer made: these all fit)
+inline bool mesh_fallback_global_attributes = false;
+// (mma_layout.h mesh_fallback_shared_warp: its counters past the records, or past the pool; the pool's own wait counts there too)
+constexpr uint64_t WARP_COUNTER_BYTES = 16;
+inline bool mesh_fallback_shared_warp = false;
+inline bool MeshFallbackCounters() { return mesh_fallback_shared_warp || mesh_fallback_global_attributes; }
 }
 struct Program {
     uint32_t fallback_vertices_per_workgroup = 3;
@@ -37,13 +46,15 @@ static Allocation poison;
 static std::unordered_map<VkBuffer, VmaAllocation> live;
 static unsigned create_calls, destroy_calls, address_calls;
 static unsigned fail_create, zero_address;
+static VkBufferUsageFlags records_usage;   // (the first buffer made: the records)
 static void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
-static bool create_buffer(uint64_t size, VkBufferUsageFlags, bool,
+static bool create_buffer(uint64_t size, VkBufferUsageFlags usage, bool,
                           VkBuffer& buffer, VmaAllocation& allocation, void**) {
     require(size != 0, "fixture received a zero allocation size");
     ++create_calls;
+    if (create_calls == 1) records_usage = usage;
     if (create_calls == fail_create) {
         // An output written on failure must never be treated as a confirmed allocation.
         buffer = 0xffff;
@@ -143,6 +154,24 @@ static void run(const std::string& name) {
         success_reuse(false);
     } else if (name == "task_success") {
         success_reuse(true);
+    } else if (name == "pool_records") {
+        // (the attribute regions' pool: the records buffer reaches its end, then the counters its wait counts in; the payload as
+        // without it)
+        Shader::Backend::SPIRV::mesh_fallback_global_attributes = true;
+        require(fallback_buffers_of(p, out) && out && out->records_address, "initialization with the pool failed");
+        require(out->records_bytes == 128 + 64 + 16, "the records buffer does not hold the pool, and its counters, past the records");
+        require(out->payload_bytes == 44, "the pool changed the payload buffer");
+        require(records_usage & VK_BUFFER_USAGE_TRANSFER_SRC_BIT, "the pool's counters cannot be copied out of the records");
+    } else if (name == "warp_counters" || name == "warp_counters_pool") {
+        // (the shared warp's counters: right past the records' regular end, with the pool or without, and the buffer a copy's source)
+        Shader::Backend::SPIRV::mesh_fallback_shared_warp = true;
+        Shader::Backend::SPIRV::mesh_fallback_global_attributes = name == "warp_counters_pool";
+        require(fallback_buffers_of(p, out) && out && out->records_address, "initialization with the shared warp failed");
+        require(out->records_bytes == (name == "warp_counters_pool" ? 128 + 64 : 96) + 16,
+                "the records buffer has no room for the shared warp's counters");
+        require(!out->warp_counters_cleared, "a new records buffer's counters count as cleared");
+        require(records_usage & VK_BUFFER_USAGE_TRANSFER_SRC_BIT, "the counters cannot be copied out of the records");
+        require(out->payload_bytes == 44, "the shared warp changed the payload buffer");
     } else if (name == "invalid_program") {
         p.fallback_record_words = 0;
         require(!fallback_buffers_of(p, out), "invalid program was accepted");
@@ -155,6 +184,43 @@ static void run(const std::string& name) {
         Program next;
         require(fallback_buffers_of(next, out) && out && out->records_address, "another program inherited failure");
         require(live.size() == 2 && destroy_calls == 1, "another program's buffers were freed or leaked");
+    } else if (name == "payload_growth_keeps_records") {
+        // (the record arena is the same size for every program: a program whose payloads need more takes a bigger payload
+        // buffer, and the records it has already)
+        require(fallback_buffers_of(p, out) && out && out->payload_bytes == 44 && create_calls == 2, "first program's pair");
+        const VkBuffer records = out->records;
+        const uint64_t records_address = out->records_address;
+        Program bigger;
+        bigger.fallback_payload_words = 8;
+        require(fallback_buffers_of(bigger, out) && out && out->payload_bytes == 116, "a bigger payload was not made");
+        require(out->records == records && out->records_address == records_address && create_calls == 3 && live.size() == 3,
+                "a bigger payload made another record arena");
+        const auto calls = create_calls;
+        require(fallback_buffers_of(p, out) && out->payload_bytes == 116 && create_calls == calls, "the smaller program made more");
+    } else if (name == "shared_records_payload_failure") {
+        // (a growth step that shares the record arena and then cannot make its payload: its create fails, and on a retry its
+        // address comes back 0. The shared arena must stay, and the set before it still serve. Passes on main trivially, where a
+        // growth makes its own arena and never shares; guards that the fix's cleanup leaves a shared arena alone)
+        require(fallback_buffers_of(p, out) && out && create_calls == 2 && address_calls == 2, "first program's pair");
+        const VkBuffer records = out->records;
+        const uint64_t payload_bytes = out->payload_bytes;
+        const auto still_usable = [&](const char* why) {
+            const auto calls = create_calls;
+            require(live.contains(records), why);
+            require(fallback_buffers_of(p, out) && out->records == records && out->payload_bytes == payload_bytes &&
+                    create_calls == calls, why);
+        };
+        Program bigger;
+        bigger.fallback_payload_words = 8;
+        fail_create = 3;
+        require(!fallback_buffers_of(bigger, out), "a failed payload create was accepted");
+        require(live.size() == 2 && destroy_calls == 0, "a failed payload create destroyed the shared record arena");
+        still_usable("the set before a failed payload create is gone");
+        zero_address = address_calls + 1;   // (the next address asked: the payload's when the arena is shared)
+        require(!fallback_buffers_of(bigger, out), "a payload with no address was accepted");
+        require(create_calls == 4 && destroy_calls == 1 && live.size() == 2,
+                "a payload with no address left a buffer or took the shared record arena");
+        still_usable("the set before a payload with no address is gone");
     } else throw std::runtime_error("unknown authored case");
 }
 int main(int argc, char** argv) {

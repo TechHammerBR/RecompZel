@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <deque>
 #include <map>
 #include <unordered_map>
 #include <vector>
@@ -47,6 +49,26 @@ std::unordered_map<std::string, Agg> totals[2];   // label -> what its spans too
 double active_ns[2], sum_ns[2];                   // (the command buffers' first timestamp to last, and what their spans took)
 int64_t recs[2], dropped;
 int acc_frames = 0;
+// the spans collected lately with their GPU times, for gprof_tail: what a late-page wait waited for
+struct Recent {
+    std::string label;
+    int k;
+    uint64_t t0, t1;
+    bool counted;
+};
+std::deque<Recent> recent;
+// (stream T2) one record per collected command buffer, for the report's picture of the queue: where the GPU worked (spans), where
+// it sat inside a command buffer between spans (holes: waits the spans do not name) and where the queue was empty between buffers
+struct Buf {
+    uint64_t first, last;                 // (GPU ticks)
+    double work_ns;                       // (the spans' own time)
+    int k;
+    char head[24];                        // (the first span's kind: what the buffer starts with)
+};
+std::vector<Buf> bufs;
+std::unordered_map<std::string, Agg> tail_totals[2];
+double tail_ns = 0;
+int64_t tails = 0;
 
 Stream* find(VkCommandBuffer cmd) {
     if (!pool || cur < 0 || !cmd) return nullptr;
@@ -63,9 +85,8 @@ uint32_t stamp(Stream& st, VkCommandBuffer cmd) {
 
 bool gprof_on() {
     static const bool on = [] {
-        const char* a = getenv("RX_VK_PASS_TIMING");
-        const char* b = getenv("RX_VK_GPU_PROFILE");
-        return (a && atoi(a) != 0) || (b && atoi(b) != 0);
+        const char* a = getenv("RX_VK_PASS_TIMING");   // (its second name, RX_VK_GPU_PROFILE, is gone: switches.def)
+        return a && atoi(a) != 0;
     }();
     return on;
 }
@@ -167,12 +188,18 @@ void gprof_collect(int slot) {
         }
         uint64_t first = UINT64_MAX, last = 0;
         double sum = 0;
+        char head[24] = "";
         for (const Span& sp : st.spans) {
             if (sp.label.empty() || sp.qb >= st.nq || sp.qe >= st.nq || t[sp.qe] <= t[sp.qb]) continue;
             const double ns = (double)(t[sp.qe] - t[sp.qb]) * period;
             Agg& a = totals[k][sp.label];
             a.ns += ns, a.n++, a.items += sp.items, a.bytes += sp.bytes;
             if (sp.nested) continue;
+            recent.push_back({sp.label, k, t[sp.qb], t[sp.qe], false});
+            if (t[sp.qb] < first) {
+                const size_t n = std::min<size_t>(sp.label.find(' '), sizeof head - 1);
+                memcpy(head, sp.label.c_str(), n), head[n] = 0;
+            }
             sum += ns;
             first = std::min(first, t[sp.qb]), last = std::max(last, t[sp.qe]);
         }
@@ -180,8 +207,24 @@ void gprof_collect(int slot) {
             active_ns[k] += (double)(last - first) * period;
             sum_ns[k] += sum;
             recs[k]++;
+            Buf b{first, last, sum, k, ""};
+            memcpy(b.head, head, sizeof head);
+            bufs.push_back(b);
         }
         st.spans.clear();
+    }
+    while (recent.size() > 12000) recent.pop_front();
+}
+
+void gprof_tail(uint64_t lo, uint64_t hi) {
+    if (!pool) return;
+    const double period = dev.props.limits.timestampPeriod;
+    tail_ns += (double)(hi - lo) * period, tails++;
+    for (Recent& r : recent) {
+        if (r.counted || r.t0 < lo || r.t1 > hi) continue;
+        r.counted = true;
+        Agg& a = tail_totals[r.k][r.label];
+        a.ns += (double)(r.t1 - r.t0) * period, a.n++;
     }
 }
 
@@ -200,6 +243,48 @@ void gprof_report(int frames) {
     logf("vk:   upload command buffers: %.2f ms in %.1f a frame (%.2f ms in spans, %.2f ms between them: texture uploads and "
          "decodes, the page table, glue)", active_ns[1] / f / 1e6, recs[1] / f, sum_ns[1] / f / 1e6,
          (active_ns[1] - sum_ns[1]) / f / 1e6);
+    if (!bufs.empty()) {   // (stream T2) the queue's picture: the buffers of the window laid on one time line
+        std::sort(bufs.begin(), bufs.end(), [](const Buf& a, const Buf& b) { return a.first < b.first; });
+        const double period = dev.props.limits.timestampPeriod;
+        double work = 0, hole_in = 0, idle = 0, idle_long = 0, overlap = 0, busy_union = 0;
+        double cls[4] = {0, 0, 0, 0};      // (gaps between buffers, by length: <0.1 ms, 0.1-1, 1-5, 5 ms and over, under 100 ms)
+        int64_t ncls[4] = {0, 0, 0, 0};
+        std::map<std::string, std::pair<double, int64_t>> by_next;   // (a gap by what the buffer after it starts with)
+        uint64_t end = 0, wall_lo = bufs.front().first;
+        for (const Buf& b : bufs) {
+            work += b.work_ns;
+            hole_in += (double)(b.last - b.first) * period - b.work_ns;
+            if (end && b.first > end) {
+                const double g = (double)(b.first - end) * period;
+                if (g < 1e8) {
+                    idle += g;
+                    const int c = g < 1e5 ? 0 : g < 1e6 ? 1 : g < 5e6 ? 2 : 3;
+                    cls[c] += g, ncls[c]++;
+                    auto& n = by_next[std::string(b.k ? "u " : "m ") + b.head];
+                    n.first += g, n.second++;
+                } else
+                    idle_long += g;
+            } else if (end && b.first < end)
+                overlap += (double)(std::min(end, b.last) - b.first) * period;
+            if (b.last > end) {
+                busy_union += (double)(b.last - std::max(end, b.first)) * period;
+                end = b.last;
+            }
+        }
+        const double wall = (double)(end - wall_lo) * period - idle_long;
+        logf("vk:   T2 queue picture over %d presents (ms a frame): window %.2f = busy %.2f (spans %.2f + holes inside buffers %.2f, "
+             "minus buffers overlapping %.2f) + empty between buffers %.2f (gaps over 100 ms left out: %.1f ms in all)",
+             acc_frames, wall / f / 1e6, busy_union / f / 1e6, work / f / 1e6, hole_in / f / 1e6, overlap / f / 1e6, idle / f / 1e6,
+             idle_long / 1e6);
+        logf("vk:   T2 empty between buffers by length: <0.1 ms %.2f (%.1f a frame), 0.1-1 ms %.2f (%.1f), 1-5 ms %.2f (%.1f), 5 ms+ %.2f (%.1f)",
+             cls[0] / f / 1e6, ncls[0] / f, cls[1] / f / 1e6, ncls[1] / f, cls[2] / f / 1e6, ncls[2] / f, cls[3] / f / 1e6, ncls[3] / f);
+        std::vector<std::pair<std::string, std::pair<double, int64_t>>> nx(by_next.begin(), by_next.end());
+        std::sort(nx.begin(), nx.end(), [](const auto& a, const auto& b) { return a.second.first > b.second.first; });
+        for (size_t i = 0; i < nx.size() && i < 6; i++)
+            logf("vk:   T2   empty before a buffer that starts with %-12s %.2f ms a frame in %.1f gaps", nx[i].first.c_str(),
+                 nx[i].second.first / f / 1e6, nx[i].second.second / f);
+        bufs.clear();
+    }
     if (dropped) logf("vk:   %lld spans not timed (a command buffer's timestamps ran out)", (long long)dropped);
     struct Row {
         std::string name;
@@ -244,6 +329,30 @@ void gprof_report(int frames) {
                  r.name.c_str());
         }
     }
+    if (tails) {   //
+        logf("vk:   the late waits' GPU tail (busy with no gap up to the value a capture waited for): %.2f ms a wait, %.2f waits a "
+             "frame; what ran in it, ms a frame:", tail_ns / tails / 1e6, tails / f);
+        std::vector<Row> trows;
+        std::map<std::string, Agg> tcat[2];
+        for (int k = 0; k < 2; k++)
+            for (const auto& [label, a] : tail_totals[k]) {
+                trows.push_back({label, k, a});
+                Agg& c = tcat[k][label.substr(0, label.find(' '))];
+                c.ns += a.ns, c.n += a.n;
+            }
+        std::vector<Row> tc;
+        for (int k = 0; k < 2; k++)
+            for (const auto& [name, a] : tcat[k]) tc.push_back({name, k, a});
+        std::sort(tc.begin(), tc.end(), by_ns);
+        std::sort(trows.begin(), trows.end(), by_ns);
+        for (const Row& c : tc)
+            logf("vk:     tail %c %-9s %7.3f ms  %7.1f spans", c.k ? 'u' : 'm', c.name.c_str(), c.a.ns / f / 1e6, c.a.n / f);
+        for (size_t i = 0; i < trows.size() && i < 20; i++)
+            logf("vk:     tail %c %7.3f ms  %6.1f x  %s", trows[i].k ? 'u' : 'm', trows[i].a.ns / f / 1e6, trows[i].a.n / f,
+                 trows[i].name.c_str());
+    }
+    for (auto& t : tail_totals) t.clear();
+    tail_ns = 0, tails = 0;
     for (auto& t : totals) t.clear();
     active_ns[0] = active_ns[1] = sum_ns[0] = sum_ns[1] = 0;
     recs[0] = recs[1] = dropped = 0;

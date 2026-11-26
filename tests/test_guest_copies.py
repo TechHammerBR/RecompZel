@@ -14,18 +14,13 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
+
+# (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/hookshot_env.h)
+ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "hookshot_env.h")
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
 
 
 def check(cond, what):
@@ -45,7 +40,13 @@ extern uint8_t *window;
 #define RET(v) (c->x[0] = (uint64_t)(v))
 #define GP(a) ((void *)(window + (a)))
 #define HOS_WRITTEN(p, n) ((void)0)
+typedef struct HleCount { const char *name; long calls; } HleCount;   /* (host/hos.h's, HOS_HLE_STATS) */
+static int hos_hle_stats = 1;
+static inline void hos_hle_counted(HleCount *h, void (*fn)(Ctx *c), Ctx *c) { h->calls++; fn(c); }
+static void hos_log(const char *fmt, ...) { (void)fmt; }   /* (nn_libc.c logs its first call) */
 #define ENTRY_HOOK_SYM(sym) int entry_sym_##sym(Ctx *c)
+#define ENTRY_HOOK_SYM_FROM(sym, min) int entry_sym_##sym(Ctx *c)
+#define A64_POLL(c) ((void)(c))
 static inline void *hos_guest_range(uint64_t a, uint64_t n) { return a < WINDOW && n <= WINDOW - a ? GP(a) : (void *)0; }
 '''
 
@@ -116,7 +117,7 @@ def main():
         # (beside the stand-in hos.h: an include in quotes looks in the including file's folder first)
         (tmp / "nn_libc.c").write_text((ROOT / "host" / "nn_libc.c").read_text(encoding="utf-8"), encoding="utf-8")
         exe = tmp / "fixture"
-        subprocess.run([a.cc, "-std=gnu11", "-Wall", "-Wextra", "-I", str(tmp), str(tmp / "fixture.c"), "-o", str(exe)],
+        subprocess.run([a.cc, "-std=gnu11", "-include", ENV_ON_H, "-Wall", "-Wextra", "-I", str(tmp), str(tmp / "fixture.c"), "-o", str(exe)],
                        check=True)
         subprocess.run([str(exe)], check=True)
 

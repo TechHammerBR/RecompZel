@@ -4,7 +4,7 @@ An idle mirror is given back after kIdleEpochs submissions (at once past kLongId
 made again from guest memory at the pool's next binding. What a shader wrote through a bare entry, the pointer table or a
 wide binding is never copied back (memory_note_gpu_write): it was in the old mirror alone, and the GPU went on from stale
 data. Paused 1-2 minutes in the background, the idle pools' mirrors all went, and the game came back with cyan for a few
-seconds (RX 5500M; gone with RX_VK_MIRROR_KEEP=1). Reads the source: memory_note_gpu_write marks the pools it reaches, the
+seconds (RX 5500M; gone with every mirror kept). Reads the source: memory_note_gpu_write marks the pools it reaches, the
 idle give-back leaves those, and a pool that takes others in keeps their mark.
 python -I -B tests/test_mirror_gpu_only.py
 """
@@ -36,7 +36,7 @@ def main():
                          "goes and comes back without what the GPU made of it (cyan in play and over the Start menu)")
     lookup = body(mem, "Pool* pool_lookup(uint64_t guest, uint64_t size) {")
     took_in = lookup[lookup.index("for (uint64_t k : overlapped) {   // (the pools it took in)"):]
-    merged = took_in[:took_in.index("imported.emplace(p.lo, p)")]
+    merged = took_in[:took_in.index("imported_add(p)")]   # (where the new pool goes into the table)
     if "p.gpu_only |= o->second.gpu_only" not in merged or "p.gpu_written |= o->second.gpu_written" not in merged:
         raise SystemExit("a pool that takes others in does not keep their gpu_only and gpu_written marks")
     print("PASS: mirrors the GPU wrote past the write-back are kept")

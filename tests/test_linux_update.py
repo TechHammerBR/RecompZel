@@ -9,8 +9,8 @@ import stat
 import subprocess
 import sys
 import tempfile
-import types
 import unittest
+from types import SimpleNamespace
 import zipfile
 from pathlib import Path
 
@@ -55,7 +55,6 @@ def appdir(path):
         folder.mkdir(parents=True)
         (folder / "kept").write_text(dest + "\n", encoding="utf-8")
     lib = path / "usr" / "lib" / "hookshot"
-    (lib / "hookshot_vk.so").write_bytes(b"vk")
     (lib / "libSDL2-2.0.so.0").write_bytes(b"sdl")
     (path / "AppRun").write_text("#!/bin/sh\n", encoding="utf-8")
     (path / "AppRun").chmod(0o755)
@@ -570,7 +569,7 @@ class UpdateTests(unittest.TestCase):
             self.assertIn("usr-share-hookshot", downloaded[0])
             built = home / "hookshot" / "builder" / "versions" / "v2"
             self.assertEqual((built / "usr" / "share" / "hookshot" / "nx2" / "marker.py").read_text(encoding="utf-8"), "print('two')\n")
-            self.assertEqual((built / "usr" / "lib" / "hookshot" / "hookshot_vk.so").read_bytes(), b"vk")
+            self.assertEqual((built / "usr" / "lib" / "hookshot" / "libSDL2-2.0.so.0").read_bytes(), b"sdl")
             self.assertFalse((home / "hookshot" / "builder" / "versions" / "v1").exists())
 
     def test_an_installed_builder_finds_its_own_root(self):
@@ -617,10 +616,11 @@ class UpdateTests(unittest.TestCase):
                 (out / name).write_bytes(b"old " + name.encode())
             with mock.patch.dict(os.environ, {"HOOKSHOT_TOOLS": str(ROOT)}):
                 exec(finish, make_game.__dict__, {"built": str(built), "out": str(out), "work": str(work),
-                                           "a": types.SimpleNamespace(update=False, fsr=False)})
+                                                   "a": SimpleNamespace(fsr=False, no_fsr=False, update=None, fetch_fsr_runtime=False)})
             self.assertEqual((out / "hookshot").read_bytes(), (ROOT / "builder" / "linux" / "hookshot-folder").read_bytes())
             self.assertTrue((out / "hookshot").stat().st_mode & stat.S_IXUSR)
-            self.assertEqual(sorted(p.name for p in out.iterdir()), ["bin", "hookshot", "image.bin"])
+            self.assertEqual(sorted(p.name for p in out.iterdir() if p.name != make_game.INSTALLED_NOTE),   # (what the finish put in)
+                             ["bin", "hookshot", "image.bin"])
             self.assertEqual(sorted(p.name for p in (out / "bin").iterdir()), sorted(make_game.BESIDE))
             self.assertEqual((out / "bin" / "hookshot").read_bytes(), b"new hookshot")
 
@@ -660,7 +660,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_the_folder_launcher_finds_the_builder_under_the_builder_home(self):
         # HOOKSHOT_BUILDER_HOME is the data directory, as XDG_DATA_HOME is: linux_update installs to
-        # <home>/hookshot/builder and host/hos_update.c looks there, so the launcher must too
+        # <home>/hookshot/builder, so the launcher must look there
         with tempfile.TemporaryDirectory(prefix="hookshot-folder-") as tmp:
             root = Path(tmp)
             game = root / "game"

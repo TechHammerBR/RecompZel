@@ -5,7 +5,7 @@ nx2/shader_census.py's readers on the same bytes; the translation/key part needs
 built by nx2/bake_ds/build.sh (pass --tool, or set BAKE_DS_TOOL; without it that half is skipped, not failed).
 A one-program HMMA fixture pins the --target tensor gate, the emitted form (shuffle expansion vs software
 function, no OpCooperativeMatrixMulAddKHR in either) and the stamp it folds (the real 71-program expansion
-and the compute answer variants need the ROM set: bake_all --target query, see BAKE.md).
+and the compute answer variants need the ROM set: bake_all --target query, see docs/BAKE.md).
 
     python -I -B tests/test_bake_ds.py [--tool ${TMPDIR:-/tmp}/hookshot-ds/bake_ds]
 """
@@ -336,11 +336,11 @@ def run_tests(tool):
         assert p.returncode == 0, p.stdout.decode()
         return json.load(open(os.path.join(out, "bake_manifest.json")))["cache_stamp"]
 
-    o1 = [("RX_VK_NAN_GUARD", "0"), ("RX_VK_SHARED_48K", "1")]
+    o1 = [("RX_VK_NAN_GUARD", "0"), ("RX_VK_MARKERS_V205", "0")]
     o2 = list(reversed(o1))
     s1, s2 = stamp_in_order(o1), stamp_in_order(o2)
-    assert s1 == expected_stamp(["RX_VK_NAN_GUARD=0", "RX_VK_SHARED_48K=1", "EDEN_NX2_TENSOR=1"]), s1
-    assert s2 == expected_stamp(["RX_VK_SHARED_48K=1", "RX_VK_NAN_GUARD=0", "EDEN_NX2_TENSOR=1"]), s2
+    assert s1 == expected_stamp(["RX_VK_NAN_GUARD=0", "RX_VK_MARKERS_V205=0", "EDEN_NX2_TENSOR=1"]), s1
+    assert s2 == expected_stamp(["RX_VK_MARKERS_V205=0", "RX_VK_NAN_GUARD=0", "EDEN_NX2_TENSOR=1"]), s2
     assert s1 != s2, (s1, s2)
 
     # 6. --spv-dir: the modules can live off the bank's volume, and the bank is still self-consistent

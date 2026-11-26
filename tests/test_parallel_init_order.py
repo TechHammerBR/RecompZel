@@ -68,10 +68,12 @@ def main():
     create = create[create.index("\n") + 1:]   # (from the line after: the image's initialization, to its Texture*)
     if "// into GENERAL, and cleared" not in create or "Texture* p = tex.get();" not in create:
         raise SystemExit("create()'s initialization moved: update this test")
-    jobs = cut(replay, "    struct Job {", "    seg_ms += std::chrono::duration")
+    # (replay_handle's segments: replay_handle_early, which no caller reaches, has a Job of its own above it)
+    jobs = cut(replay, "    struct Job {", "    seg_ms += std::chrono::duration",
+               after="const uint8_t* replay_handle(VkCommandBuffer& cmd")
     have_seg_init = "std::mutex seg_init_mu;" in texture
     exits = {"init_end_fail": 3} if have_seg_init else {}   # (replay_fatal ends the process)
-    for step in ("record_segment(c, j->g);", "texture_begin_recording(j->r->upload, j->r->value);", "vkQueueSubmit2(",
+    for step in ("record_segment(c, j->g);", "texture_begin_recording(j->r->upload, j->r->value);", "submit_or_retry(",
                  "j->uploads = texture_uploads_recorded();", "par_pool.cv.notify_all();"):
         if step not in jobs:
             raise SystemExit("the parallel block no longer has: " + step)
@@ -83,9 +85,7 @@ def main():
     have_pools = "bool init_pools_make(" in replay
     if have_pools:   # (the last fallible step of replay_start: no later failure returns with them made)
         start = block(replay, "bool replay_start() {")
-        # (Triforce: par_threads_max, the most a parallel replay may use, as RX_VK_PARALLEL_AUTO turns it on and off)
-        call = next((c for c in ("if (par_threads_max() >= 2 && !init_pools_make(pi)) return false;",
-                                 "if (par_threads() >= 2 && !init_pools_make(pi)) return false;") if c in start), "if (par_threads() >= 2")
+        call = "if (par_threads() >= 2 && !init_pools_make(pi)) return false;"
         if call not in start or start.index(call) < start.index("for (Frame& f : frames)") or                 "return false" in start[start.index(call) + len(call):]:
             raise SystemExit("FAIL: replay_start does not make the init pools last (a later failure would leave them made)")
     inc = {
@@ -108,6 +108,7 @@ def main():
             (folder / name).write_text(text + "\n", encoding="utf-8")
         binary = folder / "fixture.exe"
         command = [compiler, "-std=c++20", "-O1", "-w", "-I" + str(folder), "-I" + str(args.headers),
+                   "-include", str(vk / "fps_stats.h"),   # (the FPS counter's render lane names: init_jobs.inc)
                    "-DHAVE_SEG_INIT=%d" % have_seg_init, "-DHAVE_INIT_POOLS=%d" % have_pools,
                    str(ROOT / "tests" / "parallel_init_order_test.cpp"), "-o", str(binary)]
         command += [] if os.name == "nt" else ["-pthread"]

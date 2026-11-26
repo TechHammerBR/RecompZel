@@ -6,7 +6,10 @@ python -I -B tests/test_oot_saves.py
 import contextlib
 import importlib.util
 import io
+import json
 import os
+import shutil
+import stat
 from pathlib import Path
 import tempfile
 import unittest
@@ -84,7 +87,7 @@ class Discovery(Case):
         nx = self.home / "Games" / "Ocarina" / "profile" / "save" / ACCOUNT
         make_save(nx, b"NX")
         expect = {"lichii": self.li, "frizti": self.li, "orchid": self.li, "pokedinner": self.li, "eden": self.li,
-                  "eglantine": eden_save(self.data / "eglantine"), "nx2navi": nx}
+                  "eglantine": eden_save(self.data / "eglantine"), "pcport": nx}
         self.assertEqual(sorted(expect), sorted(p.name for p in oot.EMULATORS))
         for program in oot.EMULATORS:
             folder, found = oot.locate(program, None, "--from")
@@ -94,11 +97,11 @@ class Discovery(Case):
     def test_every_entry_on_windows(self):
         win_li = eden_save(self.appdata / "eden")
         win_eg = eden_save(self.appdata / "eglantine")
-        win_nx = self.localappdata / "Programs" / "NX2navi" / "game" / "profile" / "save" / ACCOUNT
+        win_nx = self.localappdata / "Programs" / "SomePort" / "game" / "profile" / "save" / ACCOUNT
         for folder in (win_li, win_eg, win_nx):
             make_save(folder, b"W")
         expect = {"lichii": win_li, "frizti": win_li, "orchid": win_li, "pokedinner": win_li, "eden": win_li,
-                  "eglantine": win_eg, "nx2navi": win_nx}
+                  "eglantine": win_eg, "pcport": win_nx}
         with mock.patch.object(oot, "WINDOWS", True):
             for program in oot.EMULATORS:
                 self.assertEqual(list(oot.locate(program, None, "--from")[1].values()), [str(expect[program.name])])
@@ -108,6 +111,40 @@ class Discovery(Case):
             game = self.tmp / "Hookshot"
             make_save(game / "user" / "save" / UID, b"W")
             self.assertEqual(oot.locate(oot.HOOKSHOT, str(game), "--hookshot")[1], {UID: str(game / "user" / "save" / UID)})
+
+    def test_lichii_s_own_folder_first(self):
+        # (Lichii from its build 150 on keeps %APPDATA%\\lichii, ~/.local/share/lichii; the others stay in Eden's)
+        own = eden_save(self.data / "lichii")
+        make_save(own, b"L2", slots=("slot_02",))
+        by_name = {p.name: p for p in oot.EMULATORS}
+        self.assertEqual(oot.locate(by_name["lichii"], None, "--from"), (str(self.data / "lichii"), {PROFILE: str(own)}))
+        for name in ("frizti", "orchid", "pokedinner", "eden"):
+            self.assertEqual(list(oot.locate(by_name[name], None, "--from")[1].values()), [str(self.li)], name)
+        win_own, win_eden = eden_save(self.appdata / "lichii"), eden_save(self.appdata / "eden")
+        make_save(win_own, b"W2")
+        make_save(win_eden, b"W1")
+        with mock.patch.object(oot, "WINDOWS", True):
+            self.assertEqual(list(oot.locate(by_name["lichii"], None, "--from")[1].values()), [str(win_own)])
+            self.assertEqual(list(oot.locate(by_name["orchid"], None, "--from")[1].values()), [str(win_eden)])
+
+    def test_lichii_s_own_folder_without_a_save_leaves_the_older_one(self):
+        (self.data / "lichii" / "nand" / "user" / "save").mkdir(parents=True)   # (started, the game never saved there)
+        by_name = {p.name: p for p in oot.EMULATORS}
+        self.assertEqual(list(oot.locate(by_name["lichii"], None, "--from")[1].values()), [str(self.li)])
+
+    def test_lichii_s_copy_goes_to_its_own_folder(self):
+        own = eden_save(self.data / "lichii")
+        make_save(own, b"L2", slots=("slot_02",))
+        before = tree(self.li)
+        code, out, err = self.run_main("export", "lichii")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tree(own), tree(self.hs))
+        self.assertEqual(tree(self.li), before, "Eden's folder was written for Lichii")
+        (own / "account.sav").write_bytes(b"played on in Lichii")
+        code, out, err = self.run_main("import", "lichii")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(tree(self.hs), tree(own))
+        self.assertEqual(tree(self.li), before)
 
     def test_aliases_of_names(self):
         self.assertIs(oot.program_named("Fritchii"), oot.program_named("frizti"))
@@ -152,6 +189,45 @@ class Discovery(Case):
             oot.locate(oot.program_named("eglantine"), None, "--from")
         self.assertIn(str(self.data / "eglantine"), str(e.exception))
 
+    def test_list_json(self):
+        make_save(eden_save(self.data / "eglantine"), b"EG")
+        code, out, _ = self.run_main("list", "--json")
+        self.assertEqual(code, 0)
+        doc = json.loads(out)
+        self.assertEqual([s["path"] for s in doc["hookshot"]["saves"]], [str(self.hs)])
+        by = {g["name"]: g for g in doc["sources"]}
+        self.assertEqual(sorted(by), ["eglantine", "lichii"])   # (Eden's forks share one entry; no other saves here)
+        self.assertIn("Orchid", by["lichii"]["display"])
+        self.assertEqual([x["slot"] for x in by["lichii"]["saves"][0]["slots"]], ["slot_00"])
+
+    def test_import_json_answer(self):
+        code, out, err = self.run_main("import", "lichii", "--json")
+        self.assertEqual(code, 0, err)
+        doc = json.loads(out)
+        self.assertTrue(doc["ok"])
+        self.assertEqual((doc["from"], doc["to"], doc["slots"]), (str(self.li), str(self.hs), ["slot_00"]))
+        self.assertEqual(tree(self.hs), tree(self.li))
+        code, out, _ = self.run_main("import", "eglantine", "--json")
+        self.assertEqual(code, 1)
+        self.assertIn("no Eglantine save", json.loads(out)["error"])
+
+    def test_import_into_a_hookshot_without_a_save(self):
+        shutil.rmtree(self.data / "hookshot")
+        code, out, err = self.run_main("import", "lichii")
+        self.assertEqual(code, 0, err)
+        made = self.data / "hookshot" / "save" / oot.USER_ID
+        self.assertEqual(tree(made), tree(self.li))
+        with mock.patch.object(oot, "WINDOWS", True):
+            game = self.tmp / "Games" / "Hookshot"
+            code, out, err = self.run_main("import", "--from", str(self.li), "--hookshot", str(game))
+            self.assertEqual(code, 1)
+            self.assertIn("build the game there first", err)
+            game.mkdir(parents=True)
+            code, out, err = self.run_main("import", "--from", str(self.li), "--hookshot", str(game), "--json")
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out)["to"], str(game / "user" / "save" / oot.USER_ID))
+            self.assertEqual(tree(game / "user" / "save" / oot.USER_ID), tree(self.li))
+
     def test_ambiguous_profiles_listed(self):
         other = "11111111111111111111111111111111"
         make_save(eden_save(self.data / "eden", other), b"O")
@@ -170,9 +246,27 @@ class Discovery(Case):
         make_save(self.home / "Games" / "Ocarina" / "profile" / "save" / ACCOUNT, b"NX")
         code, out, err = self.run_main("list")
         self.assertEqual(code, 0, err)
-        for text in (UID, PROFILE, ACCOUNT, "slot_01", "Lichii / Frizti (Fritchii) / Orchid / PokeDinner / Eden", "NX2navi",
+        for text in (UID, PROFILE, ACCOUNT, "slot_01", "Lichii / Frizti (Fritchii) / Orchid / PokeDinner / Eden", "another PC port",
                      "Eglantine: nothing in"):
             self.assertIn(text, out)
+
+    def test_list_with_lichii_s_own_folder(self):
+        make_save(eden_save(self.data / "lichii"), b"L2", slots=("slot_02",))
+        code, out, err = self.run_main("list")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Lichii: %s\n" % (self.data / "lichii"), out)
+        self.assertIn("Frizti (Fritchii) / Orchid / PokeDinner / Eden (one shared folder): %s\n" % (self.data / "eden"), out)
+        self.assertIn("slot_02", out)
+        self.assertEqual(out.count(str(self.data / "eden") + "\n"), 1)
+
+    def test_list_with_no_emulator_save(self):
+        for f in sorted(self.li.rglob("*"), reverse=True):
+            f.unlink() if f.is_file() else f.rmdir()
+        self.li.rmdir()
+        code, out, err = self.run_main("list")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Lichii: nothing in %s, %s\n" % (self.data / "lichii", self.data / "eden"), out)
+        self.assertIn("Frizti (Fritchii) / Orchid / PokeDinner / Eden (one shared folder): nothing in %s\n" % (self.data / "eden"), out)
 
     def test_list_without_hookshot(self):
         (self.hs / "account.sav").unlink()
@@ -331,7 +425,32 @@ class Copy(Case):
         self.assertEqual(tree(self.li), before)
 
 
-class NX2navi(Case):
+class RemoveTree(unittest.TestCase):
+    """remove_tree: a delete refused once is tried again with the write bit added to the file's own mode. One refused for
+    good leaves what is left of the old save readable (S_IWRITE alone is Linux's 0200: a folder nobody can list)."""
+
+    def test_old_save_that_cannot_be_deleted_stays_readable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = Path(tmp) / ".old" / "slot_00"
+            old.mkdir(parents=True)
+            sav = old / "progress.sav"
+            sav.write_bytes(b"save")
+            sav.chmod(stat.S_IREAD)
+            real_unlink = os.unlink
+
+            def refuse(path, *args, **kw):
+                if os.path.basename(path) == "progress.sav":
+                    raise PermissionError(13, "Access is denied")
+                return real_unlink(path, *args, **kw)
+            with mock.patch.object(oot.os, "unlink", side_effect=refuse):
+                self.assertFalse(oot.remove_tree(str(old.parent)))
+            for path in (old.parent, old, sav):
+                self.assertTrue(path.exists(), path)
+                self.assertEqual(path.stat().st_mode & stat.S_IREAD, stat.S_IREAD, path)
+            sav.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+
+class OtherPort(Case):
     def setUp(self):
         super().setUp()
         self.game = self.home / "Games" / "Ocarina"
@@ -341,11 +460,11 @@ class NX2navi(Case):
         (self.game / "profile" / "save-tx").mkdir()
 
     def test_both_ways(self):
-        code, out, err = self.run_main("import", "nx2navi")
+        code, out, err = self.run_main("import", "pcport")
         self.assertEqual(code, 0, err)
         self.assertEqual(tree(self.hs), tree(self.nx))
         make_save(self.hs / "slot_00", b"Z", slots=())
-        code, out, err = self.run_main("export", "nx2navi", "--to", str(self.game))
+        code, out, err = self.run_main("export", "pcport", "--to", str(self.game))
         self.assertEqual(code, 0, err)
         self.assertEqual(tree(self.nx), tree(self.hs))
         self.assertEqual((self.game / "profile" / "account.uid").read_bytes(), bytes(16))
@@ -354,12 +473,12 @@ class NX2navi(Case):
         (self.game / "profile" / "save-tx" / "commit").write_bytes(b"pending")
         before = (tree(self.hs), tree(self.nx))
         for command in ("import", "export"):
-            code, out, err = self.run_main(command, "nx2navi")
+            code, out, err = self.run_main(command, "pcport")
             self.assertEqual(code, 1)
             self.assertIn("save-tx", err)
         self.assertEqual((tree(self.hs), tree(self.nx)), before)
         self.assertEqual(self.backup_dirs(), [])
-        code, out, err = self.run_main("import", "nx2navi", "--force")
+        code, out, err = self.run_main("import", "pcport", "--force")
         self.assertEqual(code, 0, err)
 
 
@@ -399,6 +518,21 @@ class Guard(Case):
              mock.patch.object(real.subprocess, "run", return_value=mock.Mock(stdout=out)):
             self.assertEqual(real.running_games(), sorted(set(names.values())))
 
+    def test_other_port_runs_as_its_own_program(self):
+        # (another PC port found by its game folder: the programs in that folder are what it runs as)
+        game = self.localappdata / "Programs" / "SomePort" / "game"
+        (game / "profile" / "save").mkdir(parents=True)
+        (game / "SomePort.exe").write_bytes(b"MZ")
+        (game / "readme.txt").write_text("x")
+        real = self.real()
+        with mock.patch.object(real, "WINDOWS", True):
+            names = real.process_names()
+            self.assertEqual(names.get("someport"), "another PC port")
+            self.assertNotIn("readme", names)
+            out = '"SomePort.exe","7","Console","1","10 K"\r\n"notepad.exe","4","x","1","1 K"\r\n'
+            with mock.patch.object(real.subprocess, "run", return_value=mock.Mock(stdout=out)):
+                self.assertEqual(real.running_games(), ["another PC port"])
+
     def test_linux_processes_and_appimages(self):
         real = self.real()
         procs = {"10": ("orchid", "/opt/orchid/orchid"), "11": ("AppRun", "/home/x/eglantine-linux-x86_64.AppImage"),
@@ -412,8 +546,329 @@ class Guard(Case):
         with mock.patch.object(real, "WINDOWS", False), \
              mock.patch.object(real.os, "listdir", return_value=list(procs) + ["self"]), \
              mock.patch("builtins.open", fake_open):
-            self.assertEqual(real.running_games(), ["NX2navi", "Orchid", "PokeDinner or Eglantine"])
+            self.assertEqual(real.running_games(), ["Orchid", "PokeDinner or Eglantine", "another PC port"])
 
+
+# ---- Saves in the repository: scrub, check-repo-saves and the JPEG they write and read (made-up files only) ----
+
+def picture_jpeg(width, height):
+    """A made-up JPEG with detail in it (an AC coefficient in every luma block), the frame of grey_jpeg's: what a real
+    thumbnail looks like to the checks"""
+    grey = oot.grey_jpeg(width, height)
+    head = grey[:grey.index(b"\xff\xda") + 14]
+    dc = [oot.huffman_codes(*oot.DC_LUMA), oot.huffman_codes(*oot.DC_CHROMA)]
+    ac = [oot.huffman_codes(*oot.AC_LUMA), oot.huffman_codes(*oot.AC_CHROMA)]
+    bits = []
+
+    def put(code, length):
+        bits.extend((code >> (length - 1 - i)) & 1 for i in range(length))
+
+    for _ in range(-(-height // 16) * -(-width // 16)):
+        for _ in range(4):
+            put(*dc[0][0])
+            put(*ac[0][0x01])
+            put(1, 1)
+            put(*ac[0][0x00])
+        for _ in range(2):
+            put(*dc[1][0])
+            put(*ac[1][0x00])
+    bits.extend([1] * (-len(bits) % 8))
+    scan = bytearray()
+    for i in range(0, len(bits), 8):
+        byte = int("".join(map(str, bits[i:i + 8])), 2)
+        scan += bytes([byte, 0]) if byte == 0xFF else bytes([byte])
+    return head + bytes(scan) + b"\xff\xd9"
+
+
+# (where the date's entries were in a real caption.sav, and a made-up date: 2026-11-14 09:41:07)
+DATE_AT = {"month": 280, "second": 288, "minute": 304, "day": 312, "hour": 328, "year": 360}
+DATE = {"year": 2026, "month": 11, "day": 14, "hour": 9, "minute": 41, "second": 7}
+HEALTH_AT = 272   # (0x1e55ecc5, the health it seems: kept)
+
+
+def caption(jpeg, scene=b"TestScene", map_=b"TestScene/Room_1", date=None, date_at=None, more=()):
+    """A made-up caption.sav: date ({field: value}, default DATE) at date_at ({field: entry offset}, default DATE_AT;
+    a field left out has no entry), and more [(field, entry offset)], a second entry for a field"""
+    head = bytearray(oot.CAPTION_JPEG)
+    head[:4] = oot.CAPTION_MAGIC
+    head[oot.CAPTION_CHECK:oot.CAPTION_CHECK + 4] = oot.CAPTION_JPEG_LEN.to_bytes(4, "little")
+    head[HEALTH_AT:HEALTH_AT + 8] = (0x1e55ecc5).to_bytes(4, "little") + (12).to_bytes(4, "little")
+    keys, date = dict(oot.CAPTION_DATE_KEYS), dict(DATE, **(date or {}))
+    for field, at in list((DATE_AT if date_at is None else date_at).items()) + list(more):
+        head[at:at + 8] = keys[field].to_bytes(4, "little") + date[field].to_bytes(4, "little")
+    head[oot.CAPTION_SCENE:oot.CAPTION_SCENE + len(scene)] = scene
+    head[oot.CAPTION_MAP:oot.CAPTION_MAP + len(map_)] = map_
+    head[oot.CAPTION_JPEG_LEN:oot.CAPTION_JPEG] = len(jpeg).to_bytes(4, "little")
+    return bytes(head) + jpeg
+
+
+NAME_AT = 100
+PROGRESS = bytes(range(256)) * 2   # (made up; "PLAYER" at NAME_AT stands for a name)
+PROGRESS = PROGRESS[:NAME_AT] + b"PLAYER\0\0" + PROGRESS[NAME_AT + 8:]
+
+
+class RepoSaves(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.src = self.tmp / "profile-save"
+        (self.src / "slot_02").mkdir(parents=True)
+        (self.src / "account.sav").write_bytes(b"account")
+        (self.src / "option.sav").write_bytes(b"option")
+        (self.src / "slot_02" / "progress.sav").write_bytes(PROGRESS)
+        self.picture = picture_jpeg(543, 306)
+        (self.src / "slot_02" / "caption.sav").write_bytes(caption(self.picture))
+        self.saves = self.tmp / "assets" / "saves"
+        self.saves.mkdir(parents=True)
+        (self.saves / "README.md").write_text("# Saves in the repository\n")
+
+    def run_main(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = oot.main(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def scrub(self, name="kokiri-start", *extra):
+        return self.run_main("scrub", str(self.src), "--slot", "02", "--out", str(self.saves / name),
+                             "--name-field", "progress.sav:%d:8" % NAME_AT, *extra)
+
+    def passing(self):
+        code, out, err = self.scrub()
+        self.assertEqual(code, 0, err)
+        (self.saves / "kokiri-start" / "README.md").write_text("Kokiri Forest, by Link's house, child\n\nMade fresh.\n")
+        self.assertEqual(oot.repo_save_problems(str(self.saves)), [])
+
+    # -- the JPEG --
+
+    def test_grey_jpeg_is_a_baseline_jpeg_of_that_size(self):
+        for width, height in ((543, 306), (1, 1), (16, 16), (17, 9), (640, 360)):
+            with self.subTest(size=(width, height)):
+                jpeg = oot.grey_jpeg(width, height)
+                markers = [m for m, _, _ in oot.jpeg_segments(jpeg)]
+                self.assertEqual(markers, [0xE0, 0xDB, 0xDB, 0xC0, 0xC4, 0xC4, 0xC4, 0xC4, 0xDA])
+                self.assertEqual(jpeg[:2] + jpeg[-2:], b"\xff\xd8\xff\xd9")
+                self.assertEqual(oot.jpeg_size(jpeg), (width, height))
+                blocks = oot.jpeg_blocks(jpeg)
+                mcus = -(-width // 16) * -(-height // 16)
+                self.assertEqual({c: (len(d), set(d), a) for c, (d, a) in blocks.items()},
+                                 {1: (4 * mcus, {0}, False), 2: (mcus, {0}, False), 3: (mcus, {0}, False)})
+                self.assertIsNone(oot.jpeg_is_mid_grey(jpeg))
+        self.assertLess(len(oot.grey_jpeg(543, 306)), 4096)
+
+    def test_grey_levels_read_back(self):
+        # (every level: the DC written is the DC read, through the byte stuffing; only 128 is mid-grey)
+        for level in range(0, 256, 5):
+            jpeg = oot.grey_jpeg(33, 17, level)
+            luma = oot.jpeg_blocks(jpeg)[1]
+            self.assertEqual(set(luma[0]), {round((level - 128) * 8 / oot.QUANT_LUMA[0])})
+            self.assertFalse(luma[1])
+            self.assertEqual(oot.jpeg_is_mid_grey(jpeg) is None, level == 128, level)
+        try:   # (an independent decoder, when this PC has one: the pixels are the level)
+            from PIL import Image
+        except ImportError:
+            return
+        for level in (0, 128, 200, 255):
+            img = Image.open(io.BytesIO(oot.grey_jpeg(543, 306, level)))
+            img.load()
+            self.assertEqual(img.size, (543, 306))
+            self.assertTrue(all(abs(lo - level) <= 1 and abs(hi - level) <= 1 for lo, hi in img.getextrema()))
+
+    def test_a_picture_is_not_grey(self):
+        self.assertEqual(oot.jpeg_size(self.picture), (543, 306))
+        self.assertIn("detail", oot.jpeg_is_mid_grey(self.picture))
+        grey = oot.grey_jpeg(543, 306)
+        self.assertIn("ends early", oot.jpeg_is_mid_grey(grey[:len(grey) - 500] + b"\xff\xd9"))
+        self.assertIn("after the scan", oot.jpeg_is_mid_grey(grey[:-2] + b"\x00\x00\xff\xd9"))
+        self.assertIn("not baseline", oot.jpeg_is_mid_grey(grey.replace(b"\xff\xc0", b"\xff\xc2", 1)))
+        self.assertIn("not a JPEG", oot.jpeg_is_mid_grey(b"\x89PNG\r\n\x1a\n" + grey))
+
+    # -- caption.sav --
+
+    def test_caption_layout(self):
+        good = caption(self.picture)
+        got = oot.caption_layout(good)
+        self.assertEqual((got["scene"], got["map"], got["width"], got["height"], got["jpeg"]),
+                         ("TestScene", "TestScene/Room_1", 543, 306, self.picture))
+        spoilt = {
+            "magic": b"\0\0\0\0" + good[4:],
+            "540": good[:540] + (1000).to_bytes(4, "little") + good[544:],
+            "length": good[:1392] + (len(self.picture) - 1).to_bytes(4, "little") + good[1396:],
+            "trailing": good + b"\0",
+            "no jpeg": good[:1396] + b"\0" * len(self.picture),
+            "name": good[:684] + b"\x01bad" + good[688:],
+            "short": good[:1000],
+        }
+        for what, data in spoilt.items():
+            with self.subTest(what):
+                with self.assertRaisesRegex(oot.Fail, "not the caption.sav layout understood"):
+                    oot.caption_layout(data)
+
+    # -- scrub --
+
+    def test_scrub_without_a_name_field_notes_there_is_none(self):
+        """This game's saves show no player name (the Load screen: picture, date, place, hearts): no field to set."""
+        code, out, err = self.run_main("scrub", str(self.src), "--slot", "02", "--out", str(self.saves / "kokiri-start"))
+        self.assertEqual(code, 0, err)
+        self.assertIn("no player name to set", out)
+        for f in ("progress.sav", "caption.sav"):
+            self.assertEqual(int((self.saves / "kokiri-start" / "slot_00" / f).stat().st_mtime), oot.SCRUB_TIME, f)
+
+    def test_scrub(self):
+        code, out, err = self.scrub()
+        self.assertEqual(code, 0, err)
+        dest = self.saves / "kokiri-start"
+        self.assertEqual(sorted(str(p.relative_to(dest)) for p in dest.rglob("*")),
+                         ["README.md", "slot_00", os.path.join("slot_00", "caption.sav"),
+                          os.path.join("slot_00", "progress.sav")])
+        progress = (dest / "slot_00" / "progress.sav").read_bytes()
+        self.assertEqual(progress, PROGRESS[:NAME_AT] + b"FARM\0\0\0\0" + PROGRESS[NAME_AT + 8:])
+        new = (dest / "slot_00" / "caption.sav").read_bytes()
+        old = caption(self.picture)
+        dated = bytearray(old[:1392])
+        for field, at in DATE_AT.items():
+            dated[at + 4:at + 8] = oot.SCRUB_DATE[field].to_bytes(4, "little")
+        self.assertEqual(new[:1392], bytes(dated))   # (the header kept, but for the date and the JPEG's length)
+        self.assertEqual(new[HEALTH_AT:HEALTH_AT + 8], old[HEALTH_AT:HEALTH_AT + 8])
+        self.assertEqual({f: v for f, (_, v) in oot.caption_dates(new).items()},
+                         {"year": 2026, "month": 1, "day": 1, "hour": 0, "minute": 0, "second": 0})
+        for field, at in DATE_AT.items():
+            self.assertIn("caption.sav: the save date (%s at %d): %d -> %d" % (field, at, DATE[field],
+                                                                              oot.SCRUB_DATE[field]), out)
+        self.assertIn("the files' own; the Load screen's date is caption.sav's", out)
+        self.assertNotIn("(the Load screen's date)", out)
+        grey = oot.grey_jpeg(543, 306)
+        self.assertEqual(new[1392:], len(grey).to_bytes(4, "little") + grey)
+        self.assertIsNone(oot.jpeg_is_mid_grey(oot.caption_layout(new)["jpeg"]))
+        self.assertIn("player name at 100 (8 bytes, ascii): 504c415945520000 -> 4641524d00000000 (FARM)", out)
+        self.assertIn("the picture at 1396 (JPEG 543x306, %d bytes) replaced by a mid-grey JPEG 543x306 of %d bytes"
+                      % (len(self.picture), len(grey)), out)
+        self.assertIn("the JPEG's length at 1392: %d -> %d" % (len(self.picture), len(grey)), out)
+        self.assertIn("scene TestScene, map TestScene/Room_1", out)
+        self.assertIn("README.md: written from the template", out)
+        self.assertIn("first line is still the template's", " ".join(oot.repo_save_problems(str(self.saves))))
+        # (the source only read)
+        self.assertEqual((self.src / "slot_02" / "progress.sav").read_bytes(), PROGRESS)
+        self.assertEqual((self.src / "slot_02" / "caption.sav").read_bytes(), old)
+        code, out, err = self.scrub()
+        self.assertEqual(code, 1)
+        self.assertIn("already holds a save", err)
+
+    def test_scrub_refusals(self):
+        cases = []
+        cases.append(("bad name", lambda: None, ("Kokiri Start",), "--out: a repo save's folder"))
+        cases.append(("profile", lambda: None, ("_profile",), "--out: a repo save's folder"))
+        cases.append(("no slot", lambda: None, ("x", "--slot", "07"), "has no slot_07"))
+        cases.append(("extra file", lambda: (self.src / "slot_02" / "notes.txt").write_bytes(b"x"), ("x",),
+                      "notes.txt besides"))
+        cases.append(("layout", lambda: (self.src / "slot_02" / "caption.sav").write_bytes(caption(self.picture) + b"\0"),
+                      ("x",), "not the caption.sav layout understood"))
+        cases.append(("huge picture", lambda: (self.src / "slot_02" / "caption.sav").write_bytes(
+            caption(oot.grey_jpeg(8, 8).replace(b"\x00\x08\x00\x08\x03", b"\x10\x00\x10\x00\x03", 1))), ("x",),
+            "larger than a file-select picture"))
+        def dates(**kw):
+            return lambda: (self.src / "slot_02" / "caption.sav").write_bytes(caption(self.picture, **kw))
+        cases.append(("no day", dates(date_at={f: o for f, o in DATE_AT.items() if f != "day"}), ("x",),
+                      "the date's day key 0xbd46f485 is not in the header"))
+        cases.append(("two minutes", dates(more=[("minute", 400)]), ("x",), "the date's minute key 0x27853bf7 is 2 times"))
+        cases.append(("key in the picture's length", dates(date_at=dict(DATE_AT, year=1388)), ("x",),
+                      "the date's year key 0x9811a3f7 is not whole"))
+        cases.append(("off the grid", dates(date_at=dict(DATE_AT, hour=332)), ("x",), "not 8-byte aligned"))
+        cases.append(("long name", lambda: None, ("x", "--name", "FARMFARMFARM"), "--name: up to 8"))
+        cases.append(("field", lambda: None, ("x", "--name-field", "account.sav:0:8"), "--name-field FILE"))
+        if os.name != "nt":
+            cases.append(("link", lambda: os.symlink(self.tmp / "secret", self.src / "slot_02" / "secret"), ("x",),
+                          "is a link"))
+        for what, spoil, args, why in cases:
+            with self.subTest(what):
+                backup = self.tmp / "keep"
+                shutil.copytree(self.src, backup)
+                spoil()
+                out_name, rest = args[0], list(args[1:])
+                argv = ["scrub", str(self.src), "--slot", "02", "--out", str(self.saves / out_name),
+                        "--name-field", "progress.sav:%d:8" % NAME_AT]
+                if "--slot" in rest:
+                    argv[3] = rest[rest.index("--slot") + 1]
+                    rest = []
+                code, out, err = self.run_main(*(argv + rest))
+                self.assertEqual(code, 1, out)
+                self.assertIn(why, err)
+                self.assertFalse((self.saves / out_name).exists())
+                shutil.rmtree(self.src)
+                backup.rename(self.src)
+
+    # -- check-repo-saves --
+
+    def test_check_passes(self):
+        self.passing()
+        code, out, err = self.run_main("check-repo-saves", str(self.saves))
+        self.assertEqual(code, 0, out)
+        self.assertIn("passes: 1 repo save(s)", out)
+        (self.saves / ".gitkeep").write_bytes(b"")
+        self.assertEqual(oot.repo_save_problems(str(self.saves)), [])
+
+    def test_check_refusals(self):
+        self.passing()
+        save = self.saves / "kokiri-start"
+        cases = [
+            ("extra in save", lambda: (save / "notes.txt").write_text("x"), "kokiri-start/notes.txt does not belong"),
+            ("extra in slot", lambda: (save / "slot_00" / "x.bin").write_bytes(b"x"), "slot_00/x.bin does not belong"),
+            ("second slot", lambda: shutil.copytree(save / "slot_00", save / "slot_01"), "slot_01 does not belong"),
+            ("settings", lambda: (save / "slot_00" / "hookshot_options.ini").write_text("x"),
+             "hookshot_options.ini does not belong"),
+            ("top level", lambda: (self.saves / "hookshot_env.txt").write_text("x"), "hookshot_env.txt does not belong"),
+            ("folder name", lambda: shutil.copytree(save, self.saves / "Bad Name"), "Bad Name does not belong"),
+            ("gitkeep", lambda: (self.saves / ".gitkeep").write_text("x"), ".gitkeep does not belong"),
+            ("profile", lambda: (self.saves / "_profile").mkdir() or (self.saves / "_profile" / "account.sav").write_bytes(
+                b"someone's account"), "_profile/ is not shipped any more"),
+            ("profile's account", lambda: (self.saves / "_profile").mkdir() or (self.saves / "_profile" / "account.sav")
+             .write_bytes(b"someone's account"), "_profile/account.sav: account.sav is made by the game"),
+            ("empty profile", lambda: (self.saves / "_profile").mkdir(), "_profile/ is not shipped any more"),
+            ("stray account", lambda: (save / "slot_00" / "account.sav").write_bytes(b"x"),
+             "kokiri-start/slot_00/account.sav: account.sav is made by the game"),
+            ("stray option", lambda: (save / "option.sav").write_bytes(b"x"),
+             "kokiri-start/option.sav: option.sav is made by the game"),
+            ("top account", lambda: (self.saves / "account.sav").write_bytes(b"x"),
+             "account.sav: account.sav is made by the game"),
+            ("date", lambda: (save / "slot_00" / "caption.sav").write_bytes(caption(oot.grey_jpeg(32, 32))),
+             "the save date is not 2026-01-01 00:00:00 (month 11, day 14, hour 9, minute 41, second 7): not scrubbed"),
+            ("year", lambda: (save / "slot_00" / "caption.sav").write_bytes(caption(oot.grey_jpeg(32, 32), date=dict(
+                oot.SCRUB_DATE, year=2025))), "(year 2025): not scrubbed"),
+            ("no date", lambda: (save / "slot_00" / "caption.sav").write_bytes(caption(oot.grey_jpeg(32, 32), date_at={})),
+             "the date's year key 0x9811a3f7 is not in the header"),
+            ("no readme", lambda: (save / "README.md").unlink(), "kokiri-start/README.md is missing"),
+            ("top readme", lambda: (self.saves / "README.md").unlink(), "README.md is missing"),
+            ("empty readme", lambda: (save / "README.md").write_text("\n\n"), "has no first line"),
+            ("empty file", lambda: (save / "slot_00" / "progress.sav").write_bytes(b""), "progress.sav is empty"),
+            ("large", lambda: (save / "slot_00" / "progress.sav").write_bytes(b"\0" * (oot.REPO_CAPS["progress.sav"] + 1)),
+             "over the"),
+            ("picture", lambda: (save / "slot_00" / "caption.sav").write_bytes(caption(oot.grey_jpeg(32, 32, 90))),
+             "not flat mid-grey"),
+            ("real-sized picture", lambda: (save / "slot_00" / "caption.sav").write_bytes(caption(self.picture)),
+             "not flat mid-grey"),
+            ("layout", lambda: (save / "slot_00" / "caption.sav").write_bytes(caption(oot.grey_jpeg(8, 8)) + b"\0"),
+             "not the caption.sav layout understood"),
+        ]
+        if os.name != "nt":
+            cases.append(("link", lambda: (save / "slot_00" / "progress.sav").unlink() or
+                          os.symlink(self.tmp / "secret", save / "slot_00" / "progress.sav"),
+                          "slot_00/progress.sav is a link"))
+            cases.append(("linked save", lambda: os.symlink(save, self.saves / "linked"), "linked is a link"))
+        for what, spoil, why in cases:
+            with self.subTest(what):
+                keep = self.tmp / "keep"
+                shutil.copytree(self.saves, keep, symlinks=True)
+                spoil()
+                code, out, err = self.run_main("check-repo-saves", str(self.saves))
+                self.assertEqual(code, 1, out)
+                self.assertIn(why, out)
+                shutil.rmtree(self.saves)
+                keep.rename(self.saves)
+        self.assertEqual(oot.repo_save_problems(str(self.saves)), [])
+
+    def test_the_checkouts_repo_saves_pass(self):
+        # (whatever assets/saves holds in this checkout: every save added there is checked with the other tests)
+        self.assertEqual(oot.repo_save_problems(oot.REPO_SAVES), [])
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,8 @@
 # Built in Ubuntu 22.04, the oldest system it is for (glibc 2.35). A workflow artifact on every run; for a release, also
 # an asset of its release (scripts/release_upload.sh, shared with the Windows builder workflow). A release is a tag
 # pushed by hand, or the tag the Release workflow passes when it calls this one (inputs.tag). On any other push to main,
-# the same files replace those of the nightly prerelease, the latest development build.
+# the same files replace those of the nightly prerelease, the latest development build, when its commit comes after the
+# one the nightly holds.
 name: Linux AppImage
 # (recompzel: o Linux nao e o foco por enquanto. Nao roda a cada push no main; roda ao marcar uma versao (tag), a mao, ou chamado pelo Release)
 on:
@@ -30,13 +31,15 @@ env:
   RELEASE_TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name || '') }}
 concurrency:
   group: linux-appimage-${{ inputs.tag || github.ref }}
-  # (a pull request's older run is cancelled; a push's or a tag's never is)
+  # (a pull request's older run is cancelled; a push's or a tag's never is. One run of main at a time, and one waiting,
+  # replaced by a newer push's: scripts/release_upload.sh counts on it, so this platform's nightly files never go back)
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   appimage:
     # (builder-parts holds the installer's parts: no AppImage there, and it must never be made "latest")
-    # (nightly is moved by the release job of a push to main, and rc by the Release workflow: never built as a tag)
+    # (nightly is moved forward by the release job of a push to main, here or in the Windows builder workflow, and rc by
+    # the Release workflow: never built as a tag)
     if: >-
       github.ref_name != 'builder-parts' && github.ref_name != 'linux-parts' && github.ref_name != 'nightly'
       && github.ref_name != 'rc'
@@ -57,26 +60,35 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          # Retry the entire bootstrap: even the first index refresh or the toolchain setup can fail while a mirror syncs.
-          # Every attempt refreshes the signed indexes; no stale-index or authentication checks are bypassed.
-          for try in 1 2 3; do
+          retry_packages() {
+            for try in 1 2 3; do
+              if "$@"; then return 0; else package_status=$?; fi
+              if [ "$try" = 3 ]; then return "$package_status"; fi
+              sleep 20
+            done
+          }
+          base_packages() {
+            apt-get update &&
+              apt-get install -y --no-install-recommends software-properties-common gpg-agent
+          }
+          toolchain_packages() {
+            # Enrollment can leave a source without its key after a network failure. Repair it before refreshing
+            # indexes that depend on that key; retrying the base refresh first would stop at NO_PUBKEY (#2266).
+            # --no-update only separates enrollment from the explicit, signed index refresh immediately afterward.
             # (libstdc++ 13, from the toolchain PPA: C++20 <format>; linked in statically)
-            if apt-get update &&
-              apt-get install -y --no-install-recommends software-properties-common gpg-agent &&
-              add-apt-repository -y ppa:ubuntu-toolchain-r/test &&
+            # Launchpad metadata connections can hang past the entire job's hour. Give each retry a real chance;
+            # terminate enrollment after three minutes, then kill it if termination itself stalls.
+            timeout --kill-after=5s 180s add-apt-repository -y --no-update ppa:ubuntu-toolchain-r/test &&
+              apt-get update &&
               apt-get install -y --no-install-recommends g++-13 libstdc++-13-dev &&
               apt-get install -y --no-install-recommends git ca-certificates curl xz-utils zstd file unzip python3 \
               build-essential gcc-12 g++-12 libstdc++-12-dev nasm meson ninja-build cmake pkg-config \
               libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxinerama-dev \
               libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev libegl-dev libgles-dev libdrm-dev libgbm-dev \
-              libpulse-dev libasound2-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev libxft-dev libfontconfig1-dev zlib1g-dev; then
-              break
-            else
-              package_status=$?
-            fi
-            if [ "$try" = 3 ]; then exit "$package_status"; fi
-            sleep 20
-          done
+              libpulse-dev libasound2-dev libpipewire-0.3-dev libudev-dev libdbus-1-dev libxft-dev libfontconfig1-dev zlib1g-dev
+          }
+          retry_packages base_packages
+          retry_packages toolchain_packages
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -189,13 +201,14 @@ jobs:
           key: ${{ steps.objkey.outputs.key }}
 
       # (AMD FSR 4's Linux side, a build option the AppImage leaves off (gpu/vk/vk_fsr4.cpp: dlopen, the older backend
-      # description, the unit exposure; the descriptor buffers in vk_main.cpp): built once more in a copy of the back end's
-      # work folder, where only vk_fsr4.cpp compiles again. The AppImage above is not changed)
+      # description, the unit exposure; the descriptor buffers in vk_main.cpp): built in a work folder of its own, from the
+      # object cache restored above when there is one. Since the AppImage stopped building the back end (60672902) there
+      # is no build-linux/vk-work of its to copy. The AppImage above is not changed)
       - name: hookshot_vk.so with AMD FSR 4 (build check)
         shell: bash   # (this container's default is sh, which has no PIPESTATUS)
         run: |
-          cp -r build-linux/vk-work "$RUNNER_TEMP/vk-fsr"
-          rm -f "$RUNNER_TEMP/vk-fsr/sa/build/hookshot_vk.so"   # (the AppImage's own, without FSR: the test below is this build's)
+          mkdir -p "$RUNNER_TEMP/vk-fsr"
+          if [ -d build-linux/vk-work/objcache ]; then cp -r build-linux/vk-work/objcache "$RUNNER_TEMP/vk-fsr/"; fi
           D="$PWD/build-linux/deps"
           OOT_WORK="$RUNNER_TEMP/vk-fsr" EMSDK="$D/emsdk" RX_CPM="$D/cpm" RX_MARCH=x86-64-v3 RX_VK_ONLY=1 RX_RELEASE=1 HOOKSHOT_FSR=1 \
             "$D/python/bin/python3" -I nx2/build.py --standalone --jobs "$(nproc)" |

@@ -3,6 +3,7 @@ child process, what the builder keeps on the PC, the game files found on it, and
 import ctypes
 import json
 import os
+import re
 import shutil
 import string
 import subprocess
@@ -69,16 +70,14 @@ def build_env(tools, workers=None, ngx_sdk=None):
     env["PYTHONIOENCODING"] = "utf-8"
     if workers:
         env["HOOKSHOT_JOBS"] = str(int(workers))
-    # (written into the game folder's hookshot_version.txt: the game starts this app again to update, host/hos_update.c)
-    exe, args = paths.launcher_command()
-    env["HOOKSHOT_BUILDER_EXE"] = exe
-    env["HOOKSHOT_BUILDER_ARGS"] = subprocess.list2cmdline(args)
+    # (written into the game folder's hookshot_version.txt: which builder made the folder)
+    env["HOOKSHOT_BUILDER_EXE"] = paths.launcher_command()[0]
     # (NVIDIA DLSS: only when ticked. Without it, one set on the PC is not passed on either)
     if ngx_sdk:
         env["HOOKSHOT_NGX_SDK"] = ngx_sdk
     else:
         env.pop("HOOKSHOT_NGX_SDK", None)
-    for name, folder in (("EMSDK", "emsdk"), ("RX_CPM", "cpm"), ("WGPU_NATIVE", "wgpu-native")):
+    for name, folder in (("EMSDK", "emsdk"), ("RX_CPM", "cpm")):   # (no WebGPU renderer any more: no wgpu-native)
         p = os.path.join(tools.root, folder)
         if os.path.isdir(p):
             env[name] = p
@@ -243,9 +242,20 @@ def _kept_version(d):
     return bool(cur) and _same(cur, d)
 
 
+def kept_translation(sa):
+    """make_game.py keep_translation left the lift's small files in sa (its .lift_key marked "kept"): the next update with the same
+    tools skips the lift with them. Not let go after a build (Free up space still lets them go)"""
+    try:
+        with open(os.path.join(sa, "gen", ".lift_key"), encoding="utf-8") as f:
+            return f.read().split()[2:3] == ["kept"]
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def freeable(after_build=False):
     for d in (("sa", "exefs", "probe") if after_build else ("objcache", "sa", "exefs", "probe")):
-        yield os.path.join(work(), d)
+        if not (after_build and d == "sa" and kept_translation(os.path.join(work(), d))):
+            yield os.path.join(work(), d)
     for d in ("downloads", "update"):
         yield os.path.join(paths.base(), d)
     v = paths.versions()
@@ -374,8 +384,14 @@ FOLDER_DOWNLOADS = _guid("374DE290-123F-4565-9164-39C4925E467B")
 FOLDER_PROGRAMS = _guid("A77F5D77-2E2B-44C3-A6A2-ABA601054A51")
 
 
+GAME_FILES = (".nup", ".nx")   # (a game in one file: a .nup package, or a .nx archive (NXFormat) made from one)
+DUMP_SEARCH_BUDGET = 8.0   # (seconds: DumpSearch.Budget. Long enough for a sleeping USB drive to spin up)
+
+
 def find_dumps():
-    """.nup files in Downloads, Desktop, Documents, the home folder and the top of each drive, one folder level down too, newest first"""
+    """.nup and .nx files in Downloads, Desktop, Documents, the home folder and the top of each drive, one folder level down too, newest
+    first: every place searched at once, and what was found after DUMP_SEARCH_BUDGET (DumpSearch.cs). One drive that did not
+    answer held the start-up page on "Looking for your game files…" for good"""
     home = os.path.expanduser("~")
     places = [(_known_folder(FOLDER_DOWNLOADS) or os.path.join(home, "Downloads"), "Downloads"),
               (_known_folder(FOLDER_DESKTOP) or os.path.join(home, "Desktop"), "Desktop"),
@@ -386,30 +402,59 @@ def find_dumps():
             root = letter + ":\\"
             if ctypes.windll.kernel32.GetDriveTypeW(root) in (2, 3):   # (removable, fixed)
                 places.append((root, letter + ":"))
-    seen, found = set(), []
+    return search_dumps(places, DUMP_SEARCH_BUDGET, look_for_dumps)
+
+
+def search_dumps(places, budget, look):
+    """look(folder, name) for every place at once; the dumps of the places that answered within <budget> seconds, newest first.
+    A place still searched then is left out (its daemon thread ends with the app). A file in two places keeps the first's name"""
+    seen, unique = set(), []
     for d, name in places:
-        if not d or not os.path.isdir(d) or os.path.normcase(os.path.abspath(d)) in seen:
-            continue
-        seen.add(os.path.normcase(os.path.abspath(d)))
-        dirs = [d]
+        if d and os.path.normcase(os.path.abspath(d)) not in seen:
+            seen.add(os.path.normcase(os.path.abspath(d)))
+            unique.append((d, name))
+    results = [None] * len(unique)
+
+    def one(i, d, name):
         try:
-            subs = [e.path for e in os.scandir(d) if e.is_dir() and not e.name.startswith((".", "$"))
-                    and e.name.lower() != "windows" and not e.name.lower().startswith("program")]
-            dirs += subs[:200]
+            results[i] = look(d, name)
+        except Exception:
+            results[i] = []
+    threads = [threading.Thread(target=one, args=(i, d, name), daemon=True) for i, (d, name) in enumerate(unique)]
+    for t in threads:
+        t.start()
+    deadline = time.monotonic() + budget
+    for t in threads:
+        t.join(max(0, deadline - time.monotonic()))
+    files, found = set(), []
+    for r in results:
+        for x in list(r or []):
+            if os.path.normcase(x.path) not in files:
+                files.add(os.path.normcase(x.path))
+                found.append(x)
+    return sorted(found, key=lambda x: -x.modified)
+
+
+def look_for_dumps(d, name):
+    """The .nup and .nx files in <d> and the folders just inside it (not hidden ones, Windows or Program Files), up to 200 folders"""
+    if not os.path.isdir(d):
+        return []
+    dirs, found = [d], []
+    try:
+        subs = [e.path for e in os.scandir(d) if e.is_dir() and not e.name.startswith((".", "$"))
+                and e.name.lower() != "windows" and not e.name.lower().startswith("program")]
+        dirs += subs[:200]
+    except OSError:
+        pass
+    for sub in dirs:
+        try:
+            for e in os.scandir(sub):
+                if e.is_file() and e.name.lower().endswith(GAME_FILES):
+                    st = e.stat()
+                    found.append(Dump(os.path.abspath(e.path), name, st.st_size, st.st_mtime))
         except OSError:
             pass
-        for sub in dirs:
-            try:
-                for e in os.scandir(sub):
-                    if e.is_file() and e.name.lower().endswith(".nup"):
-                        full = os.path.abspath(e.path)
-                        if os.path.normcase(full) not in seen:
-                            seen.add(os.path.normcase(full))
-                            st = e.stat()
-                            found.append(Dump(full, name, st.st_size, st.st_mtime))
-            except OSError:
-                pass
-    return sorted(found, key=lambda x: -x.modified)
+    return found
 
 
 def ago(t):
@@ -566,3 +611,26 @@ def save_settings(s):
             json.dump(s, f)
     except OSError:
         pass
+
+
+# (the game's own countdown, every 10 s while it builds pipelines: gpu/vk/vk_draw.cpp prepare_progress_log,
+# "vk: noted pipelines: 18009 of 32713 pipelines in 2447 s, about 1998 s left")
+PIPELINES_LEFT = re.compile(r"vk: [a-z]+ pipelines: \d+ of \d+ pipelines in \d+ s, about (\d+) s left")
+
+
+def pipelines_left_in(line):
+    """The seconds the game's line says are left, or -1 when the line is not one of its countdowns"""
+    m = PIPELINES_LEFT.search(line)
+    return float(m.group(1)) if m else -1.0
+
+
+def shader_left(said, since, fraction, elapsed):
+    """The shaders' time left in seconds, or -1 while it cannot be told yet. (A slow PC took 58 minutes and more here while the
+    window said "Usually about 45 minutes" for the whole build: a player took it for stuck.) The game's own countdown while it
+    is fresh (said: what it said; since: seconds since, under 40), less the time since; else the step's bar so far (fraction
+    done after elapsed seconds), once it has moved enough to go by. As the Windows Builder's ShaderStep.Left"""
+    if said >= 0 and 0 <= since < 40:
+        return max(said - since, 0.0)
+    if 0.03 < fraction < 1 and elapsed >= 20:
+        return elapsed / fraction * (1 - fraction)
+    return -1.0

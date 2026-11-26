@@ -21,13 +21,15 @@ using VmaAllocation = void*;
 constexpr int kMaxMult = 8;
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
 /* ACTUAL_STATE */
-struct { int framegen = 2, hdr_white = 200, hdr_peak = 1000; } opts;
+struct { int framegen = 2, hdr_white = 200, hdr_peak = 1000, hdr_contrast = 100; } opts;
 struct { bool push_descriptor = true; std::mutex present_mu; } dev;
 constexpr bool vkCmdPushDescriptorSetKHR = true;
 constexpr uint32_t HDR_ENCODE_COMP_SPV[] = {0};
+// (gpu/vk/vk_builtin_spv.h's lookup as with RX_VK_SHADER_DIR unset: the compiled-in words themselves)
+#define BUILTIN_SPV_ARGS(words) words, sizeof words
 bool init_scale() { std::abort(); }
 bool make_pipe(Pipe&, const uint32_t*, size_t, std::initializer_list<VkDescriptorType>, int) { std::abort(); }
-void logf(const char*) { std::abort(); }
+void logf(const char*, ...) { std::abort(); }   // (framegen_record logs only when the frames asked change: not here)
 void device_wait_idle_locked() { std::abort(); }
 void drop_img(Img&) { std::abort(); }
 bool make_img(Img&, uint32_t, uint32_t, VkFormat, VkImageUsageFlags) { std::abort(); }
@@ -36,16 +38,36 @@ float hdr_uv[4]{};
 int blits = 0, clears = 0, initializations = 0, sizes = 0, dispatches = 0, copies = 0;
 uint32_t allocated_w = 0, allocated_h = 0;
 namespace fsr3fi { bool wanted = false; bool frames_wanted() { return wanted; } }
-// (recompzel) AMD FSR 4 frame generation (vk_fsr4fg.cpp): off in this fixture, so the FSR 3.1 and RecompZel paths run as before
-namespace fsr4fg { bool wanted() { return false; } }
-int fsr4fg_frame(VkCommandBuffer, OutSet&, int, uint32_t, uint32_t) { std::abort(); }
+// (NVIDIA DLSS Frame Generation through NGX, vk_dlss.cpp: not asked for here, so the sets are the renderer's own)
+bool dlss_fg_wanted() { return false; }
+int dlss_fg_frames(VkCommandBuffer, VkImage, VkImageView, uint32_t, uint32_t, int, const VkImage*, const VkImageView*, bool,
+                   uint64_t) { return 0; }   // (asked every present at 2x and up: makes none here)
+uint64_t reflex_frame() { return 0; }   // (vk_reflex.cpp: NVIDIA Reflex not on here)
+// (who made each set's frames, for the Insert menu's Frame generation by row: the last one noted)
+enum class FgMaker { None, BuiltIn, Dlss, Fsr3, DlssPaused };
+FgMaker last_maker = FgMaker::Dlss;
+void note_maker(FgMaker m) { last_maker = m; }
+// (vk_dlss.cpp dlss_fg_holds: DLSS FG chosen, and no Upscaler picture for the set, as in the game's own menus)
+bool holds = false;
+bool dlss_fg_holds() { return holds; }
+uint64_t antilag_frame() { return 0; }   // (vk_antilag.cpp: AMD Anti-Lag 2 not on here)
+// (vk_framegen.cpp hud_source: FSR 3.1's source with the HUD marked; no picture copied here, the frame as it is)
+bool hud_source(VkCommandBuffer, int, uint32_t, uint32_t, int, int, uint32_t, uint32_t, bool) { return false; }
 int fsr_calls = 0, fsr_result = 1;
-int fsr3fi_frame(VkCommandBuffer, OutSet&, int, uint32_t w, uint32_t h, uint64_t sequence) {
+bool last_native_pq = false;
+int fsr3fi_frames(VkCommandBuffer, OutSet&, int, uint32_t w, uint32_t h, uint64_t sequence, bool native_pq, const float* t,
+                  const int* slot, int count) {
     CHECK(w == allocated_w && h == allocated_h && sequence > 0);
-    ++fsr_calls; return fsr_result;
+    // (at 2x, with a frame before: the one made frame, the midpoint, into the set's first)
+    CHECK(count == 0 || (count == 1 && t[0] == 0.5f && slot[0] == 0));
+    last_native_pq = native_pq; ++fsr_calls; return fsr_result ? count : 0;
 }
 VkImageBlit last_blit{};
-int32_t copy_pc[4]{};
+struct { int32_t rect[4]; float x0, cover; int32_t pq; } copy{};
+std::atomic<bool> present_native_pq{false};
+int32_t* const copy_pc = copy.rect;
+float margin = 0.0f;   // (wide_margin: the middle 16:9's left edge, 0 on a 16:9 screen or with the setting off)
+float wide_margin() { return margin; }
 void vkCmdBlitImage(VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout,
                     uint32_t count, const VkImageBlit* b, VkFilter filter) {
     CHECK(count == 1 && filter == VK_FILTER_LINEAR); ++blits; last_blit = *b;
@@ -56,21 +78,21 @@ void vkCmdClearColorImage(VkCommandBuffer, VkImage, VkImageLayout, const VkClear
     CHECK(c->float32[0] == 0 && c->float32[1] == 0 && c->float32[2] == 0 && c->float32[3] == 1); ++clears;
 }
 bool init() { ++initializations; return true; }
-bool ensure_size(VkCommandBuffer, uint32_t w, uint32_t h);
-int64_t now_ns() { return 1000000; }
 int multiplier() { return 2; }
-int display_refresh_mhz() { return 60000; }
-bool ensure_size(VkCommandBuffer, uint32_t w, uint32_t h) {   // (as the real one: the sets made for this multiplier)
+bool ensure_size(VkCommandBuffer, uint32_t w, uint32_t h) {
+    // (the sets are made for the row's multiplier, which framegen_record then takes from fg.mult, as the real one)
     ++sizes; allocated_w = w; allocated_h = h; fg.mult = multiplier(); return true;
 }
+int64_t now_ns() { return 1000000; }
+int display_refresh_mhz() { return 60000; }
 int auto_slots(int64_t, int64_t, int64_t, int64_t&, float*, int64_t*, int) { return 0; }
 void display_main() { std::abort(); } // Never started: isolated recorder sets thread_started.
 void full_barrier(VkCommandBuffer) {}
 void pass(VkCommandBuffer, const Pipe& p, std::initializer_list<std::pair<VkImageView, VkSampler>>,
           uint32_t, uint32_t, const void* pc = nullptr, uint32_t bytes = 0) {
     ++dispatches;
-    if (&p == &fg.copy) { CHECK(bytes == sizeof copy_pc); std::memcpy(copy_pc, pc, bytes); }
-    if (&p == &hdr.pipe) { CHECK(bytes == 32); std::memcpy(hdr_uv, pc, sizeof hdr_uv); }
+    if (&p == &fg.copy) { CHECK(bytes == sizeof copy && bytes == 28); std::memcpy(&copy, pc, bytes); }
+    if (&p == &hdr.pipe) { CHECK(bytes == 48); std::memcpy(hdr_uv, pc, sizeof hdr_uv); }
 }
 void vkCmdCopyImage(VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout,
                     uint32_t count, const VkImageCopy* c) {
@@ -82,8 +104,8 @@ void reset() {
     fg.thread_started = true;
     blits = clears = initializations = sizes = dispatches = copies = 0;
     allocated_w = allocated_h = 0;
-    fsr3fi::wanted = false; fsr_calls = 0; fsr_result = 1;
-    std::memset(copy_pc, 0, sizeof copy_pc);
+    fsr3fi::wanted = false; fsr_calls = 0; fsr_result = 1; holds = false;
+    copy = {}; margin = 0.0f; present_native_pq = false;
 }
 void check(uint32_t sw, uint32_t sh, const int* crop, uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     reset();
@@ -99,29 +121,52 @@ void check(uint32_t sw, uint32_t sh, const int* crop, uint32_t x, uint32_t y, ui
     blit_crop(nullptr, 1, sw, sh, crop, 2, VK_IMAGE_LAYOUT_GENERAL, 320, 180);
     CHECK(blits == int(valid) && clears == int(!valid));
     if (valid) CHECK(last_blit.dstOffsets[0].x == 0 && last_blit.dstOffsets[1].x == 320);
-    const bool recorded = framegen_record(nullptr, 1, sw, sh, crop);
+    const bool recorded = framegen_record(nullptr, 1, sw, sh, crop, 0.0f, false);
     CHECK(recorded == valid && initializations == int(valid) && sizes == int(valid));
     if (valid) {
         CHECK(allocated_w == w && allocated_h == h && dispatches == 2 && copies == 1);
+        CHECK(last_maker == FgMaker::None);   // (nothing to blend from yet: none made)
         CHECK(copy_pc[0] == int(x) && copy_pc[1] == int(y) && copy_pc[2] == int(w) && copy_pc[3] == int(h));
         // Newly merged FSR3 receives the same validated extent; fallback still uses the shared crop.
         fsr3fi::wanted = true;
-        CHECK(framegen_record(nullptr, 1, sw, sh, crop) && fsr_calls == 1 && fg.recorded->made == 1);
-        CHECK(dispatches == 4 && copies == 2);
+        CHECK(framegen_record(nullptr, 1, sw, sh, crop, 0.0f, false) && fsr_calls == 1 && fg.recorded->made == 1);
+        CHECK(dispatches == 4 && copies == 2 && last_maker == FgMaker::Fsr3 && !last_native_pq);
         fsr_result = 0;
-        CHECK(framegen_record(nullptr, 1, sw, sh, crop) && fsr_calls == 2 && fg.recorded->made == 1);
+        CHECK(framegen_record(nullptr, 1, sw, sh, crop, 0.0f, true) && fsr_calls == 2 && fg.recorded->made == 1);
+        CHECK(last_maker == FgMaker::BuiltIn && last_native_pq);   // (FSR 3.1 made none: the renderer's own did)
         CHECK(dispatches == 9 && copies == 3);
+        // (DLSS FG chosen, the set without an Upscaler picture: the game's frame alone, neither FSR 3.1's nor the built-in one's)
+        holds = true;
+        for (auto& set : fg.sets) set.busy = false;   // (three sets, no display thread to show them: free for a fourth)
+        CHECK(framegen_record(nullptr, 1, sw, sh, crop, 0.0f, false) && fsr_calls == 2 && fg.recorded->made == 0);
+        CHECK(last_maker == FgMaker::DlssPaused && dispatches == 11 && copies == 4);   // (its copy and luma passes only)
+        holds = false;
+        CHECK(copy_pc[0] == int(x) && copy_pc[1] == int(y) && copy_pc[2] == int(w) && copy_pc[3] == int(h));
+        // Ultrawide's loading cover is closed in the copy, from the middle 16:9's edge; without that middle there is none.
+        CHECK(copy.x0 == 0.0f && copy.cover == 0.0f);
+        const auto record = [&](float cover) {   // (no display thread here to show a set and free it)
+            for (OutSet& set : fg.sets) set.busy = false;
+            return framegen_record(nullptr, 1, sw, sh, crop, cover, false);   // (SDR)
+        };
+        CHECK(record(0.5f) && copy.x0 == 0.0f && copy.cover == 0.0f);
+        margin = 0.125f;
+        CHECK(record(0.5f) && copy.x0 == 0.125f && copy.cover == 0.5f);
+        CHECK(record(3.0f) && copy.x0 == 0.125f && copy.cover == 1.0f && copy.pq == 0);
+        present_native_pq = true;   // (the game's own HDR10 picture: its coding for the cover's light)
+        CHECK(record(0.5f) && copy.cover == 0.5f && copy.pq == 1);
+        present_native_pq = false;
+        CHECK(record(0.0f) && copy.x0 == 0.0f && copy.cover == 0.0f);
         CHECK(copy_pc[0] == int(x) && copy_pc[1] == int(y) && copy_pc[2] == int(w) && copy_pc[3] == int(h));
     } else {
         CHECK(dispatches == 0 && copies == 0 && !fg.recorded);
         fsr3fi::wanted = true; fg.have_prev = true;
-        CHECK(!framegen_record(nullptr, 1, sw, sh, crop) && fsr_calls == 0);
+        CHECK(!framegen_record(nullptr, 1, sw, sh, crop, 0.0f, false) && fsr_calls == 0);
         CHECK(dispatches == 0 && copies == 0 && !fg.recorded);
     }
     // Execute the actual HDR consumer, keeping resources ready to isolate source validation.
     hdr.init = true; hdr.failed = false; hdr.w = 1920; hdr.h = 1080; hdr.out.image = 77;
     const int before = dispatches;
-    CHECK(framegen_hdr(nullptr, 1, sw, sh, crop, 1920, 1080) == (valid ? 77 : VK_NULL_HANDLE));
+    CHECK(framegen_hdr(nullptr, 1, sw, sh, crop, 1920, 1080, false) == (valid ? 77 : VK_NULL_HANDLE));
     CHECK(dispatches == before + int(valid));
     if (valid) {
         CHECK(hdr_uv[0] == x / float(sw) && hdr_uv[1] == y / float(sh));

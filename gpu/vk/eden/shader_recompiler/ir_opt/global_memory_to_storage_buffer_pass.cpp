@@ -27,6 +27,9 @@
 #include "shader_recompiler/frontend/ir/value.h"
 #include "shader_recompiler/host_translate_info.h"
 #include "shader_recompiler/ir_opt/passes.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 
 namespace Shader::Optimization {
 
@@ -54,15 +57,12 @@ bool PointerDiagOn() {
     static const bool on = std::getenv("RX_VK_PTR_DIAG") != nullptr && std::atoi(std::getenv("RX_VK_PTR_DIAG")) != 0;
     return on;
 }
-/// (EvilOOT) a split address (see PointerDiag) is not bound to the constant buffer pointer on one side of its select or phi;
-/// it is left to the run-time search, which finds whichever bound buffer (or table entry, or pointer table pool) the
-/// address really falls in. #410's bug class (EvilOOT's near leaves): bound to one side, the other side's reads went to
-/// the wrong buffer. On by default since the search covers whole pools (OoT's culling: characters, fallen leaves and
-/// fireflies came back). RX_VK_PTR_SPLIT_FALLBACK=0: bound as before.
-bool SplitFallbackOn() {
-    static const bool on = !std::getenv("RX_VK_PTR_SPLIT_FALLBACK") || std::atoi(std::getenv("RX_VK_PTR_SPLIT_FALLBACK")) != 0;
-    return on;
-}
+// (EvilOOT) a split address (see PointerDiag) is not bound to the constant buffer pointer on one side of its select or phi;
+// it is left to the run-time search (CollectStorageBuffers, origins.split), which finds whichever bound buffer (or table
+// entry, or pointer table pool) the address really falls in. An earlier bug class (EvilOOT's near leaves): bound to one side,
+// the other side's reads went to the wrong buffer. The search covers whole pools (OoT's culling: characters, fallen
+// leaves and fireflies came back).
+
 /// (hookshot) Switches for the analysis ported from Fritchii (Frizti/Fritchii), read once. EDEN_* variables are part of the
 /// program cache's key (vk_shader.cpp disk_stamp), so a change translates the programs again.
 ///   EDEN_NX2_GM_LEGACY=0     the port (default 1 since v2.0.4: the tracking as before the port (NVN-biased, then unbiased search; no pairing, no native rules)
@@ -1337,8 +1337,7 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
     };
     // (EvilOOT, RX_VK_PTR_DIAG) counted on every way out of here
     const bool diag{PointerDiagOn()};
-    const bool split_fallback{SplitFallbackOn()};
-    const AddrOrigins origins{diag || split_fallback ? Origins(inst.Arg(0)) : AddrOrigins{}};
+    const AddrOrigins origins{Origins(inst.Arg(0))};
     const auto count_fallback{[&](bool table) {
         if (diag) {
             ++g_pointer_diag.fallback;
@@ -1365,7 +1364,6 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
     const Bias* const bias{g_nvn2_compute_ssbo_base ? &compute_bias : &nvn_bias};
     {
         // (only where the page table is: compute. A graphics stage reads such a load as 0, and that blanked every menu text)
-        static const bool follow{std::getenv("RX_VK_NO_FOLLOW") == nullptr};
         const IR::Opcode op{inst.GetOpcode()};
         // (and the writes and 32-bit atomics through such an address: the culling's outputs and counters, which the backend's page
         // table now reaches too. Tracked to the constant buffer alone they went to a buffer at address 0, and every count stayed 0)
@@ -1376,8 +1374,8 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
                          op == IR::Opcode::GlobalAtomicOr32 || op == IR::Opcode::GlobalAtomicXor32 || op == IR::Opcode::GlobalAtomicExchange32 ||
                          op == IR::Opcode::GlobalAtomicCompareExchange32};
         // (RX_VK_FOLLOW_STORES=1: the writes too. Off: they made the culling count but drew no leaves, and a GPU faulted in it, #132)
-        static const bool no_store{std::getenv("RX_VK_FOLLOW_STORES") == nullptr};
-        if (follow && g_follow_stage && (load || (store && !no_store)) && MixesLoadedPointer(low_addr_info->value)) {
+        static const bool no_store{!env_on("RX_VK_FOLLOW_STORES")};
+        if (g_follow_stage && (load || (store && !no_store)) && MixesLoadedPointer(low_addr_info->value)) {
             return;   // (left global: MixesLoadedPointer)
         }
     }
@@ -1503,14 +1501,13 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info, 
         // c0 while part of it comes from memory: the far-foliage and mesh programs (95db514a35353e28, d905f52b7517c681,
         // 51183fe750d5d0c8...) took float constants for a buffer address ("storage buffer NOT bound (reads zeros)", c5+0x60),
         // read zeros and drew the plants without colour (white/sky-blue "mirror" ferns, glowing flowers). Left to the run-time
-        // search. RX_VK_NO_CBUF_LOAD_RULE=1: off
-        static const bool cbuf_load_rule{std::getenv("RX_VK_NO_CBUF_LOAD_RULE") == nullptr};
-        if (cbuf_load_rule && storage_buffer->index != 0 && g_graphics_stage && Origins(inst.Arg(0)).load) {
+        // search
+        if (storage_buffer->index != 0 && g_graphics_stage && Origins(inst.Arg(0)).load) {
             leave_global();
             return;
         }
     }
-    if (split_fallback && origins.split) {
+    if (origins.split) {
         // (Lichii #410, Duck912, adapted) The tracked pointer is one side of a select or phi whose other side is a pointer
         // loaded from memory: bound too, so that the run-time search finds the accesses through it in every stage (the
         // loaded side's are the page table's, where the stage has one). OoT's near-leaf pass reads its placement records
@@ -1667,9 +1664,8 @@ void GlobalMemoryToStorageBufferPass(Environment& env, IR::Program& program,
     if (!has_global_memory) {
         return;
     }
-    // (hookshot)
-    static const bool no_mesh{std::getenv("RX_VK_FOLLOW_MESH") == nullptr};
-    g_follow_stage = program.stage == Stage::Compute || (!no_mesh && (program.stage == Stage::Task || program.stage == Stage::Mesh));
+    // (hookshot: compute only; the task and mesh stages were tried for the foliage, which it did not bring back)
+    g_follow_stage = program.stage == Stage::Compute;
     // (geometry stages only: with the fragment stage too, the sky drew black rectangles and the lighting went too bright at the castle)
     g_graphics_stage = program.stage != Stage::Compute && program.stage != Stage::Fragment;
     g_origins.clear();   // (EvilOOT: Origins' walk, kept per program)

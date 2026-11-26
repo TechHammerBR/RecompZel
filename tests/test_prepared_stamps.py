@@ -19,6 +19,15 @@ from pathlib import Path
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def _with_cache(path):
+    """vk_shader.cpp with the program cache it held before (vk_progcache.cpp and .h beside it, outside the translator stamp): definitions first"""
+    parts = [path.read_text(encoding="utf-8")]
+    for name in ("vk_progcache.cpp", "vk_progcache.h"):
+        if (path.parent / name).exists():
+            parts.append((path.parent / name).read_text(encoding="utf-8"))
+    return "\n".join(parts)
+
 DRAW = ROOT / "gpu" / "vk" / "vk_draw.cpp"
 SHADER = ROOT / "gpu" / "vk" / "vk_shader.cpp"
 
@@ -38,7 +47,7 @@ def main():
     ap.add_argument("--cxx", default="g++")
     a = ap.parse_args()
     draw = DRAW.read_text(encoding="utf-8")
-    shader = SHADER.read_text(encoding="utf-8")
+    shader = _with_cache(SHADER)
     start = draw.index("struct PreparedFor {")
     helpers = draw[start:draw.index("} // namespace", start)]
     cpp = r"""
@@ -55,6 +64,7 @@ def main():
 #include <filesystem>
 #include <string>
 #include <vector>
+size_t program_cache_kept() { return SIZE_MAX; }   // (vk_shader.h: no program cache here)
 """ + helpers + r"""
 int main(int argc, char** argv) {
     const std::string dir = argv[1], path = dir + "/hookshot_prepared.bin", seed = dir + "/hookshot_shaders.bin";
@@ -83,8 +93,8 @@ int main(int argc, char** argv) {
     prepared_write(path, w);
     uint64_t first = 0;
     FILE* f = fopen(path.c_str(), "rb");
-    if (fread(&first, 8, 1, f) != 1 || first != 0xAAAA || size_of() != 48)   // (prepare_is_update reads the first 8 bytes alone)
-        std::puts("the file: wanted 48 bytes, the translator's stamp first"), fails++;
+    if (fread(&first, 8, 1, f) != 1 || first != 0xAAAA || size_of() != 56)   // (prepare_is_update reads the first 8 bytes alone)
+        std::puts("the file: wanted 56 bytes, the translator's stamp first"), fails++;
     fclose(f);
     if (prepared_read(path, &p) != 2 || p.stamp != 0xAAAA || p.seed_hash != 7 || p.seed_size != 8 || p.seed_time != 9 || p.warmed != 0xBBBB)
         std::puts("written and read: wanted every word back"), fails++;
@@ -162,7 +172,7 @@ int main(int argc, char** argv) {
     keys = block(shader, "std::vector<uint64_t> program_cache_keys(")
     if "fread(" in keys or "disk_records" not in keys or "shader_mu" not in keys:
         raise SystemExit("program_cache_keys: wanted the keys from the list of records and the variants in memory, no record read")
-    env = block(shader, "uint64_t disk_stamp(")
+    env = block(shader, "uint64_t translator_stamp(")
     if '"RX_VK_GP"' in env or '"RX_VK_GP_"' not in env:
         raise SystemExit("the translator's stamp takes RX_VK_GPL: switching the libraries on throws the program cache away")
     print("PASS: two stamps in the prepared file; the driver's part is made from the program cache, on its own when it alone is stale")

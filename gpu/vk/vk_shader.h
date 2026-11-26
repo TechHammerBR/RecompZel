@@ -23,11 +23,35 @@ struct Stage {
     VkShaderModule module = VK_NULL_HANDLE;
     Shader::Info info;
     std::vector<uint8_t> c1;   // its c1 constants (the code area's tail)
+    uint32_t spirv_words = 0;   // (its SPIR-V's size in 32-bit words, for a program read back from the program cache; 0: not known)
+    // (hookshot) its SPIR-V's OpPhi instructions (fallback_size_policy.h), noted where the SPIR-V is written to or read from the
+    // program cache (vk_progcache.cpp), which every translated program passes. Not in vk_shader.cpp, whose bytes are part of
+    // the translator's stamp: a change there translates every player's programs again
+    mutable uint32_t phis = 0;
+    mutable uint32_t calls = 0;   // (hookshot) its OpFunctionCall instructions, noted with the phis (fallback_size_policy.h)
+    // (hookshot) where its SPIR-V is in hookshot_programs.bin, and how many words (0: compressed or translated in this run, so
+    // its module stays): once precompile_run has built its pipelines, its module can be let go on Linux and made again from the
+    // file if play ever builds a new pipeline state variant for this program
+    int64_t code_at = 0;
+    uint64_t code_words = 0;
+    // (hookshot) the record it was read from (its payload's position and stored size): its head is checked before code_at is read
+    // again (program_cache_complete_graphics). Here and not in Program, whose size is part of the translator's stamp
+    int64_t record_at = 0;
+    uint64_t record_size = 0;
+    // (hookshot) whether its SPIR-V has nothing that depends on the subgroup it runs in (fallback_lanes.h), noted with the phis
+    mutable bool lane_free = false;
 };
 
+
 /// A texture handle the stage reads from a storage buffer: its handle program (Shader::Info::handle_programs, Eden's
-/// recompiler) run over the stage's constant banks and storage buffers as the draw has them
-uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program);
+/// recompiler) run over the stage's constant banks and storage buffers as the draw has them. element is the descriptor
+/// array element it computes, for a program that gives one handle per element of a table (Shader::HandleOp::Index)
+uint32_t stage_handle(const NvnState& s, const Stage& st, uint32_t program, uint32_t element = 0);
+/// The handles of elements 0 .. count-1 of such a table (one shadow map per light, say), into out: stage_handle for each,
+/// with the constant words and storage buffer addresses the program reads read once
+/// (key: the program's, for the log line that names which programs a table's count cuts)
+void stage_handles(const NvnState& s, const Stage& st, uint32_t program, uint32_t count, uint32_t* out, uint64_t key = 0);
+void handle_memo_next();   // (hookshot) a new draw or dispatch on this thread: the handles kept for the last one go
 
 /// A translated program variant: its stages, in descriptor order. The pipeline layout and pipelines made for it live
 /// in vk_pipeline.cpp (keyed by key).
@@ -45,12 +69,19 @@ struct Program {
     VkPipeline compute_pipeline = VK_NULL_HANDLE;
     // (the compute pipeline's build: 0 not started, 1 on a worker, 2 done (compute_pipeline made, or failed): vk_draw.cpp dispatch)
     std::atomic<int> compute_state{0};
+    // (hookshot) the optimizer's build of a compute_pipeline made without it first (Intel's one-at-a-time builds), bound in its
+    // place once made: vk_draw.cpp compute_optimize. compute_pipeline stays for the session (a recording may hold it)
+    std::atomic<VkPipeline> compute_optimized{VK_NULL_HANDLE};
+    // (hookshot) compute_pipeline was made without the optimizer before play (precompile_run, precompile_compute_quick): its first
+    // dispatch queues compute_optimize. Not before: a first start makes every kept compute program's, most never dispatched
+    std::atomic<bool> optimize_owed{false};
     mutable std::atomic<bool> dispatched{false};   // (hookshot) noted in hookshot_computes.bin (vk_draw.cpp compute_note)
     bool push = false;             // its set is pushed (VK_KHR_push_descriptor)
     VkShaderStageFlags push_stages = 0;
     bool uses_render_area = false;
     bool uses_push = true;   // (a stage reads the push constants: render area or rescaling)
     bool mesh = false;              // task / mesh stages (VK_EXT_mesh_shader)
+    bool scene_tonemap = false;     // (hookshot) its scene tone map is PsychoV35 (vk_shader.cpp scene_tonemap_for; in its key)
     // (hookshot) the GPU has no mesh shaders: the task and mesh stages are compute pipelines, and a generated vertex
     // stage reads the records they write. Its stages are (task,) mesh, vertex, fragment.
     bool fallback = false;
@@ -71,10 +102,20 @@ struct Program {
     std::vector<Answer> answers;
     uint64_t variant = 0;   // (a hash of the answers: key alone names all the variants of these stages)
     mutable std::atomic<int64_t> wm_sig{-1};   // (hookshot: what its write masks are made from, vk_draw.cpp program_wm_sig; -1: not asked yet)
+    // (hookshot) how many buffer, image and texel view descriptors its stages have, packed (draw_key.h desc_counts_pack); ~0: not counted yet
+    mutable std::atomic<uint64_t> desc_counts{~0ull};
     // (hookshot) the translation's texture questions as answered, in the order asked: what makes this variant again with nothing
     // bound (the pipeline state list, vk_draw.cpp)
     std::vector<uint8_t> questions;
     uint64_t codes[4]{};   // (hookshot) its stages' code keys: vertex (mesh), fragment, task, the header-only stage (the state list)
+    // (hookshot, RX_VK_SHADER_KEY) a hash of what the driver compiles for this program: each stage's SPIR-V, the descriptor counts the
+    // layout is made from, the push and vertex-input facts the pipeline reads. 0: not taken (switch off). The same program, translated by
+    // another translator to the same SPIR-V, has the same one: vk_draw.cpp's ledger of what the driver compiled goes by it
+    uint64_t fp = 0;
+    // (hookshot) a compute program read from the cache without its code (vk_progcache.cpp program_cache_read_light): where its
+    // SPIR-V is in hookshot_programs.bin, and how many words; 0 words: it has its module (program_cache_complete makes it)
+    int64_t code_at = 0;
+    uint64_t code_words = 0;
 };
 
 enum class ProgramKind { Graphics, Compute, Mesh };
@@ -88,7 +129,22 @@ std::string program_textures(const NvnState& s, const Program& p);   // (hooksho
 std::string program_code_keys(const NvnState& s);   // (hookshot) " stage:key" for each of the bound program's codes
 const Program* program_pick(const NvnState& s, ProgramKind kind, const uint8_t color_types[8]);   // (program_for without its cache)
 void program_wait(const Program* p);
+/// (hookshot) draw() sets it around its pick: a pick there hands a cached program's read to the workers and gets a stand-in
+void program_load_async_here(bool on);
+/// (hookshot) a cached program's stand-in: once ready (and failed), its records are read and the draw picks again
+bool program_is_stand_in(const Program* p);
 uint64_t program_cache_stamp();   // (what the kept programs and pipelines are good for)
+void cache_sets_switch();          // (another GPU's caches aside, this one's back: vk_progcache.cpp, gpu_sets.h)
+size_t program_cache_kept();   // (hookshot) program keys in the cache now, SIZE_MAX: no cache
+/// (hookshot) RX_VK_SHADER_KEY (default on, 0: off): programs get a fingerprint of what the driver compiles, and a start after a translator
+/// change builds again only what the fingerprints say the driver has not seen (vk_draw.cpp, the compiled ledger)
+bool shader_key_on();
+/// (hookshot, RX_VK_SHADER_KEY) A program was translated here and has this fingerprint (vk_draw.cpp: the ledger lists it as seen, so that
+/// the next start after a translator change can tell by a sample of programs how many of them come out differently)
+void program_fingerprinted(uint64_t fp);
+size_t program_cache_kept();   // (hookshot) program keys in the cache now, SIZE_MAX: no cache
+/// (hookshot) RX_VK_MESH_FB_LAYOUT, read once (mesh_mode.h mesh_rule::fb_layout): the compute fallback's record layout
+uint32_t mesh_fallback_layout();
 size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const std::function<void(Program&)>& fn,
                                bool computes = true, bool fallbacks = false);   // (computes: and every kept compute program)
 /// The precompile of every shader of the game (hookshot_shaders.bin, from nx2/shader_census.py): how many programs it names, 0: none
@@ -108,14 +164,46 @@ SeedVariants seed_compute(size_t i, size_t cap, const std::function<void(Program
 /// (hookshot, the prediction: vk_predict.cpp) a kept graphics program variant as hookshot_programs.bin has it: each stage's SPIR-V
 struct KeptProgram {
     uint64_t key = 0, variant = 0;
+    int64_t at = 0;   // (where its record is in the file: of two records of one variant, the later is the one kept)
     bool mesh = false;
     std::vector<std::pair<VkShaderStageFlagBits, std::vector<uint32_t>>> stages;
 };
-void program_cache_each(const std::function<void(const KeptProgram&)>& fn);
+void program_cache_each(const std::function<void(const KeptProgram&)>& fn);   // (fn: on several threads at once, in no order)
 void program_cache_borrow(uint64_t key, const std::function<void(Program&)>& fn);   // (made for fn, then let go; still kept)
+void program_cache_borrow_all(uint64_t key, const std::function<void(std::vector<std::unique_ptr<Program>>&)>& fn);   // (every variant at once)
+/// (hookshot) A compute program read from the cache at its key's first pick has no code yet (vk_progcache.cpp
+/// program_cache_load): its SPIR-V is read and its module made here, before the first use of the module (vk_draw.cpp dispatch).
+/// True: it is whole (or was). False: its code did not read or made no module; it is marked failed
+bool program_cache_complete(Program& p);
+/// (hookshot) The same without waiting for Intel's compiler gate on Windows (IntelDriverGate): while another thread holds it,
+/// *busy is set, false comes back and the program is left as it was, its code still to read (a worker completes it)
+bool program_cache_complete_ask(Program& p, bool* busy);
+/// (hookshot) The graphics stages of a program whose modules were let go after the precompile (program_cache_drop_modules):
+/// remade from hookshot_programs.bin before play builds a new pipeline variant for it
+bool program_cache_complete_graphics(const Program& p);
+/// (hookshot) Lets go of the VkShaderModules of ready programs whose pipelines are built and whose stages can be remade from
+/// hookshot_programs.bin (or are compute stages that need no another pipeline); returns how many modules were destroyed
+size_t program_cache_drop_modules();
+/// (hookshot) A graphics program the load at create just read (vk_programs.cpp load_work), every noted pipeline of its variant built
+/// from the caches: its vertex and fragment modules let go now, as program_cache_drop_modules lets a precompiled one's go, where
+/// every stage can be remade from hookshot_programs.bin (program_cache_complete_graphics, on the worker that builds a new state
+/// variant in play). Not a fallback program's, not one already let go under another program. Returns the modules destroyed
+size_t program_cache_drop_loaded(Program& p);
+/// (hookshot) Whether the load at create lets its programs' modules go (RX_VK_DROP_LOADED_MODULES: 1 on, 0 off; on by default)
+bool drop_loaded_modules_on();
+/// (hookshot) Modules made again for programs whose modules were let go (program_cache_complete_graphics), for the log
+int64_t program_cache_remade();
+/// (hookshot) precompile_run built p's noted graphics pipelines before the title: program_cache_drop_modules may let its graphics
+/// modules go (an un-noted program or variant keeps them for its first draw in play)
+void program_cache_note_built(const Program& p);
+/// (hookshot) p's graphics modules were let go (program_cache_drop_modules) and not made again yet: no pipeline is built from it
+/// until program_cache_complete_graphics has made them
+bool program_modules_dropped(const Program& p);
 /// (hookshot) Every kept graphics and mesh program's key, in the file's order, no record read; *loaded: the variants in memory already
 std::vector<uint64_t> program_cache_keys(std::vector<Program*>* loaded);
 const Program* program_find(uint64_t key, uint64_t variant);
+/// (hookshot) Whether the program cache or memory holds this variant of key already (the records are read as far as their answers)
+bool program_variant_kept(uint64_t key, uint64_t variant);
 /// (hookshot) The pipeline state list's variants, the same on every GPU: the answers with their stages numbered without the mesh
 /// fallback's generated vertex stage, and their hash (a graphics or native mesh program's: its own); a loaded variant by that hash
 std::vector<Program::Answer> answers_portable(const Program& p);
@@ -133,12 +221,36 @@ std::unique_ptr<Program> seed_program_of(const uint64_t code[3], bool mesh, cons
 /// Null when a stage is not in the seed or it does not translate
 const Program* seed_variant_of(const uint64_t code[3], bool mesh, const uint32_t attributes[16], const uint8_t color_types[8],
                                const std::vector<uint8_t>& questions, const std::vector<Program::Answer>& answers);
+/// (hookshot) The variant nothing bound makes (each texture as its instruction declares it), kept the same way: what a state list
+/// record with variant 0 and no answers or questions stands for (one converted from records that hold no texture answers)
+const Program* seed_plain_of(const uint64_t code[3], bool mesh, const uint32_t attributes[16], const uint8_t color_types[8]);
+/// (hookshot) That variant if it is loaded and ready: every slot answering the type its instruction declares. Its own variant is
+/// the hash of those answers, not 0, so program_find_portable(key, 0) does not find it (state_list_prepare looks here first)
+const Program* program_find_plain(uint64_t key);
 /// The NVN stages of the bound program, for logs (stage field of each control section)
 void log_program_stages(const NvnState& s, const char* why);
 Shader::AttributeType attribute_type_of(uint32_t vattr);
 Shader::TextureType handle_texture_type(uint32_t handle);
 void shader_stats(int64_t* translated, int64_t* failed);
+/// The networks this card left out on purpose (not among the failed)
+int64_t shader_left_out();
+/// (hookshot) After the preparation's "N failed": a line for each "not translated" line's programs, all of them (those lines stop at 30)
+void shader_fail_lines();
 double shader_translate_ms();
 void program_released(const nvn_prog* p);
+/// (hookshot) A guest program as the game makes it (nvnProgramSetShaders), before any draw (vk_programs.cpp): its stages' code keys
+/// as Program::codes has them (vertex or mesh, fragment, task, the header-only stage; a compute program's stage in codes[0]),
+/// read from the game's memory now and hashed, nothing lowered. ok: it has a stage a draw or dispatch can use
+struct CreatedProgram {
+    uint64_t codes[4]{};
+    bool ok = false, compute = false, mesh = false;
+    int stages = 0;
+};
+CreatedProgram program_created_read(const nvn_prog& prog);   // (the game's thread; kept by the program's serial)
+/// The key program_pick will make for that program drawn with these vertex input formats and colour output types (a compute
+/// program's: its stage's key); 0: no such serial was read
+uint64_t program_created_key(uint64_t serial, const uint32_t vattr[16], const uint8_t color_types[8]);
+void program_created_forget(uint64_t serial);
+int64_t shader_translated();   // (programs translated so far, by any thread)
 
 } // namespace mkwvk

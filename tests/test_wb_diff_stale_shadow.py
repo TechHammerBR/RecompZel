@@ -14,20 +14,13 @@ import argparse
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "g++"]
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index('{', start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == '{') - (text[end] == '}')
-        end += 1
-    return text[start:end]
 
 
 def main():
@@ -44,6 +37,15 @@ def main():
         'void shadow_written_collected(const uint32_t* pages, int64_t n) {',
         'int guest_cpu_write(uint64_t gpu, const void* src, uint64_t n) {',
         'void guest_cpu_wrote(uint64_t gpu, uint64_t n) {'))
+    # (the forget runs at every part's end: its lists are walked as they were built. A sort of them there, only to make the
+    # pool lookup sequential, was 0.36 ms a frame of the render thread in Castle Town's market)
+    if 'std::sort' in block(text, 'void shadows_forget_written() {'):
+        raise SystemExit("shadows_forget_written sorts a list again: it runs at every part's end, and a page is forgotten and "
+                         "counted the same wherever it stands")
+    known = block(text, 'void shadow_synced_known() {')
+    if 'shadow_forgotten_last.begin()' in known or 'for (const uint32_t f : shadow_forgotten_last)' not in known:
+        raise SystemExit("shadow_synced_known sorts or searches the forget's list: it walks it once, as it was built, for the "
+                         "few synced pages it asks about (tests/test_late_fix_build.py (p) to (s) check what it finds)")
     fixture = r'''
 #include <algorithm>
 #include <cstdint>
@@ -85,9 +87,12 @@ Host the_host;
 Host* host = &the_host;
 bool diff_on = true;
 bool wb_diff_on() { return diff_on; }
+bool mirror_on() { return true; }   // (the pools here have mirrors: without, nothing is noted, tests/test_mirror_bookkeeping.py)
 std::mutex shadow_written_mu;
 std::vector<uint32_t> shadow_written_pages, shadow_written_collected_list, shadow_written_by_replay;
 bool shadow_written_all = false;
+std::vector<uint32_t> shadow_forgotten_last;   // (the forget's list of the collection's and the replay's pages, for the late pages' fix)
+bool shadow_forgotten_all = false;             // (and whether its lists overflowed)
 int64_t st_wbd_known_game = 0, st_wbd_known_collected = 0, st_wbd_known_replay = 0;
 void shadow_written_to(std::vector<uint32_t>& list, const uint32_t* pages, int64_t n);
 void guest_cpu_wrote(uint64_t gpu, uint64_t n);
@@ -179,6 +184,25 @@ int main() {
         CHECK(guest_cpu_write(kLo - 4096, &one, 4) == 0);   // (the host refuses it: not mapped)
         write_back(0, 4096);
         CHECK(filled == 0 && written == 0);
+    }
+    // the lists are read as they were built, not sorted first: pages out of order, twice in a list and of two pools in turn
+    // are each forgotten, and counted once, under the first list that reports them
+    {
+        reset();
+        Pool second;
+        second.lo = kLo + 16 * 4096, second.hi = second.lo + kPages * 4096;
+        second.shadow_known.assign(1, ~0ull);
+        imported.emplace(second.lo, second);
+        const uint32_t a = (uint32_t)(kLo >> 12), b = (uint32_t)(second.lo >> 12);
+        const uint32_t mixed[] = {b + 5, a + 7, b + 1, a + 2, a + 7, 0x7fff0, b + 5, a + 0};
+        shadow_written(mixed, 8);
+        const uint32_t late[] = {a + 3, b + 1, a + 2};
+        shadow_written_collected(late, 3);
+        shadows_forget_written();
+        CHECK(imported[kLo].shadow_known[0] == (0xffull & ~(1ull << 7 | 1ull << 3 | 1ull << 2 | 1ull << 0)));
+        CHECK(imported[second.lo].shadow_known[0] == ~(1ull << 5 | 1ull << 1));
+        CHECK(st_wbd_known_game == 5 && st_wbd_known_collected == 1 && st_wbd_known_replay == 0);
+        CHECK(shadow_written_pages.empty() && shadow_written_collected_list.empty());
     }
     // more pages than the list keeps: every page unknown at the next write-back
     {

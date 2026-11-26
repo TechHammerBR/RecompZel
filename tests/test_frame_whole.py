@@ -2,13 +2,14 @@
 (host/frame_whole.h, nx2/oot_patches.py patch_whole_frames).
 
 The pick-up indicator above Link's head (f_80a87e50) moves the count it shows toward the wallet's by (int)(step * per) and fades
-when they meet. Under a Frame rate cap above 60 the step is the frame's own
-time, under 1 (0.42 at 144 fps): cut to 0 every frame, the count never moved and the indicator stayed. With the frames' own time
+when they meet; the time of day (f_803edf70) adds (int)(2 * step) game seconds a frame. Under a Frame rate cap above 60 the step is
+the frame's own time, under 1 (0.42 at 144 fps): cut to 0 every frame, the count never moved and the indicator stayed, and the
+clock stood still. With the frames' own time
 as the step (carry), hos_frame_whole adds the amount to the counter's own remainder and hands out its whole frames: 144 frames of
 60/144 are 60; an amount of 1 or more keeps its fraction too; two counters keep their own remainders; NaN and amounts below zero
 give 0. Without it, the amount is cut as the game cuts it (60 fps as before). The water renderer (f_800672e0) runs its ripple
 simulation (int)step times a frame the same way, its remainder kept per water object: forty surfaces stepped in turn each still
-count their 60 frames a second. The patch replaces the one cut of each site, once,
+count their 60 frames a second (its substeps are carried rather than its frames: tests/test_water_substeps.py). The patch replaces the one cut of each site, once,
 declares the hook, and leaves a file patched before and a function whose code differs as they are.
 
 python -I -B tests/test_frame_whole.py
@@ -40,10 +41,16 @@ int main(void) {
     n = 0;
     for (int i = 0; i < 1440; i++) n += frame_whole(&w, a, bits(60.0f / 144.0f), 1);
     CHECK(n >= 599 && n <= 601);
+    n = 0;
+    for (int i = 0; i < 30; i++) n += frame_whole(&w, b + 16, bits(2.0f), 1);
+    CHECK(n == 60);   /* (30 fps: one second still advances sixty counter ticks) */
     CHECK(frame_whole(&w, b, bits(0.42f), 1) == 0 && frame_whole(&w, b, bits(0.42f), 1) == 0 && frame_whole(&w, b, bits(0.42f), 1) == 1);
     n = 0;
     for (int i = 0; i < 4; i++) n += frame_whole(&w, b + 8, bits(1.25f), 1);   /* (the step times 3: its fractions kept) */
     CHECK(n == 5);
+    n = 0;
+    for (int i = 0; i < 144; i++) n += frame_whole(&w, b + 16, bits(2.0f * 60.0f / 144.0f), 1);   /* (the time of day) */
+    CHECK(n == 120 || n == 119);   /* (a second at 144 fps: the 120 game seconds of one at 60) */
     CHECK(frame_whole(&w, a, bits(0.42f), 0) == 0 && frame_whole(&w, a, bits(1.5f), 0) == 1 && frame_whole(&w, a, bits(2.0f), 0) == 2);
     CHECK(frame_whole(&w, a, bits(-1.0f), 1) == 0 && frame_whole(&w, a, bits(NAN), 1) == 0 && frame_whole(&w, a, bits(0.0f), 1) == 0);
     for (uint64_t k = 0; k < 100; k++) frame_whole(&w, 0x9000 + k, bits(0.5f), 1);   /* (more counters than slots: the oldest go) */
@@ -63,8 +70,8 @@ int main(void) {
 }
 """
 
-LIFTED = ['#include "a64.h"\n' + head + "    c->x[9] = recomp_load32(c,(c->x[19] + 864));\n" + olds[0] + "return;\n}\n"
-          for head, olds, _ in oot_patches.WHOLE_SITES]   # (each site's first anchor: the cut, or the cut and its addition)
+LIFTED = ['#include "a64.h"\n' + head + "    c->x[9] = recomp_load32(c,(c->x[19] + 864));\n" + old + "return;\n}\n"
+          for head, old, _ in oot_patches.WHOLE_SITES]
 
 
 class FrameWholeTests(unittest.TestCase):
@@ -82,31 +89,15 @@ class FrameWholeTests(unittest.TestCase):
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=30)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
 
-    def test_anchor_with_the_store_when_the_cut_comes_twice(self):
-        # (f_803edf70, the time of day: the same cut into x8 twice, the one stored to +60 hooked, the other the game's)
-        head, olds, key = next(site for site in oot_patches.WHOLE_SITES if "803edf70" in site[0])
-        cut = olds[0]
-        lifted = '#include "a64.h"\n' + head + cut + "    c->x[9]=c->x[8];\n" + olds[1] + "return;\n}\n"
-        out, n = oot_patches.patch_whole_frames(lifted)
-        self.assertEqual(n, 1)
-        self.assertEqual(out.count("recomp_fp_to_int"), 1)   # (the other cut stays the game's)
-        self.assertIn("hos_frame_whole(%s," % key, out.split("c->x[9]=c->x[8];")[1])
-
-    def test_unsigned_cut_before_its_addition(self):
-        # (f_832b6840, the Scarecrow's Song recording: two unsigned cuts, the one before the addition to x10 hooked)
-        head, olds, key = next(site for site in oot_patches.WHOLE_SITES if "832b6840" in site[0])
-        other = olds[0].replace("c->x[10]", "c->x[13]")
-        lifted = '#include "a64.h"\n' + head + other + olds[0] + "return;\n}\n"
-        out, n = oot_patches.patch_whole_frames(lifted)
-        self.assertEqual(n, 1)
-        self.assertEqual(out.count("recomp_fp_to_int"), 1)
-        self.assertIn("c->x[13]", out.split("=hos_frame_whole(")[0])   # (the mode-13 cut, before the hooked one, untouched)
-
     def test_patch_replaces_the_cut_once(self):
-        for lifted, (_, old, key) in zip(LIFTED, oot_patches.WHOLE_SITES):
+        for lifted, (head, old, key) in zip(LIFTED, oot_patches.WHOLE_SITES):
             out, n = oot_patches.patch_whole_frames(lifted)
             self.assertEqual(n, 1)
-            self.assertEqual(out.count("=hos_frame_whole(%s, (uint32_t)c->vreg[0][0]);" % key), 1)
+            if head in oot_patches.WHOLE_TIMES:   # (the water's substeps: tests/test_water_substeps.py runs them)
+                self.assertEqual(out.count("=hos_frame_whole_times(%s, (uint32_t)c->vreg[0][0], " % key), 1)
+                self.assertIn(oot_patches.WHOLE_TIMES_DECL, out)
+            else:
+                self.assertEqual(out.count("=hos_frame_whole(%s, (uint32_t)c->vreg[0][0]);" % key), 1)
             self.assertNotIn("recomp_fp_to_int", out)
             self.assertIn(oot_patches.WHOLE_DECL, out)
             self.assertEqual(oot_patches.patch_whole_frames(out), (out, 0))   # (patched before: as it is)
@@ -115,9 +106,21 @@ class FrameWholeTests(unittest.TestCase):
             none = lifted.replace("void f_8", "void f_9")
             self.assertEqual(oot_patches.patch_whole_frames(none), (none, 0))
         # (a lift where the function is hot: its float helpers are a64_fpx_hot_*, the cut the same)
-        old0 = oot_patches.WHOLE_SITES[0][1][0]
+        _, old0, _ = oot_patches.WHOLE_SITES[0]
         hot = LIFTED[0].replace(old0, "    _v=a64_fpx_hot_mul32_fma32(c,_a,_b,_z);\n    a64_vset64(c->vreg[0],_v);}\n" + old0)
         self.assertEqual(oot_patches.patch_whole_frames(hot)[1], 1)
+
+    def test_clock_patches_its_seconds_alone(self):
+        # (f_803edf70 cuts into x8 the same way once more, in the branch that sets the time from another source: that cut
+        #  stays the game's)
+        i = next(i for i, (h, _, _) in enumerate(oot_patches.WHOLE_SITES) if "f_803edf70" in h)
+        cut = "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
+        lifted = LIFTED[i].replace("return;\n", cut + "    recomp_store32(c,c->x[19] + 12,c->x[8]);\nreturn;\n")
+        out, n = oot_patches.patch_whole_frames(lifted)
+        self.assertEqual(n, 1)
+        self.assertIn("=hos_frame_whole(c->x[19] + 60, (uint32_t)c->vreg[0][0]);", out)
+        self.assertEqual(out.count(cut), 1)
+        self.assertIn(cut + "    recomp_store32(c,c->x[19] + 12,", out)
 
 
 if __name__ == "__main__":

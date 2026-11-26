@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// (hookshot) When kept programs are loaded, where RX_VK_LOAD does not say: at their create calls (create) or all before the
+// title (start), and the safety net that takes an install back to start. Nothing of Vulkan here: tests/test_load_default.py.
+#pragma once
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+
+namespace load_default {
+
+struct Choice {
+    bool create;
+    const char* why;
+};
+/// env: RX_VK_LOAD's value or null. native_mesh: the GPU draws mesh programs itself; only the reason logged depends on it now.
+/// Through the compute fallback a start kept every listed program, pipeline and mesh fallback program ready before the title:
+/// 27,262 programs and 32,645 graphics pipelines once the tour's list came. The RX 6600 is on the fallback on Windows, so it
+/// started that way: 19 GB of private memory at the title on a 16 GB PC, 279 MB of commit left and the textures' budget at 0
+/// (the commit rule's), and 25-29 GB in play. Create there held 4-5 GB less and the same fps or better (RX 5600 XT, GTX 1060). The one fallback GPU measured where loads at create
+/// waited seconds (an RX 580, 16 GB) is what the marker is for. marker: an earlier session of this install met the safety
+/// net below. compressed: the compressed program cache is in use
+/// prepared: the shader preparation runs (RX_VK_PRECOMPILE). start loads the listed programs inside it, so without it start
+/// loads nothing before the title and every program is read at its first draw: the marker is left aside there
+inline Choice choose(const char* env, bool native_mesh, bool marker, bool compressed = false, bool prepared = true) {
+    // (the compressed program cache, RX_VK_PROGRAM_CACHE_ZSTD: a record is only read whole, unpacked. The loads at a create call
+    // read records by their parts' places and have not been run on it: start, whatever RX_VK_LOAD says)
+    if (compressed) return {false, "the program cache is compressed (RX_VK_PROGRAM_CACHE_ZSTD), whose records are only read whole"};
+    if (env && !std::strcmp(env, "create")) return {true, "RX_VK_LOAD=create"};
+    if (env && !std::strcmp(env, "start")) return {false, "RX_VK_LOAD=start"};
+    if (marker && prepared) return {false, "in an earlier session first uses waited too long for loads (hookshot_load_start.txt)"};
+    if (marker) return {true, "hookshot_load_start.txt is left aside: without the shader preparation (RX_VK_PRECOMPILE=0) start "
+                              "would load nothing before the title"};
+    return {true, native_mesh ? "the default where the GPU has mesh shaders"
+                              : "the default, on the compute fallback too (RX_VK_LOAD=start: every listed program before the title)"};
+}
+
+/// The safety net: the replay thread's time running or waiting for loads at first uses, in one session. Measured where loads
+/// at create work: 10-25 ms in all over a tour, the longest 2-7 ms (RTX 3090, RTX 4070 SUPER); where they do not: 2.5-4.7 s in
+/// all, the longest 0.7-1.3 s (RX 580, 16 GB).
+/// The marker costs the install 4-5 GB of memory at every later start, for good, so one bad moment must not leave it: on the
+/// RTX 3090, with other work taking its memory, one first use waited 261 ms (322 ms in the session) and the rule before this
+/// one (a single wait over 100 ms) took a healthy install to start. Now:
+/// - only waits longer than kLongMs count, so the few milliseconds each of a healthy session never add up, however long it is;
+/// - over kNowMs of them in one session: the marker at once. The PC where loads at create do not work had tours of 2.5-4.7 s
+///   of waits, and also one session of 62.6 ms: it is taken back at its first session over kNowMs (the second of two there,
+///   at 2,559 ms), not always at its first;
+/// - over kStrikeMs: the marker only if the session before this one was over it too (a strike file says so, taken away at
+///   each start: two sessions running, not two ever)
+constexpr double kLongMs = 20.0, kStrikeMs = 500.0, kNowMs = 2000.0;
+inline bool counts(double wait_ms) { return wait_ms > kLongMs; }
+enum class Waits { kFine, kStrike, kStart };
+inline Waits waits_verdict(double long_waits_ms, bool struck_last_session) {
+    if (long_waits_ms > kNowMs) return Waits::kStart;
+    if (long_waits_ms > kStrikeMs) return struck_last_session ? Waits::kStart : Waits::kStrike;
+    return Waits::kFine;
+}
+
+/// The other thing loads at create calls must not do: find that the caches lack what a list names. A load asks the caches for
+/// its program's noted pipelines and its compute pipelines without compiling; one that is in no cache is compiled when it is
+/// first drawn, in play, with the draw left out: that is this mode's doing, and what start mode builds before the title.
+/// Measured: 0 in every tour where the caches held the preparation's work (at most 39 on a GPU without mesh shaders); 4,189
+/// and 5,384 in the two sessions of a folder whose caches did not answer.
+/// Not counted: draws left out and waits for pipelines no list names (a state first seen in play, a new game's opening:
+/// 1,906 left out and 353 ms of waits in eight minutes of a healthy session). Those happen the same in start mode, so they
+/// say nothing about this one, and a longer session would have taken a healthy install back to start by them
+constexpr long long kNotInCacheMost = 500;
+inline bool caches_lacked(long long listed_not_in_a_cache) { return listed_not_in_a_cache > kNotInCacheMost; }
+
+/// The marker a session that was too slow leaves for the next start (a preparation removes the file)
+inline bool marker_there(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fclose(f);
+    return true;
+}
+
+/// Which session left the marker: one whose first uses waited too long for their loads (marker_write), or one whose loads
+/// found over kNotInCacheMost listed pipelines in no cache (marker_write_lacked). Told by the text's first words; a marker of
+/// any other text (written by hand, or by a build before both existed) is taken as the waits', as every marker was before
+enum class Marker { kNone, kWaits, kLacked };
+inline Marker marker_kind(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return Marker::kNone;
+    char head[32]{};
+    const size_t n = std::fread(head, 1, sizeof head - 1, f);
+    std::fclose(f);
+    static const char lacked[] = "In one session ";   // (marker_write_lacked's first words)
+    return n >= sizeof lacked - 1 && !std::memcmp(head, lacked, sizeof lacked - 1) ? Marker::kLacked : Marker::kWaits;
+}
+
+/// The RAM at or under which the lacked marker is not followed. Start keeps every listed program before the title: 19 GB of
+/// private memory at the title on a 16 GB PC (an RX 6600 on Windows, issues 869 and 933), and 25.8 GB on another (an Arc
+/// A750, 16 GB, Windows: its working set paged out to 3.3 GB, and the window stayed on "Starting the game" for minutes).
+/// What tripped the lacked marker there was a settings change (502 listed pipelines in no cache, and 544 in the session
+/// after it), and compiling those in play is far less than start costs that PC: there it takes the folder from playable to
+/// not, at every start, until the folder is prepared again. The waits' marker is followed on any RAM: it is for a PC
+/// where loads at create wait seconds (an RX 580 with 16 GB), and start is what makes that one playable.
+/// The same 20 GB line as pcache_load.h's kSmallRamMb
+constexpr uint32_t kStartRamMb = 20480;
+/// Whether the marker takes this start to start mode. ram_mb: the PC's RAM (0: not known, and the marker is followed as before)
+inline bool marker_counts(Marker m, uint32_t ram_mb) {
+    if (m == Marker::kNone) return false;
+    if (m == Marker::kLacked && ram_mb && ram_mb <= kStartRamMb) return false;
+    return true;
+}
+
+inline bool marker_write(const std::string& path, double worst_ms, double total_ms) {
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return false;
+    const bool ok = std::fprintf(f, "First uses of shader programs waited for their loads for %.0f ms in one session (the longest "
+                                    "%.0f ms), or in two sessions running, so programs are loaded before the title again. Delete this file, or prepare the "
+                                    "shaders again, to have them loaded when the game makes them.\n", total_ms, worst_ms) > 0;
+    return std::fclose(f) == 0 && ok;
+}
+/// The strike: a session whose long waits were over kStrikeMs leaves it; the next start takes it away and remembers it was there
+inline std::string strike_path(const std::string& marker_path) { return marker_path + ".waited"; }
+inline bool strike_write(const std::string& marker_path, double long_waits_ms) {
+    FILE* f = std::fopen(strike_path(marker_path).c_str(), "wb");
+    if (!f) return false;
+    const bool ok = std::fprintf(f, "First uses of shader programs waited %.0f ms for their loads in the last session. Once is "
+                                    "let pass; if the next session does the same, programs are loaded before the title from "
+                                    "then on.\n", long_waits_ms) > 0;
+    return std::fclose(f) == 0 && ok;
+}
+inline bool strike_take(const std::string& marker_path) {
+    const bool there = marker_there(strike_path(marker_path));
+    if (there) std::remove(strike_path(marker_path).c_str());
+    return there;
+}
+inline bool marker_write_lacked(const std::string& path, long long listed_not_in_a_cache) {
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return false;
+    const bool ok = std::fprintf(f, "In one session %lld listed pipelines were in no cache when their programs were loaded, and "
+                                    "had to be compiled in play, so programs are loaded before the title again. Delete this "
+                                    "file, or prepare the shaders again, to have them loaded when the game makes them.\n",
+                                 listed_not_in_a_cache) > 0;
+    return std::fclose(f) == 0 && ok;
+}
+
+}   // namespace load_default

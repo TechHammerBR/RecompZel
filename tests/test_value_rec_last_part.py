@@ -1,6 +1,6 @@
 """Execute submit_recording's value -> recording bookkeeping: a submission recorded in parts maps to its last part.
 
-A submission longer than RX_VK_CHUNK draws (default 120) is recorded in parts (maybe_split), each part's recording
+A submission longer than RX_VK_CHUNK draws (default 240) is recorded in parts (maybe_split), each part's recording
 carrying the submission's value. wait_recorded waits for the recording a value maps to: the map kept the first part's
 (emplace), so a wait for the fence, or the exposure meter's readback wait, came back after the first ~120 draws, and
 the game wrote over memory the later parts still read (one-frame HUD and lighting garbage on AMD iGPUs, issue 997).

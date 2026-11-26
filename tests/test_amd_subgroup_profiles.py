@@ -21,6 +21,9 @@ FIXTURE = r'''
 
 enum VkShaderStageFlagBits : uint32_t {
     VK_SHADER_STAGE_VERTEX_BIT = 1,
+    VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT = 2,
+    VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT = 4,
+    VK_SHADER_STAGE_GEOMETRY_BIT = 8,
     VK_SHADER_STAGE_FRAGMENT_BIT = 16,
     VK_SHADER_STAGE_COMPUTE_BIT = 32,
     VK_SHADER_STAGE_TASK_BIT_EXT = 64,
@@ -29,15 +32,40 @@ enum VkShaderStageFlagBits : uint32_t {
     VK_SHADER_STAGE_ALL = 0x7fffffff,
 };
 using VkShaderStageFlags = uint32_t;
+using VkBool32 = uint32_t;
+constexpr VkBool32 VK_FALSE = 0;
+enum VkShaderFloatControlsIndependence { VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL = 1, VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE = 2 };
 constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
+constexpr uint32_t VK_DRIVER_ID_MESA_RADV = 3;   // (the RADV branch of the fragment shuffle fallback)
+#define VK_MAKE_VERSION(major, minor, patch) ((uint32_t(major) << 22) | (uint32_t(minor) << 12) | uint32_t(patch))   // (vulkan_core.h's)
 struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
+    uint32_t max_workgroup_subgroups = 32;   // (pins_32: 32-lane subgroups cover the 64 invocations profile_pinned assumes)
+    VkShaderStageFlags subgroup_stages = 0xff;   // (make_profile: subgroups in every stage, float modes and 64-bit atomics on)
+    struct {
+        VkShaderFloatControlsIndependence denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL,
+                                          roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
+        VkBool32 shaderSignedZeroInfNanPreserveFloat16 = 1, shaderSignedZeroInfNanPreserveFloat32 = 1,
+                 shaderDenormPreserveFloat32 = 1, shaderDenormFlushToZeroFloat32 = 1;
+    } float_controls;
+    struct {
+        bool shaderFloat16 = true;   // (k10: f16 lowered where the GPU has none; here it has)
+        // (make_profile: storage image and texel buffer arrays indexed nonuniformly where the GPU can)
+        bool shaderStorageImageArrayNonUniformIndexing = true, shaderUniformTexelBufferArrayNonUniformIndexing = true,
+             shaderStorageTexelBufferArrayNonUniformIndexing = true;
+        bool shaderInt8 = true;   // (make_profile: 8-bit integers where the GPU has them)
+        VkBool32 shaderBufferInt64Atomics = 1;
+    } vk12;
+    struct { bool shaderInt16 = true; } features;   // (and 16-bit)
     bool float_atomic_add = false;
-    struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
-    struct { unsigned shaderInt8 = 1, shaderFloat16 = 1; } vk12;   // (make_profile: 8/16-bit types where the device has them)
-    struct { unsigned shaderInt16 = 1; } features;
+    struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; uint32_t driverVersion = 0; } props;   // (driverVersion: RADV's mesh NumWorkgroups rule)
+    // (device_policy.h, as make_profile reads it: the long warp path where a subgroup can have more than 32 lanes, the
+    // fragment shuffles' fallback on AMD's Windows driver, the gather offset. main() fills the first two by those rules,
+    // which tests/test_device_policy.py holds device_policy() to)
+    struct { bool warp64 = false, frag_shuffle_fallback = false, gather_offset = false; } policy;
 } dev;
-constexpr unsigned VK_FALSE = 0;
+// (vk_shader.cpp's float16_shaders as it answers with neither RX_VK_NO_F16 nor RX_VK_F16 set: the device's shaderFloat16)
+bool float16_shaders() { return dev.vk12.shaderFloat16 != VK_FALSE; }
 
 using Shader::Stage;
 using Id = uint32_t;
@@ -67,7 +95,16 @@ int main(int argc, char** argv) {
     dev.subgroup_max = number(2);
     dev.sg32_stages = number(3);
     dev.driver_id = number(4);
+    dev.policy.warp64 = dev.subgroup_max > 32;
+    dev.policy.frag_shuffle_fallback = dev.driver_id == VK_DRIVER_ID_AMD_PROPRIETARY;
+    // (storage buffers bound and translated at 16 bytes at least: AMD's 4 made the 8- and 16-byte vector views inexact)
+    for (const uint64_t device : {uint64_t{4}, uint64_t{16}, uint64_t{64}}) {
+        dev.props.limits.minStorageBufferOffsetAlignment = device;
+        assert(storage_binding_align() == std::max<uint64_t>(device, 16));
+    }
+    dev.props.limits.minStorageBufferOffsetAlignment = 4;
     check(profile(), number(5));
+    assert(profile().min_ssbo_alignment == 16);
     check(profile_graphics(VK_SHADER_STAGE_VERTEX_BIT), number(6));
     check(profile_graphics(VK_SHADER_STAGE_FRAGMENT_BIT), number(7));
     check(profile_pinned(), number(8));
@@ -104,18 +141,22 @@ def main():
 void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
     bool added = false;
     const auto add = [&](const uint32_t* values, size_t bytes) {
-        if (bytes == sizeof(uint32_t)) return;   // (recompzel: the native float add's bit, added after the lanes)
-        assert(bytes == 5 * sizeof(uint32_t));
+        assert(bytes == 6 * sizeof(uint32_t));
         assert(values[0] == uint32_t(size > 32) && values[1] == size);
         assert(values[2] == uint32_t(workaround) && values[3] == pinned && values[4] == uint32_t(forced));
+        // (the storage binding alignment the translation is built with: a cache of a 16-aligned GPU is no use on a 64-aligned one)
+        assert(values[5] == uint32_t(storage_binding_align()));
         added = true;
     };
 ''' + stamp + r'''
     assert(added);
 }
 '''
-    fixture = (FIXTURE + section(shader, "Shader::Profile make_profile(", "Shader::HostTranslateInfo host_info()")
-               + section(shader, "const Shader::Profile& profile()", "const std::vector<Code>& codes_of(")
+    internal = (VK / "vk_internal.h").read_text(encoding="utf-8")
+    fixture = (FIXTURE + section(internal, "inline bool pins_32(", "/// (hookshot) Where a storage buffer binding starts")
+               + section(internal, "inline uint64_t storage_binding_align()", "/// A range of guest memory")
+               + section(shader, "Shader::Profile make_profile(", "Shader::HostTranslateInfo host_info()")
+               + section(shader, "const Shader::Profile& profile()", "const std::vector<SharedCode>& codes_of(")
                + section(warp, "Id HostThreadId(", "Id GuestLane(")
                + section(warp, "bool UseShuffleFallback(", "Id ShuffleAbsolute(") + check_stamp + CASES)
     with tempfile.TemporaryDirectory(prefix="hookshot-subgroup-profile-") as tmp:
@@ -142,7 +183,7 @@ void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
         env = {k: v for k, v in os.environ.items() if k not in ("RX_VK_WARP64", "RX_VK_FRAG_SHUFFLE_FALLBACK")}
         for device, expected, overrides in cases:
             subprocess.run([str(exe), *map(str, device + expected)], env=env | overrides, check=True, timeout=10)
-    assert "EmitSPIRV(profile_pinned(), rt, t->program, bindings)" in shader
+    assert "EmitSPIRV(profile_pinned(uint64_t(wg[0]) * wg[1] * wg[2]), rt, t->program, bindings)" in shader
     for stage in ("TASK", "MESH"):
         assert f"fallback ? profile_pinned() : profile_graphics(VK_SHADER_STAGE_{stage}_BIT_EXT)" in shader
     for start, end in (("Id ShuffleRelative(", "Id BroadcastLane("), ("Id EmitShuffleIndex(", "Id EmitShuffleUp("),

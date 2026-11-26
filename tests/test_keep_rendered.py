@@ -10,10 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def check_source():
-    """The eviction pass still takes its time from the rule, and the switch back is still read"""
+    """The eviction pass still takes its time from the rule"""
     src = (ROOT / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
-    for needle in ('#include "keep_rendered.h"', "keep_rendered::presents(known, used, allowed, keep_over_only)",
-                   'getenv("RX_VK_KEEP_RENDERED_OVER")', "frame_no - last < keep_rendered"):
+    for needle in ('#include "keep_rendered.h"', "keep_rendered::presents(known, used, allowed)",
+                   "frame_no - last < keep_rendered"):
         if needle not in src:
             raise SystemExit("vk_texture.cpp no longer has: " + needle)
 

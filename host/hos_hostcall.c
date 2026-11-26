@@ -6,14 +6,18 @@
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 
 #define HOS_HOSTCALL_BASE 0x06000000ULL
 #define HOS_HOSTCALL_MAX 8192
 
 typedef void (*HostFn)(Ctx *c, void *user);
-typedef struct { HostFn fn; void *user; char name[64]; volatile LONG calls; } HostCall;
+typedef struct { HostFn fn; void *user; char name[64]; volatile LONG calls; LONG before; } HostCall;
 static HostCall calls[HOS_HOSTCALL_MAX];
 static volatile LONG ncalls;
 static SRWLOCK lock = SRWLOCK_INIT;
@@ -58,7 +62,7 @@ A64Fn a64_lookup_host(uint64_t addr) {
     const uint64_t i = (addr - HOS_HOSTCALL_BASE) / 16;
     if (i >= (uint64_t)ncalls || calls[i].user) return NULL;
     static int slow = -1;
-    if (slow < 0) slow = getenv("HOS_HOSTCALL_STATS") != NULL || hos_trace || getenv("HOS_HOSTCALL_SLOW") != NULL;
+    if (slow < 0) slow = env_on("HOS_HOSTCALL_STATS") || hos_trace || hos_hle_stats || env_on("HOS_HOSTCALL_SLOW");
     return slow ? NULL : (A64Fn)(void *)calls[i].fn;
 }
 
@@ -74,7 +78,7 @@ int a64_call_miss(Ctx *c, uint64_t target) {
     if (!target) {
         /* (hookshot) a callback table entry zeroed at run time: OoT's UpdateTextBoxTextureThread reaches its text release trampoline
            with a null function pointer at the same cutscene point every session. 0 is never a real function; returning 1 turns the
-           tail call into a plain return. chrispository, Hookshot PR 55 */
+           tail call into a plain return. chrispository */
         static volatile LONG logged;
         if (InterlockedIncrement(&logged) <= 8)
             hos_log("skipped an indirect call to 0 (lr %#llx, thread %s)", (unsigned long long)c->x[30], hos_thread_name(hos_self()));
@@ -84,10 +88,10 @@ int a64_call_miss(Ctx *c, uint64_t target) {
     uint64_t i = (target - HOS_HOSTCALL_BASE) / 16;
     if (i >= (uint64_t)ncalls) return 0;
     HostCall *h = &calls[i];
-    /* (the ring and the counts only for HOS_HOSTCALL_STATS / tracing: every NVN call took two interlocked increments
-       on lines all game threads share) */
+    /* (the ring and the counts only for HOS_HOSTCALL_STATS / HOS_HLE_STATS / tracing: every NVN call took two interlocked
+       increments on lines all game threads share) */
     static int stats = -1;
-    if (stats < 0) stats = getenv("HOS_HOSTCALL_STATS") != NULL || hos_trace;
+    if (stats < 0) stats = env_on("HOS_HOSTCALL_STATS") || hos_trace || hos_hle_stats;
     if (!stats) {
         h->fn(c, h->user);
         return 1;
@@ -104,6 +108,78 @@ int a64_call_miss(Ctx *c, uint64_t target) {
     return 1;
 }
 
+/* HOS_HLE_STATS=1 (off by default): about every 5 s, how often each HLE function (hos.h's HLE) and each host call ran in
+   the measured clock span, most called first: "hle: <total> calls of <n> functions in <elapsed> s", then "<count> <name>;"
+   (HLE functions by their full mangled name). scripts/cpu_report.py --calls reads them. HLE functions called from host
+   code (one HLE function calling another) count too; the sdk's NVN exports count as their host call (nvn2_dispatch). */
+int hos_hle_stats;
+static HleCount *volatile hos_hle_list;
+static int64_t hos_hle_before_ns;
+void hos_hle_counted(HleCount *h, void (*fn)(Ctx *c), Ctx *c) {
+    if (!__atomic_load_n(&h->listed, __ATOMIC_ACQUIRE) && !InterlockedExchange(&h->listed, 1)) {
+        HleCount *head;
+        do h->next = head = __atomic_load_n(&hos_hle_list, __ATOMIC_ACQUIRE);
+        while (InterlockedCompareExchangePointer((PVOID volatile *)&hos_hle_list, h, head) != head);
+    }
+    InterlockedIncrement(&h->calls);
+    fn(c);
+}
+/* (the counts wrap: a 32-bit LONG passes its maximum after 2^31 calls, so a count since the last report is the difference
+   taken unsigned) */
+typedef struct { const char *name; unsigned long n; } HleRow;
+static int hos_hle_row_cmp(const void *a, const void *b) {
+    const unsigned long x = ((const HleRow *)a)->n, y = ((const HleRow *)b)->n;
+    return (x < y) - (x > y);
+}
+static void hos_hle_report(void) {
+    if (!hos_hle_stats) return;
+    const int64_t end_ns = hos_now_ns(), begin_ns = hos_hle_before_ns;
+    if (end_ns <= begin_ns) return;
+    hos_hle_before_ns = end_ns;
+    enum { TOP = HOS_HOSTCALL_MAX + 2048 };
+    static HleRow row[TOP];
+    int n = 0;
+    unsigned long long total = 0;
+    for (HleCount *h = __atomic_load_n(&hos_hle_list, __ATOMIC_ACQUIRE); h && n < TOP; h = h->next) {
+        const long now = __atomic_load_n(&h->calls, __ATOMIC_RELAXED);
+        const unsigned long d = (unsigned long)now - (unsigned long)h->before;
+        h->before = now;
+        if (d) row[n].name = h->name, row[n].n = d, n++, total += d;
+    }
+    AcquireSRWLockExclusive(&lock);   /* (the table's names are published under this lock) */
+    const LONG nc = ncalls;
+    for (LONG i = 0; i < nc && n < TOP; i++) {
+        const LONG now = __atomic_load_n(&calls[i].calls, __ATOMIC_RELAXED);
+        const unsigned long d = (ULONG)now - (ULONG)calls[i].before;
+        calls[i].before = now;
+        if (d) row[n].name = calls[i].name, row[n].n = d, n++, total += d;
+    }
+    ReleaseSRWLockExclusive(&lock);
+    qsort(row, n, sizeof *row, hos_hle_row_cmp);
+    /* (every row is printed: a row left out would lose its counts for good, as its baseline moved on) */
+    hos_log("hle: %llu calls of %d functions in %.9f s; begin_ns=%lld end_ns=%lld", total, n,
+            (double)(end_ns - begin_ns) / 1e9, (long long)begin_ns, (long long)end_ns);
+    for (int i = 0; i < n; i++) {
+        hos_log("hle: %lu %s;", row[i].n, row[i].name);
+    }
+}
+static DWORD WINAPI hos_hle_thread(void *p) {
+    (void)p;
+    for (;;) {
+        Sleep(5000);
+        hos_hle_report();
+    }
+    return 0;
+}
+/* hos_main.c, before the game starts: counting and the 5 s log from here on */
+void hos_hle_stats_start(void) {
+    hos_hle_before_ns = hos_now_ns();
+    hos_hle_stats = 1;   /* (published to the report thread at creation; the game starts after this function) */
+    HANDLE thread = CreateThread(NULL, 0, hos_hle_thread, NULL, 0, NULL);
+    if (!thread) { hos_hle_stats = 0; hos_log("hle: call counters could not start; counting stays off"); return; }
+    CloseHandle(thread);
+}
+
 /* Call guest code from inside a host function (an HLE handler), with up to four arguments, on the current guest
    stack. The guest callee keeps the AArch64 callee-saved registers; LR is restored here. Returns x0. */
 uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
@@ -115,9 +191,45 @@ uint64_t hos_call_guest(Ctx *c, uint64_t fn, uint64_t a0, uint64_t a1, uint64_t 
     return c->x[0];
 }
 
+/* The current guest thread's register x<i> (0..30), 0 with no guest thread: for host code without the context's type */
+uint64_t hos_guest_x(int i) {
+    Ctx *c = hos_ctx();
+    return c && i >= 0 && i < 31 ? c->x[i] : 0;
+}
+
+/* hos_call_guest on the current guest thread from a hook in the middle of guest code: every register (x0..x30, the vector
+   registers, NZCV) comes back as it was, so the code hooked goes on as if nothing ran. Returns the callee's x0, 0 with no
+   guest thread */
+uint64_t hos_call_guest_kept(uint64_t fn, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
+    Ctx *c = hos_ctx();
+    if (!c) return 0;
+    uint64_t x[31], v[32][2];
+    const uint8_t f[4] = {c->n, c->z, c->c, c->v};
+    memcpy(x, c->x, sizeof x);
+    memcpy(v, c->vreg, sizeof v);
+    const uint64_t r = hos_call_guest(c, fn, a0, a1, a2, a3);
+    memcpy(c->x, x, sizeof x);
+    memcpy(c->vreg, v, sizeof v);
+    c->n = f[0], c->z = f[1], c->c = f[2], c->v = f[3];
+    return r;
+}
+
+/* One text box's picture at a time (f_80e6e0e0): UpdateTextBoxTextureThread's job calls it through hos_text_picture_thread
+   (nx2/oot_patches.py patch_text_picture), and host/prompts.c's shown_picture holds the same lock for its own call of it, so
+   the hint bars' picture after a change of the prompts never runs while that thread makes a picture. The draw's own calls
+   (boxes it makes the pictures of itself) are not in it */
+static SRWLOCK text_picture_lock = SRWLOCK_INIT;
+void hos_text_picture_lock(void) { AcquireSRWLockExclusive(&text_picture_lock); }
+void hos_text_picture_unlock(void) { ReleaseSRWLockExclusive(&text_picture_lock); }
+void hos_text_picture_thread(Ctx *c) {
+    AcquireSRWLockExclusive(&text_picture_lock);
+    a64_icall(c, 0x80e6e0e0ull);
+    ReleaseSRWLockExclusive(&text_picture_lock);
+}
+
 /* HOS_HOSTCALL_STATS=1: at exit, how often each host call ran (the NVN surface a game really uses). */
 void hos_hostcall_stats(void) {
-    if (!getenv("HOS_HOSTCALL_STATS")) return;
+    if (!env_on("HOS_HOSTCALL_STATS")) return;
     fprintf(stderr, "[hos] host calls:\n");
     for (LONG i = 0; i < ncalls; i++) fprintf(stderr, "  %10ld  %s\n", calls[i].calls, calls[i].name);
     LONG end = ring_pos, start = end > RING ? end - RING : 0;

@@ -45,10 +45,22 @@ def check_swapchain(source):
 
 def check_linux_start(source):
     body = function(source, "int start(void* hwnd)")
-    linux = body[body.index("#else"):body.index("#endif")]
+    # (the window's #ifdef _WIN32 ... #else ... #endif: the one after the headless return, not the switch report's before it)
+    window = body.index("#ifdef _WIN32", body.index("if (!hwnd) {"))
+    linux = body[body.index("#else", window):body.index("#endif", window)]
+    factory = function(source, "bool open_window_surface(bool log_failure) {")
+    for item in ("w->create_surface", "queue-family present support failed"):
+        if item not in factory:
+            raise SystemExit("Vulkan surface creation no longer checks %s" % item)
+    for diagnostic in ("SDL_Vulkan_CreateSurface failed", "queue-family present support failed"):
+        before = factory[:factory.index('logf("vk: ' + diagnostic)].rstrip()
+        if not before.endswith("if (log_failure)"):
+            raise SystemExit("Surface recovery repeats the startup diagnostic: %s" % diagnostic)
+    swapchain = function(source, "bool create_swapchain(")
+    if "open_window_surface(false)" not in swapchain:
+        raise SystemExit("Swapchain recovery must suppress repeated surface startup diagnostics")
     for item in (
-        "w->create_surface",
-        "queue-family present support failed",
+        "open_window_surface(true)",
         "w->drawable_size",
         "SDL returned zero drawable size",
         "swapchain creation failed for drawable",

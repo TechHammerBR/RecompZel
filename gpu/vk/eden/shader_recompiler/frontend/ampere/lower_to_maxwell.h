@@ -13,6 +13,10 @@
 #include <string_view>
 #include <vector>
 #include "common/common_types.h"
+#include "shader_recompiler/frontend/ampere/program_address_map.h"
+#ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
+#include "hookshot_env.h"
+#endif
 
 namespace Shader::Ampere {
 
@@ -166,13 +170,26 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (relocation.target > index) return fail(index, "native branch or call leaves captured program");
             const u32 target = result.source_instruction_offsets[static_cast<size_t>(relocation.target)];
             const s64 relative = s64{address_of(target)} - address_of(relocation.output_index) - 8;
-            if (relative < -0x800000 || relative > 0x7fffff) return fail(index, "lowered branch distance");
-            result.instructions[relocation.output_index] |= (static_cast<u64>(relative) & 0xffffff) << 20;
+            u64& word = result.instructions[relocation.output_index];
+            if (relative < -0x800000 || relative > 0x7fffff) {
+                // (hookshot) past the reach of BRA and CAL (a 24-bit offset, 8 MiB either way: about 786,000 lowered
+                // instructions): their absolute forms, JMP and JCAL, which hold the target's address in 32 bits (20-51;
+                // the frontend reads them so, IsAbsoluteJump). The predicate and the flow test stay as they are
+                const u64 op = word >> 52;
+                if (op != 0xe24 && op != 0xe26) return fail(index, "lowered branch distance");
+                word = (word & ~(u64{0xfff} << 52)) | (u64{op == 0xe24 ? 0xe21U : 0xe22U} << 52) |
+                       (u64{address_of(target)} << 20);
+                continue;
+            }
+            word |= (static_cast<u64>(relative) & 0xffffff) << 20;
         }
         result.source_size = (index + 1) * sizeof(Instruction);
         return result;
     };
-    if (code.empty() || code.size() > 65536) return fail(0, "invalid native program size");
+    if (code.empty() || code.size() > MaximumNativeInstructions) return fail(0, "invalid native program size");
+    // (hookshot) A shared memory store (STS) not yet followed by a barrier: an LDS after it may read what another lane of the
+    // warp stored (see LDS below)
+    bool shared_store_pending = false;
     for (u32 index = 0; index < code.size(); ++index) {
         auto insn = code[index];
         result.source_instruction_offsets.push_back(static_cast<u32>(result.instructions.size()));
@@ -208,7 +225,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         std::array<bool, 256> marker_taken{};
         std::array<bool, 256> native_occupied{};
         // (RX_VK_MARKERS_V205=1: markers avoid only the native high registers, as in v2.0.5: an A/B for the AMD stripes report)
-        static const bool markers_v205 = std::getenv("RX_VK_MARKERS_V205") != nullptr;
+        static const bool markers_v205 = env_on("RX_VK_MARKERS_V205");
         {
             const u32 renameable = RenameableFields(opcode);
             constexpr u32 bits[4]{16, 24, 32, 64};
@@ -230,7 +247,11 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                                             opcode == 0x927 || opcode == 0xb9b || opcode == 0x59f || opcode == 0x983 ||
                                             opcode == 0x98e || opcode == 0xb6c || opcode == 0x9a8 || (renameable & (1U << f));
                 if (reg >= 255 || reg + 3 < reserved_base) continue;   // (a quad below may reach up)
-                if (register_field && reg >= reserved_base) any_high = true;
+                // A vector load can write reserved registers even when its first destination is below them.
+                const bool load_dest = f == 0 && (opcode == 0x381 || opcode == 0x981);
+                const u32 load_size = insn.Bits(73, 3);
+                const u32 width = load_dest && load_size == 6 ? 4U : load_dest && load_size == 5 ? 2U : 1U;
+                if (register_field && reg + width > reserved_base) any_high = true;
             }
             // (hookshot) An ALU instruction's immediate form (form 4) has a 32-bit immediate at bit 32, no register: its low
             // byte was marked as a high GPR. LOP3.LUT R231, R231, 0xfffffffe made it R254, a scratch register, and two of OoT's
@@ -285,8 +306,6 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             }
         }
         if (!any_high) native_high = {};
-        static const bool no_extended = std::getenv("RX_VK_NO_EXTREGS") != nullptr;   // (as before them: rejected)
-        if (any_high && no_extended) return fail(index, "native program uses lowering scratch registers");
         std::array<bool, 256> lowering_used{};   // (the reserved numbers uniform_register gave this instruction)
         const size_t words_before = result.instructions.size();
         const size_t relocations_before = relocations.size();
@@ -1599,6 +1618,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
         case 0xb1d: // BAR.SYNC 0 (bit 80: .DEFER_BLOCKING), full workgroup.
             if (insn.words[1] || (insn.words[2] & ~0x10000U) || native_predicate != 7)
                 return fail(index, "native workgroup barrier mode");
+            shared_store_pending = false;
             emit(0xf0a8000000000000ULL | predicate | (u64{1} << 43) |
                 (u64{1} << 44) | (u64{1} << 39) | (u64{7} << 39));
             break;
@@ -1621,6 +1641,17 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 address = 250;
             }
             const u32 data = opcode == 0x388 ? insn.Bits(32, 8) : static_cast<u32>(dest);
+            // (hookshot) A warp stores to shared memory (STS) and reads it back (LDS) with no barrier between: the Switch runs a
+            // warp's shared memory accesses in order, Vulkan orders another lane's store and this lane's load only through a
+            // barrier, and the driver's compiler may move them past each other (OoT's 4/3 gameplay network on NVIDIA's cooperative
+            // matrix path: 16x2 bright bars, Hookshot issue 2455). As for LDSM: a subgroup barrier before the first LDS after an
+            // STS, only where the LDS is not predicated (every lane of the warp reaches it)
+            if (opcode == 0x388) {
+                shared_store_pending = true;
+            } else if (shared_store_pending && native_predicate == 7) {
+                emit(0xef98000000000000ULL | predicate | (u64{1} << 20));   // (MEMBAR, bit 20: barrier_operations.cpp)
+                shared_store_pending = false;
+            }
             emit((opcode == 0x388 ? 0xef58000000000000ULL : 0xef48000000000000ULL) |
                 predicate | data | (u64{address} << 8) | (u64{insn.Bits(40, 24)} << 20) |
                 (u64{width} << 48));
@@ -1745,10 +1776,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // barrier. A subgroup barrier before the reads (the stores have landed) and after them (no lane's next store reaches
             // the rows before every lane has read them); LDSM is warp-collective, so every lane reaches both. nxnative's finding
             // (seedds/nxnative, MIT: "LDSM reads rows other lanes stored", white blotches through agl's upscaler).
-            // RX_VK_MMA_NO_LDSM_BARRIER=1: none, as before
-            static const bool ldsm_barrier = std::getenv("RX_VK_MMA_NO_LDSM_BARRIER") == nullptr;
             const auto subgroup_barrier = [&] {
-                if (ldsm_barrier) emit(0xef98000000000000ULL | predicate | (u64{1} << 20));   // (MEMBAR, bit 20: barrier_operations.cpp)
+                emit(0xef98000000000000ULL | predicate | (u64{1} << 20));   // (MEMBAR, bit 20: barrier_operations.cpp)
             };
             subgroup_barrier();
             if (transpose) {
@@ -3305,11 +3334,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const s64 relative = static_cast<s64>(raw << 14) >> 14;
             if (s64{index} * 16 + 16 + relative != 0)
                 return fail(index, "native computed branch relative base");
-            const s64 offset = -s64{address_of(static_cast<u32>(result.instructions.size()))} - 8;
-            if (offset < -0x800000) return fail(index, "native computed branch range");
+            // (hookshot) BRX goes to the table's value plus its own address plus its offset, which reaches back only 8 MiB
+            // (24 bits). Past that, JMX: the value plus the offset alone, -8 (the frontend's AnalyzeBRX adds the 8 back)
+            const s64 back = -s64{address_of(static_cast<u32>(result.instructions.size()))} - 8;
+            const bool absolute = back < -0x800000;
+            const s64 offset = absolute ? -8 : back;
             const u32 source = opcode == 0x958 ? uniform_register(insn.Bits(24, 8)) : insn.Bits(24, 8);
             if (source == ~0U) return fail(index, "native uniform computed branch source");
-            emit(0xe25000000000000fULL | predicate | (u64{source} << 8) |
+            emit((absolute ? 0xe20000000000000fULL : 0xe25000000000000fULL) | predicate | (u64{source} << 8) |
                  ((static_cast<u64>(offset) & 0xffffff) << 20));
             computed_branch = true;
             break;

@@ -1,11 +1,15 @@
+#define _CRT_SECURE_NO_WARNINGS
 /* All APIs are mocks: no window, screen saver, security or power setting is accessed. */
 #include <stdint.h>
+static void hos_input_clear_toggles(void) {}
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef void *HWND;
 typedef void *HRAWINPUT;
 typedef unsigned UINT;
+typedef uint32_t DWORD;
 typedef int BOOL;
 typedef int32_t LONG;
 typedef uintptr_t WPARAM;
@@ -21,7 +25,7 @@ enum {
     WM_KEYDOWN = 0x100, WM_SYSKEYDOWN = 0x104, WM_SYSCHAR = 0x106, WM_APP = 0x8000,
     WM_DPICHANGED = 0x2e0, WM_SETFOCUS = 7, WM_KILLFOCUS = 8, WM_CANCELMODE = 0x1f, WM_SETCURSOR = 0x20,
     WM_MOVE = 3, WM_SIZE = 5, WM_PAINT = 0xf, WM_ERASEBKGND = 0x14, WM_CLOSE = 0x10,
-    VK_ESCAPE = 0x1b, VK_F11 = 0x7a, VK_RETURN = 0xd, HTCLIENT = 1,
+    VK_ESCAPE = 0x1b, VK_F10 = 0x79, VK_F11 = 0x7a, VK_RETURN = 0xd, HTCLIENT = 1,
     VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12,
     SC_SCREENSAVE = 0xf140, SCF_ISSECURE = 1, SPI_GETSCREENSAVESECURE = 0x76,
     SC_CLOSE = 0xf060, SC_MONITORPOWER = 0xf170, SC_MAXIMIZE = 0xf030,
@@ -59,6 +63,10 @@ static ULONGLONG tick = 100000;
 static int awake_calls;
 static EXECUTION_STATE awake_flags;
 ULONGLONG GetTickCount64(void) { return tick; }
+/* The complete window procedure also polls monitor metadata. No display or preference is accessed here. */
+static DWORD __attribute__((unused)) GetTickCount(void) { return (DWORD)tick; }
+static void __attribute__((unused)) hos_monitor_wanted(char out[512]) { out[0] = 0; }
+static void __attribute__((unused)) refresh_monitors(void) {}
 EXECUTION_STATE SetThreadExecutionState(EXECUTION_STATE s) { awake_calls++, awake_flags = s; return 0; }
 BOOL SystemParametersInfoA(UINT action, UINT parameter, void *value, UINT flags) {
     CHECK("only read the secure screen saver policy", action == SPI_GETSCREENSAVESECURE);
@@ -83,6 +91,9 @@ static LONG InterlockedExchangeAdd(volatile LONG *target, LONG value) {
     (void)target; (void)value; unexpected(); return 0;
 }
 static void mouse_capture(HWND w, int on) { (void)w; (void)on; unexpected(); }
+/* (display.c: the keys the window's own messages say are down, for hos_key_down; nothing to note here) */
+static void key_messages(UINT msg, WPARAM wp, LPARAM lp) { (void)msg; (void)wp; (void)lp; }
+static int wheel_msg(HWND w, UINT msg, WPARAM wp, LPARAM lp) { (void)w; (void)msg; (void)wp; (void)lp; return 0; }   /* (the item wheel's mouse: closed here) */
 static void set_fullscreen(HWND w, int on) { (void)w; (void)on; unexpected(); }
 static BOOL SetWindowPos(HWND w, HWND after, int x, int y, int width, int height, UINT flags) {
     (void)w; (void)after; (void)x; (void)y; (void)width; (void)height; (void)flags; unexpected(); return FALSE;
@@ -94,6 +105,14 @@ static void hos_relaunch_ask(void) { unexpected(); }         /* (host/hos_relaun
 static void hos_window_closed_exit(void) { unexpected(); }
 static void rx_close_asked(void) { unexpected(); }   /* (host/rx_backend.c: WM_CLOSE, not one of the checked messages) */
 void hos_vk_note_key_press(unsigned key) { (void)key; }   /* (host/rx_backend.c: the menu notes key presses; nothing here) */
+/* (the Insert menu's text fields, host/rx_backend.c MkwVkHost.take_text: none has the keyboard here, nothing is typed) */
+enum { WM_CHAR = 0x102, VK_BACK = 8, VK_END = 0x23, VK_HOME = 0x24, VK_LEFT = 0x25, VK_RIGHT = 0x27, VK_INSERT = 0x2d,
+       VK_DELETE = 0x2e, HOS_TEXT_KEY = 0x40000000 };
+typedef unsigned char BYTE;
+static int hos_text_focus(void) { return 0; }
+static void hos_text_put(uint32_t c) { (void)c; unexpected(); }
+static void paste_clipboard(HWND w) { (void)w; unexpected(); }
+static BOOL IsDBCSLeadByte(BYTE c) { (void)c; unexpected(); return FALSE; }
 
 /* (PR 946: the Insert menu takes the mouse while it is open; these branches never run here either) */
 enum {
@@ -124,18 +143,19 @@ static int game_menu_open;
 static volatile LONG64 game_menu_seen_ns;
 static volatile LONG play_wheel;
 static volatile LONG64 play_wheel_ns;
-static LONG gm_mx, gm_my;
 static LONG64 InterlockedCompareExchange64(volatile LONG64 *target, LONG64 value, LONG64 compare) {
     const LONG64 was = *target;
     if (was == compare) *target = value;
     return was;
 }
 static int64_t hos_now_ns(void) { return 0; }
-static void gm_mouse_used(void) { unexpected(); }
-static int gm_cursor_shown(void) { unexpected(); return 1; }
+static void gm_mouse_moved(HWND w) { (void)w; unexpected(); }
+/* (the timer asks in play too: a cursor shown is left alone, one the pads or keys hid is turned off) */
+static int cursor_shown = 1, cursor_offs;
+static int gm_cursor_shown(void) { return cursor_shown; }
 static void game_menu_press(LPARAM lp, LONG bit) { (void)lp; (void)bit; unexpected(); }
 static void menus_mouse(HWND w, int insert_open, int game_open) { (void)w; (void)insert_open; (void)game_open; unexpected(); }
-static void gm_cursor_off(HWND w) { (void)w; unexpected(); }
+static void gm_cursor_off(HWND w) { CHECK("the cursor is turned off over the game's window", w == game); cursor_offs++; }
 
 /* ACTUAL_WNDPROC */
 
@@ -180,6 +200,18 @@ int main(void) {
     foreground = game; wndproc(game, WM_TIMER, 1, 0);
     CHECK("again after 30 s in front", awake_calls == 2);
     CHECK("every timer still refreshes pointer state", pointer_updates == 5);
+    /* the cursor in play: shown, the timer leaves it; hidden by the pads or keys, the timer turns it off, with the game
+       in front and the Insert menu closed only */
+    CHECK("a cursor shown is left alone", cursor_offs == 0);
+    reset(); cursor_shown = 0; wndproc(game, WM_TIMER, 1, 0);
+    CHECK("hidden by the pads or keys: turned off at the timer", cursor_offs == 1);
+    foreground = (HWND)(uintptr_t)2; wndproc(game, WM_TIMER, 1, 0);
+    CHECK("not with another window in front", cursor_offs == 1);
+    foreground = game; menu_open = 1; wndproc(game, WM_TIMER, 1, 0);
+    CHECK("not under the Insert menu", cursor_offs == 1);
+    menu_open = 0; wndproc(game, WM_TIMER, 1, 0);
+    CHECK("again once the Insert menu is closed", cursor_offs == 2);
+    cursor_shown = 1; cases += 5;
     reset(); call("close command is forwarded", WM_SYSCOMMAND, SC_CLOSE, 0, 0);
     reset(); call("monitor power command is forwarded", WM_SYSCOMMAND, SC_MONITORPOWER, 0, 0);
     reset(); call("maximize command is forwarded", WM_SYSCOMMAND, SC_MAXIMIZE, 0, 0);

@@ -108,6 +108,12 @@ def source_checks():
     for first, start, rest in re.findall(r"enum \{ (HOS_OPT_\w+) = (\d+)([^}]*)\}", api):
         names = [first] + [n.strip() for n in rest.split(",") if n.strip()]
         value.update({n: int(start) + i for i, n in enumerate(names)})
+    # (ids kept out of vk_api.h, the program cache's stamp: the item wheel's, the game side's, the Travel pictures')
+    for first, start, rest in re.findall(r"enum \{ (HOS_OPT_\w+) = (\d+)([^}]*)\}", read("gpu", "vk", "oot_wheel_state.h")):
+        names = [first] + [n.strip() for n in rest.split(",") if n.strip()]
+        value.update({n: int(start) + i for i, n in enumerate(names)})
+    for h in ("oot_cheat_items.h", "oot_teleport_capture.h"):
+        value.update({n: int(v) for n, v in re.findall(r"#define ((?:HOS_OPT|OOT_CHEAT|OOT_TP)_\w+) (\d+)", read("gpu", "vk", h))})
     table = block(replay, replay.index("t.option = [](int id) -> int {"))
     ids = [int(n) if n.isdigit() else value[n] for n in re.findall(r"\bid == (\w+)", table)]
     if len(ids) != len(set(ids)):

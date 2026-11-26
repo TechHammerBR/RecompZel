@@ -14,7 +14,7 @@ RUN_ALL_ARGS = ["--cxx", "g++"]
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ("vulkan", "fallback", "immediate", "fallback-immediate", "zero", "already-away",
-         "non-guest", "disabled", "producer")
+         "non-guest", "disabled", "producer", "quick", "quick-declined")
 
 
 def block(source, marker):

@@ -14,6 +14,9 @@
 
 namespace vram_compact {
 
+/// Global minimum graphics memory requirement for the game (~8 GB, matching Switch 2 UMA footprint).
+inline constexpr uint64_t GLOBAL_MIN_GRAPHICS_REQ = 8192ull << 20;
+
 /// Whether the textures are compacted, by RX_VK_COMPACT as the environment has it: on when it is not set, off for 0 (or empty).
 /// It was opt-in (RX_VK_COMPACT=1) while its hold could let go of textures in use; that is what hold_keeps and hold_met are for
 inline bool enabled(const char* env) { return !env || atoi(env) != 0; }
@@ -21,8 +24,10 @@ inline bool enabled(const char* env) { return !env || atoi(env) != 0; }
 /// The driver's count over 90% of what it allows: a run starts for less free space, and the next one sooner
 inline bool pressed(uint64_t used, uint64_t allowed) { return allowed && used > allowed / 10 * 9; }
 
-/// The free space in the textures' pool from which a run starts: RX_VK_COMPACT_MB (512), 192 MB while pressed. The cache grows
-/// into what a run gave back while the next one waits: under a 9.8 GB allowance the count reached 10.2 GB with 1.1-1.6 GB free
+/// The free space in the textures' pool from which a run starts: proportional to `allowed` (allowed / 16, clamped to 64-512 MB)
+/// unless overridden by RX_VK_COMPACT_MB, and 192 MB while pressed.
+inline uint64_t default_min_free(uint64_t allowed) {
+    return allowed ? std::clamp<uint64_t>(allowed / 16, 64ull << 20, 512ull << 20) : (512ull << 20);}
 inline uint64_t run_from(uint64_t min_free, bool is_pressed) { return is_pressed ? std::min<uint64_t>(min_free, 192ull << 20) : min_free; }
 
 /// The blocks a pool starts with (#2438: each block made in play is a vkAllocateMemory on the replay thread, ~170 ms on AMD's
@@ -32,9 +37,15 @@ inline uint64_t run_from(uint64_t min_free, bool is_pressed) { return is_pressed
 /// empty: the driver counted them (1152 MB on an 8 GB card), no texture could take them, so reclaimable() rightly left them in
 /// the count and the hold cut the texture budget by as much (#2690: an RTX 3070 in Castle Town Market, 31-36 fps against 54-56
 /// without them), and the textures' blocks were made in play as before. In the textures' pool the scene's textures fill them,
-/// and what they hold free is that pool's free space, which the budget takes off the count already
-inline uint64_t blocks_at_start(uint64_t heap, uint64_t block, bool holds_textures) {
-    return holds_textures && block ? std::clamp<uint64_t>(heap / 100 * 15 / block, 2, 24) : 0;
+/// and what they hold free is that pool's free space, which the budget takes off the count already.
+/// None on an integrated GPU: its heap is the PC's RAM, which the game needs too, and VMA keeps those blocks for the whole run.
+/// On a UHD Graphics with 16 GB (i3-1115G4) nine blocks (1152 MB) stayed while the textures' budget fell to 720 MB; the pool
+/// down to them (kept_only) kept the 97% rule waiting, and at 6.6 GB of the 6.5 the driver allowed a 1119 x 1119 depth image
+/// was not made and the device was lost (the Deku Tree's last cutscene)
+inline uint64_t blocks_at_start(uint64_t heap, uint64_t block, bool holds_textures, bool integrated) {
+    if (!holds_textures || !block || integrated) return 0;
+    if (heap < GLOBAL_MIN_GRAPHICS_REQ) return std::clamp<uint64_t>(heap / 100 * 8 / block, 2, 12);
+    return std::clamp<uint64_t>(heap / 100 * 15 / block, 2, 24);
 }
 
 /// The free space of the textures' pool a run can give back: not what the blocks made at the start hold (kept), which VMA
@@ -47,6 +58,43 @@ inline uint64_t returnable(uint64_t block_bytes, uint64_t free_bytes, uint64_t k
 /// the driver's count: the rule that squeezes by the count alone (97% of the allowance) waits, as it does for room in the blocks
 inline bool kept_only(uint64_t block_bytes, uint64_t kept) { return kept && block_bytes <= kept; }
 
+/// The driver's count, in percent of its allowance, above which the textures give up the excess. 97 on a dedicated card, whose
+/// driver pages what is past the allowance out to system memory. 90 on an integrated GPU: its heap is the PC's RAM, with nowhere
+/// to page to, so past the allowance the driver's own allocations fail. A UHD Graphics (i3-1115G4, 7.0 GB allowed) at 6.7 GB
+/// entered Hyrule Castle, its imports grew by 560 MB, and at 7.5 of 7.0 GB graphics pipelines were not made (-2) and the next
+/// vkCmdDispatchIndirect faulted inside igvk64.dll; 3% of the allowance is 215 MB of room, 10% is 717
+inline uint64_t count_line_pct(bool integrated) { return integrated ? 90 : 97; }
+
+/// Whether VMA's blocks hold room enough (an eighth of the allowance free) that the count line's squeeze waits: new images take
+/// that space and the count does not grow. Not past the allowance, where a dedicated card's driver pages (#2156), and not on an
+/// integrated GPU: what grows there near the line is the driver's own (pipelines, command memory) and the staging arenas, which
+/// no block's free space takes. The UHD Graphics above sat at 6,709 of 7,172 MB with 1,121 MB of it free in the blocks, so the
+/// squeeze waited; Hyrule Castle's load then took the count to 7.5 GB
+inline bool room_in_blocks(uint64_t used, uint64_t allowed, uint64_t block_free, bool integrated) {
+    return !integrated && used <= allowed && block_free >= allowed / 8;
+}
+
+/// What the textures give up once the driver has refused a pipeline for want of memory (VK_ERROR_OUT_OF_DEVICE_MEMORY or
+/// _HOST_MEMORY): the count's excess over its line, and kShortGive at least, whatever the blocks hold free. The count is read
+/// every 10 frames (3 s at the UHD Graphics' 3.5 fps); the refusals say it sooner, and the UHD Graphics' next indirect dispatch
+/// after six of them faulted inside igvk64.dll
+inline constexpr uint64_t kShortGive = 256ull << 20;
+inline uint64_t short_excess(uint64_t used, uint64_t count_line) {
+    return std::max<uint64_t>(used > count_line ? used - count_line : 0, kShortGive);
+}
+
+/// The allowance as the rules take it, from the driver's count (used) and allowance: one the driver gives as the count itself,
+/// within kAtCount, is past: AMD's Windows driver reports a process over what it allows as allowed what it uses (an RX 6600 at
+/// 5940 of 5940 MB, another at 6.6 of 6.6 GB after 5.3 of 6.5). Taken as it is, every rule saw the count within it
+/// while the driver paged. Then a tenth under the count (kPastShare), so the rules give back until the driver says again how
+/// much it allows. An allowance under the count is past already and stays as it is; 0 (unknown) too
+inline constexpr uint64_t kAtCount = 16ull << 20;
+inline constexpr uint64_t kPastShare = 10;
+inline uint64_t past_allowance(uint64_t used, uint64_t allowed) {
+    if (!allowed || allowed + kAtCount < used || allowed > used + kAtCount) return allowed;
+    return used - used / kPastShare;
+}
+
 /// The presents between the end of a run and the next look
 inline uint64_t rest(bool is_pressed) { return is_pressed ? 120 : 600; }
 
@@ -57,12 +105,67 @@ inline uint64_t reclaimable(uint64_t block_free, uint64_t pool_free) { return st
 
 /// The texture budget that holds the count, as it will be once a run has given `reclaim` back, at pct% of the allowance:
 /// what the textures hold (total) less the excess, and never more than the budget was
-inline uint64_t held_budget(uint64_t budget, uint64_t total, uint64_t used, uint64_t reclaim, uint64_t allowed, uint64_t pct) {
+/// Sane texture working set floor to prevent thrashing and downward budget ratcheting.
+/// Preserves a 1800 MB baseline on < 8 GB cards for complex open-world scenes (e.g. Kokiri Forest, Hyrule Field).
+inline uint64_t texture_min_floor(uint64_t allowed) {
+    if (!allowed) return 0;
+    if (allowed < GLOBAL_MIN_GRAPHICS_REQ) return 1800ull << 20;
+    return std::max<uint64_t>(1800ull << 20, allowed / 4);
+}
+
+/// A texture floor as the rules may hold it: none once the driver's count is past its allowance. There the driver pages VRAM out
+/// to system memory and every frame reads some of it over PCIe, which costs more than textures made again: a GTX 1060 6 GB
+/// sat at 6128 MB of the 5231 it allowed with 1606 MB of textures, under the 1800 MB floor, so no rule could take one,
+/// and Hyrule Field went from 31 to 14 fps until a restart. Past it the textures used in the eviction's last 60 presents are
+/// what stays (vk_texture.cpp texture_frame's min_unused); within it the floor keeps the working set from a downward ratchet
+inline uint64_t floor_within(uint64_t floor, uint64_t used, uint64_t allowed) { return allowed && used > allowed ? 0 : floor; }
+
+/// The floor of the count line's squeeze (97% of the allowance): texture_min_floor, given way past the allowance (floor_within)
+inline uint64_t count_line_floor(uint64_t used, uint64_t allowed) { return floor_within(texture_min_floor(allowed), used, allowed); }
+
+/// Dynamic texture floor with hysteresis targeting the 86%-92% VRAM sweet spot on constrained GPUs.
+inline uint64_t update_dynamic_floor(uint64_t current_floor, uint64_t total_bytes, uint64_t used, uint64_t pressure, uint64_t allowed) {
+    const uint64_t min_floor = texture_min_floor(allowed);
+    if (!allowed || allowed >= GLOBAL_MIN_GRAPHICS_REQ) return min_floor;
+
+    const uint64_t max_floor = std::max(min_floor, allowed / 2);
+    uint64_t floor = current_floor ? std::clamp(current_floor, min_floor, max_floor) : min_floor;
+
+    const uint64_t sweet_low = allowed / 100 * 86;
+    const uint64_t sweet_high = allowed / 100 * 92;
+    const uint64_t hard_high = allowed / 100 * 95;
+    const uint64_t emergency_high = allowed / 100 * 97;
+    constexpr uint64_t kStep = 32ull << 20;
+
+    if (used > emergency_high) {
+        floor = min_floor;
+    } else if (pressure > sweet_high || used > hard_high) {
+        floor = floor > min_floor + kStep ? floor - kStep : min_floor;
+    } else if (pressure < sweet_low && used < sweet_high && total_bytes >= floor / 10 * 9) {
+        const uint64_t demand_cap = std::min<uint64_t>(max_floor, total_bytes + (64ull << 20));
+        if (floor < demand_cap) {
+            floor = std::min(demand_cap, floor + kStep);
+        }
+    }
+    return std::clamp(floor, min_floor, max_floor);
+}
+
+/// The texture budget that holds the count at pct% of `allowed`, with damped contraction on constrained GPUs.
+inline uint64_t held_budget(uint64_t budget, uint64_t total, uint64_t used, uint64_t reclaim, uint64_t allowed, uint64_t pct, uint64_t floor_override = 0) {
     const uint64_t line = allowed / 100 * pct;
     const uint64_t pressure = used - std::min(used, reclaim);
     if (!allowed || pressure <= line) return budget;
     const uint64_t over = pressure - line;
-    return std::min(budget, total > over ? total - over : 0);
+    // Damped contraction (alpha = 0.25) on < 8 GB GPUs to smoothly absorb transient frame spikes without thrashing.
+    const uint64_t damped_over = (allowed < GLOBAL_MIN_GRAPHICS_REQ) ? (over / 4) : over;
+    uint64_t target = total > damped_over ? total - damped_over : 0;
+    const uint64_t floor = floor_within(floor_override ? floor_override : texture_min_floor(allowed), used, allowed);
+    if (floor && target < floor) {
+        target = floor;
+    }
+    uint64_t res = std::min(budget, target);
+    if (floor && res < floor) res = floor;
+    return res;
 }
 
 /// What the hold lets go of has gone unused for this many presents (ten seconds at 60 fps). The eviction's own 60 is right for a
@@ -70,7 +173,7 @@ inline uint64_t held_budget(uint64_t budget, uint64_t total, uint64_t used, uint
 /// leaves the scene's textures no room under it, and then every texture out of view for a second went and came back when the
 /// camera turned: with the count held under a 7 GB allowance, a turning camera in Hyrule Field at DLAA let go of 2.3-2.6 GB of live
 /// textures every 600 presents and uploaded 6.8 GB in 50 seconds, against 1.4 GB with the compaction off
-inline constexpr uint64_t kHoldUnused = 600;
+inline constexpr uint64_t kHoldUnused = 180;
 
 /// Whether the hold's pass keeps a texture no render target has drawn over: one used in the last kHoldUnused presents
 inline bool hold_keeps(uint64_t unused) { return unused < kHoldUnused; }
@@ -82,7 +185,7 @@ inline bool hold_keeps(uint64_t unused) { return unused < kHoldUnused; }
 /// recorder running the GPU's frame went from 11 to 15-23 ms for ten seconds each time it reached 87-90%. With the reserve:
 /// over 85% for 5%, over 87% for 0-1%, peaks of 87-88%, no more uploads
 inline constexpr uint64_t kReservePoints = 5;
-inline constexpr uint64_t kReserveUnused = 1800;
+inline constexpr uint64_t kReserveUnused = 600;
 inline uint64_t reserve_pct(uint64_t pct) { return pct > kReservePoints ? pct - kReservePoints : 0; }
 
 /// What the rules that are not the hold's (the budget's size, the 90% rule, the driver's limit at 97%) ask an eviction to go down
@@ -97,11 +200,26 @@ inline uint64_t rule_target(uint64_t total, uint64_t rule_budget) { return total
 /// second, all on screen again within the camera's turn, made again, over the line again: 2.5 <-> 2.95 GB every few seconds,
 /// 8-9 uploads a frame and 16-25 frames over 50 ms in 30 s, where the same scene loaded from a save (just under the line) had
 /// none. So for them what goes is the excess and kExcessSlack more, so that not every pass is one; the budget's size still asks
-/// for its 7/8
+/// for its 7/8.
+/// But only a small excess: that is the cache sitting at the line. One of more than a sixteenth of the rule's budget (half of
+/// what the cut to 7/8 takes) is not that: an area has come in, or the textures are made again as fast as a pass lets them
+/// go, and trimmed to the line the cache stays at it, every pass an eviction. Lake Hylia reached from Kakariko on a 10 GB card
+/// with a 4 GB budget set by hand and the hold at 90% (issue 2780) sat 383 MB over the line at each pass, 4,022 MB of textures
+/// in 8,288 MB and 6.3 uploads a frame at 12.7 fps, where the cut to 7/8 held 2,946 MB in 6,639 MB with no uploads at 42.4 fps
+/// (likely because the passes count presents: the slower the frame, the longer "unused for 60" is and the surer what goes is
+/// wanted again, and the trim never took the count far enough under the line for that to stop). So a large excess is cut to
+/// 7/8, as before. The bound is a share of the budget and not less: with 128 MB the Market on the 8 GB card had 22-102 passes
+/// in 60 s over it (181-199 MB on average) and let go of 11,100 textures, against 6,500 with the sixteenth and 14,500 with the
+/// cut at every pass
 inline constexpr uint64_t kExcessSlack = 64ull << 20;
+inline constexpr uint64_t kExcessSmall = 16;   // (the excess is small up to rule_budget / kExcessSmall)
+inline bool excess_small(uint64_t total, uint64_t rule_budget) {
+    return total > rule_budget && total - rule_budget <= rule_budget / kExcessSmall;
+}
 inline uint64_t rule_target(uint64_t total, uint64_t size_budget, uint64_t rule_budget) {
     uint64_t to = rule_target(total, size_budget);
-    if (rule_budget < size_budget && total > rule_budget) to = std::min(to, rule_budget - std::min(rule_budget, kExcessSlack));
+    if (rule_budget < size_budget && total > rule_budget)
+        to = std::min(to, excess_small(total, rule_budget) ? rule_budget - std::min(rule_budget, kExcessSlack) : rule_budget / 8 * 7);
     return to;
 }
 

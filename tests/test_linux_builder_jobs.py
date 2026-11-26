@@ -43,7 +43,8 @@ class BuildHarness:
         self.gui = SimpleNamespace(
             out=value(str(folder / "out")), kind=value(kind), nup=value(str(nup)),
             romfs=value(str(romfs)), exefs=value(str(exefs)), language=value("English (US)"), prepare=value(True),
-            cfg={"previous": "kept"}, show_progress=lambda: self.events.append(("progress",)), read=lambda proc: None)
+            cfg={"previous": "kept"}, show_progress=lambda: self.events.append(("progress",)), read=lambda proc: None,
+            tick=lambda: self.events.append(("tick",)))
 
         def start_process(command, **kwargs):
             self.events.append(("process",))
@@ -82,7 +83,7 @@ class BuilderBuildJobsTests(unittest.TestCase):
         self.folder = Path(self.temporary.name)
 
     def assert_started(self, harness, jobs=None):
-        self.assertEqual([event[0] for event in harness.events], ["save", "progress", "process", "thread", "start"])
+        self.assertEqual([event[0] for event in harness.events], ["save", "progress", "process", "thread", "start", "tick"])
         gui = harness.gui
         source = ["--nup", gui.nup.get()] if gui.kind.get() == "nup" else ["--romfs", gui.romfs.get(), "--exefs", gui.exefs.get()]
         expected = [sys.executable, "-I", str(ROOT / "nx2" / "make_game.py")] + source + [
@@ -177,9 +178,11 @@ class MakeGameJobsTests(unittest.TestCase):
     def test_one_a_cpu_thread_and_the_memory_gate_decides(self):
         # (nx2/build.py's MemoryGate starts each compiler when the memory free holds it, so the count is not fitted to the free
         # memory at the start; the window chose 7 from 32 GB total at 3.5 GB each on a 16-thread PC)
-        self.assertEqual(self.choose(16, "posix"), 16)
-        self.assertEqual(self.choose(16, "nt"), 16)
-        self.assertEqual(self.choose(32, "posix"), 32)
+        # (one thread left over, so the PC stays usable while it builds: make_game.default_jobs)
+        self.assertEqual(self.choose(16, "posix"), 15)
+        self.assertEqual(self.choose(16, "nt"), 15)
+        self.assertEqual(self.choose(32, "posix"), 31)
+        self.assertEqual(self.choose(1, "posix"), 1)
 
     def test_the_gate_floor_is_windows_only(self):
         # (Windows pages rather than fails; Linux stops a compiler that does not fit)

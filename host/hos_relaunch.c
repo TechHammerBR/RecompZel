@@ -7,18 +7,49 @@
      AppImage (hookshot-launch starts it with the AppImage's variables taken away), so /proc/self/exe is the game;
      argv[0] on the PATH if that is gone (the folder built again meanwhile).
      Windows: a new process of this executable (GetModuleFileNameW) with this one's command line (GetCommandLineW), in
-     the same folder and environment; then this one exits. */
+     the same folder, with the environment this one started with (kept by hos_relaunch_keep_env before hookshot_env.txt
+     was read: the file's lines are read again, and its edits since are taken, not left out as the environment's own),
+     and the standard handles it was started with when it was given a stderr (a run's log.txt), inherited alone;
+     then this one exits. */
 #include "hos.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#if defined(_WIN32) && !defined(HOS_FIXTURE)   /* (recompzel: hos_window_closed_exit; HOS_FIXTURE: the tests that compile it) */
+#include <process.h>   /* (_cexit) */
+#define HOS_EXIT_FAST 1
+#endif
+#include "hos_relaunch.h"
+#include "../gpu/vk/compat/hookshot_env.h"   /* (env_on) */
 
 static volatile LONG relaunch_asked;
 
 void hos_relaunch_ask(void) { InterlockedExchange(&relaunch_asked, 1); }
 
 #ifdef _WIN32
+static wchar_t *start_env;   /* (the environment block at the start: hos_relaunch_keep_env) */
+static HANDLE start_std[3];  /* (the standard handles the game was given, if it was given a stderr: hos_relaunch_keep_env) */
+
+void hos_relaunch_keep_env(void) {
+    /* (kept before hos_main.c opens hookshot_log.txt as stderr for a game given none, by the same test as hos_main.c's:
+       only handles the game was started with are passed on to the game started again, never its own log, which the new
+       run moves to .1 and opens for itself) */
+    const HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    if (err && err != INVALID_HANDLE_VALUE && GetFileType(err) != FILE_TYPE_UNKNOWN) {
+        start_std[0] = GetStdHandle(STD_INPUT_HANDLE);
+        start_std[1] = GetStdHandle(STD_OUTPUT_HANDLE);
+        start_std[2] = err;
+    }
+    wchar_t *b = GetEnvironmentStringsW();
+    if (!b) return;
+    size_t n = 0;
+    while (b[n]) n += wcslen(b + n) + 1;
+    start_env = (wchar_t *)malloc((n + 1) * sizeof *start_env);
+    if (start_env) memcpy(start_env, b, (n + 1) * sizeof *start_env);
+    FreeEnvironmentStringsW(b);
+}
+
 static void relaunch(void) {
     wchar_t exe[MAX_PATH * 4];
     const DWORD n = GetModuleFileNameW(NULL, exe, MAX_PATH * 4);
@@ -41,7 +72,60 @@ static void relaunch(void) {
     wchar_t pid[16];
     swprintf(pid, 16, L"%lu", (unsigned long)GetCurrentProcessId());
     SetEnvironmentVariableW(L"HOS_RESTART_OF", pid);
-    if (CreateProcessW(exe, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+    wchar_t *env = start_env ? hos_relaunch_env_block(start_env, L"HOS_RESTART_OF", pid) : NULL;   /* (NULL: this one's) */
+    /* (a game given its standard handles (a run of scripts/hookshot_ctl.py, whose log.txt is the game's stderr) passes
+       them on, so the game started again logs where this one did. Only those handles are inherited
+       (PROC_THREAD_ATTRIBUTE_HANDLE_LIST), never another this process holds open, and each only while it is still the
+       one the game was started with. A game that opened its own hookshot_log.txt passes none, as before. Should the
+       start with them fail, the game is started as before, without them) */
+    HANDLE pass[3];
+    DWORD npass = 0;
+    STARTUPINFOEXW six;
+    memset(&six, 0, sizeof six);
+    six.StartupInfo.cb = sizeof six;
+    six.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    HANDLE *const std_slot[3] = {&six.StartupInfo.hStdInput, &six.StartupInfo.hStdOutput, &six.StartupInfo.hStdError};
+    static const DWORD std_which[3] = {STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
+    for (int i = 0; i < 3; i++) {
+        const HANDLE h = start_std[i];
+        if (!h || h == INVALID_HANDLE_VALUE || GetStdHandle(std_which[i]) != h) continue;
+        DWORD k = 0;
+        while (k < npass && pass[k] != h) k++;   /* (stdout and stderr are often one handle: listed once) */
+        if (k == npass) {
+            if (!SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) continue;
+            pass[npass++] = h;
+        }
+        *std_slot[i] = h;
+    }
+    SIZE_T list_size = 0;
+    LPPROC_THREAD_ATTRIBUTE_LIST list = NULL;
+    if (npass && six.StartupInfo.hStdError) {
+        InitializeProcThreadAttributeList(NULL, 1, 0, &list_size);
+        list = list_size ? (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(list_size) : NULL;
+        if (list && !InitializeProcThreadAttributeList(list, 1, 0, &list_size)) free(list), list = NULL;
+        if (list && !UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, pass, npass * sizeof *pass,
+                                               NULL, NULL)) {
+            DeleteProcThreadAttributeList(list);
+            free(list), list = NULL;
+        }
+    }
+    BOOL started = FALSE;
+    if (list) {
+        six.lpAttributeList = list;
+        started = CreateProcessW(exe, cmd, NULL, NULL, TRUE,
+                                 (env ? CREATE_UNICODE_ENVIRONMENT : 0) | EXTENDED_STARTUPINFO_PRESENT, env, NULL,
+                                 &six.StartupInfo, &pi);
+        const DWORD error = started ? 0 : GetLastError();
+        DeleteProcThreadAttributeList(list);
+        free(list);
+        if (!started) {
+            hos_log("restart: the game could not be started again with its standard handles (error %lu): trying "
+                    "without them", (unsigned long)error);
+            memcpy(cmd, line, (len + 1) * sizeof *cmd);   /* (as it was: CreateProcessW may have written into it) */
+        }
+    }
+    if (started ||
+        CreateProcessW(exe, cmd, NULL, NULL, FALSE, env ? CREATE_UNICODE_ENVIRONMENT : 0, env, NULL, &si, &pi)) {
         CloseHandle(pi.hThread);
         CloseHandle(pi.hProcess);
     } else {
@@ -49,14 +133,23 @@ static void relaunch(void) {
         hos_log_flush();
     }
     free(cmd);
+    free(env);
 }
 #else
-#include "hos_relaunch.h"
 #include <dirent.h>
 #include <fcntl.h>
 #include <unistd.h>
 
 extern char **environ;
+
+static int start_err_given = 1;   /* (whether the game was started with a stderr: hos_relaunch_keep_env) */
+
+void hos_relaunch_keep_env(void) {
+    /* (the environment is read again from /proc/self/environ; kept here, before hos_main.c opens hookshot_log.txt as stderr
+       for a game given none, by the same test as hos_main.c's, is whether it was given one) */
+    const HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
+    start_err_given = err && err != INVALID_HANDLE_VALUE && GetFileType(err) != FILE_TYPE_UNKNOWN;
+}
 
 static void relaunch(void) {
     HosRelaunch r;
@@ -76,20 +169,48 @@ static void relaunch(void) {
         closedir(d);
     }
     fflush(NULL);
+    /* (a game given no stderr has its own log there, which execve would keep: the new run would take it for a stderr it was
+       given, and neither move it to .1 nor name it for the crash window. It is given none again; its log back if the exec fails) */
+    int log_err = -1;
+    if (!start_err_given) {
+        const int none = open("/dev/null", O_WRONLY | O_CLOEXEC);
+        if (none >= 0 && (log_err = fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 0)) >= 0) dup2(none, STDERR_FILENO);
+        if (none >= 0) close(none);
+    }
     execve("/proc/self/exe", r.argv, r.envp);
     environ = r.envp;   /* (execvp searches the PATH of the environment it is given: the one the game started with) */
     execvp(r.argv[0], r.argv);
+    if (log_err >= 0) dup2(log_err, STDERR_FILENO), close(log_err);
     hos_log("restart: the game could not be started again: it only exits");
     hos_log_flush();
 }
 #endif
 
+/* Shared tail after rx_close_asked returned. No process exit or restart here: the Windows stop worker must
+   keep its watchdog alive until all explicit close work and the log flush have returned. */
+void hos_close_finish(void) {
+    void hos_fs_wait_writes(void);   /* (nn_fs.c: a file the game is writing, up to 3 s) */
+    hos_fs_wait_writes();
+    hos_log("stop: close work done (a file the game was writing waited for, at most 3 s)");
+    hos_ab_end();   /* (hookshot) HOS_AB: the sides' sums in the log (host/hos_ab.c) */
+    hos_log_flush();
+    void hos_crash_clean_end(void);
+    hos_crash_clean_end();
+}
+
 /* The window was closed (host/display.c's WM_CLOSE, host/posix/display_sdl.c's quit): the game exits, and starts again
    first when the menu asked for it */
+/* (recompzel) On Windows the atexit handlers run (_cexit: the log, the capture notes), then the process ends without the DLLs'
+   DLL_PROCESS_DETACH: in ExitProcess NVIDIA's frame generation (nvngx_dlssg.dll) tore down after the device and crashed
+   reading 0x48 at every close of the window (2026-11-20). HOS_EXIT_DETACH=1: ExitProcess as before */
 void hos_window_closed_exit(void) {
+    /* (a save being written goes to its end first: hos_close_finish waits for it, host/nn_fs.c) */
     const int again = relaunch_asked != 0;
     hos_log(again ? "display: window closed for a restart (the Insert menu's Restart now)" : "display: window closed, exiting");
-    hos_log_flush();
+    hos_close_finish();
     if (again) relaunch();
+#ifdef HOS_EXIT_FAST
+    if (!env_on("HOS_EXIT_DETACH")) _cexit(), TerminateProcess((HANDLE)-1, 0);   /* (recompzel: above; -1 the process itself) */
+#endif
     ExitProcess(0);
 }

@@ -26,7 +26,7 @@ def main():
     bank = (vk / "vk_bank.cpp").read_text(encoding="utf-8")
     replay = (vk / "vk_replay.cpp").read_text(encoding="utf-8")
     draw = (vk / "vk_draw.cpp").read_text(encoding="utf-8")
-    fill = block(bank, "void driver_bank_fill(")
+    fill = block(bank, "static void driver_bank_fill_ref(")   # (the word-by-word fill: driver_bank_fill runs it, or the native writer)
     c2 = block(fill, "if (bank == 2) {")
     if set(re.findall(r"\bs\.(\w+)", c2)) - {"tex", "img", "samp"}:
         raise SystemExit("c2 is made from more than tex_gen covers: " + str(set(re.findall(r"\bs\.(\w+)", c2))))
@@ -49,8 +49,8 @@ def main():
         if stores:
             raise SystemExit(f"{name} is stored to outside the bind handlers' arrays")
     uniform = block(draw, "VkDescriptorBufferInfo uniform_range(")
-    if "bank_stage > 4 ? s.bind_gen" not in uniform or "RX_VK_BANK_GEN_OFF" not in uniform:
-        raise SystemExit("compute, task and mesh banks are not kept by bind_gen, or the switch is missing")
+    if "bank_stage > 4 ? s.bind_gen" not in uniform:
+        raise SystemExit("compute, task and mesh banks are not kept by bind_gen")
     if "c.bind_gen = gen;" not in uniform or "c.bind_gen == gen" not in uniform:
         raise SystemExit("the bank cache is not kept and checked by the same generation")
     print("PASS: a graphics stage's banks are kept by the generation of the bindings they are made from")

@@ -1,6 +1,5 @@
 """Aligned uniform buffers must not evict every cached handle read."""
 import argparse
-import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -65,14 +64,13 @@ bool memory_read_as_submitted(uint64_t addr, void* dst, uint64_t n) {
     fixture += r'''
 int main() {
     const uint64_t a = 0x100000040ull, b = a + 512;
-    const bool legacy = std::getenv("RX_VK_UB_WORD_HASH") && !std::atoi(std::getenv("RX_VK_UB_WORD_HASH"));
     uint32_t v = 0;
     for (int i = 0; i < 1000; i++) {
         const uint64_t addr = i % 2 ? b : a;
         CHECK(ub_read(addr, &v, 4));
         CHECK(v == (i % 2 ? 0x01010101u : 0));
     }
-    CHECK(reads == (legacy ? 1000 : 2));
+    CHECK(reads == 2);
     // The same handle offset in adjacent pages must not all share one slot either.
     rec_value_now++; reads = 0;
     for (int i = 0; i < 1000; i++) {
@@ -80,7 +78,7 @@ int main() {
         CHECK(ub_read(addr, &v, 4));
         CHECK(v == (i % 2 ? 0x08080808u : 0));
     }
-    CHECK(reads == (legacy ? 1000 : 2));
+    CHECK(reads == 2);
     // Adjacent words across this boundary collided under the XOR mix, even though the old index kept them apart.
     rec_value_now++; reads = 0;
     for (int i = 0; i < 1000; i++) {
@@ -101,7 +99,7 @@ int main() {
         if (last[slot] >= 0) closest = std::min(closest, word - (uint64_t)last[slot]);
         last[slot] = (int64_t)word;
     }
-    CHECK(closest == (legacy ? 128 : 126));
+    CHECK(closest == 126);
     std::printf("closest repeating slot: %llu words apart\n", (unsigned long long)closest);
     // Repeated actual reads of a contiguous window crossing the boundary must retain all 64 words.
     rec_value_now++; reads = 0;
@@ -130,8 +128,7 @@ int main() {
     // A failed backing read does not return a cached word through the update.
     fail_read = true;
     CHECK(!ub_read(a, &v, 4));
-    std::puts(legacy ? "PASS: legacy index reproduces aligned-buffer thrashing" :
-                      "PASS: aligned handles stay cached; collisions, recordings, stamps and updates remain correct");
+    std::puts("PASS: aligned handles stay cached; collisions, recordings, stamps and updates remain correct");
 }
 '''
     with tempfile.TemporaryDirectory(prefix="ub-word-index-") as tmp:
@@ -139,9 +136,7 @@ int main() {
         exe = Path(tmp) / "fixture"
         cpp.write_text(fixture, encoding="utf-8")
         subprocess.run([args.cxx, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror", "-D_CRT_SECURE_NO_WARNINGS", str(cpp), "-o", str(exe)], check=True)
-        for value in ("1", "0"):
-            env = dict(os.environ, RX_VK_UB_WORD_HASH=value)
-            subprocess.run([str(exe)], check=True, env=env)
+        subprocess.run([str(exe)], check=True)
 
 
 if __name__ == "__main__":

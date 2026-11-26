@@ -30,8 +30,8 @@ def main():
     if mask.count("return ~0u") != 2 or "image_descriptors" not in mask or "texture_descriptors" not in mask:
         raise SystemExit("answer_stage_mask does not refuse every other source")
     pick = block(shader, "const Program* program_for(")
-    if "RX_VK_PICK_BIND_GEN" not in pick or "!compute && f.amask != ~0u" not in pick:
-        raise SystemExit("the switch is missing, or a compute program is picked by textures")
+    if "if (fbind != bind && !compute && f.amask != ~0u) {" not in pick:
+        raise SystemExit("the last pick is not tried by its textures, or a compute program is picked by textures")
     if "f.tex_gen[k] != s.tex_gen[k]" not in pick or "f.amask >> k & 1" not in pick:
         raise SystemExit("the stages' textures are not compared")
     keep = pick[pick.index("auto keep = "):]

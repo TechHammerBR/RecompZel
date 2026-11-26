@@ -1,0 +1,291 @@
+<UserControl x:Class="HookshotBuilder.ToolsPage" x:ClassModifier="internal"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- Mods + Editor, beside Play: the game folder's mods (on, off, their order) and the save editor (Stats, Inventory,
+       Progress, All entries). ToolsPage.xaml.cs; the saves through nx2/saveedit/server.py -->
+  <UserControl.Resources>
+    <!-- a segment of the tab strips -->
+    <Style x:Key="Seg" TargetType="RadioButton">
+      <Setter Property="FontFamily" Value="{StaticResource Ui}"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="Foreground" Value="{StaticResource InkSoft}"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RadioButton">
+            <Border x:Name="Box" Background="Transparent" CornerRadius="15" Padding="14,0" Height="30">
+              <ContentPresenter VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+              </Trigger>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Box" Property="Background" Value="{StaticResource BrandSoft}"/>
+                <Setter Property="Foreground" Value="{StaticResource BrandInk}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="Strip" TargetType="Border">
+      <Setter Property="Background" Value="#0BFFFFFF"/>
+      <Setter Property="BorderBrush" Value="#17FFFFFF"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="19"/>
+      <Setter Property="Padding" Value="3"/>
+      <Setter Property="Height" Value="38"/>
+    </Style>
+    <!-- a list of rows: the selection blue, as the game file rows are -->
+    <Style x:Key="RowItem" TargetType="ListBoxItem">
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ListBoxItem">
+            <Border x:Name="Box" Background="Transparent" CornerRadius="6" Padding="10,6">
+              <ContentPresenter/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Box" Property="Background" Value="{StaticResource GlassHover}"/>
+              </Trigger>
+              <Trigger Property="IsSelected" Value="True">
+                <Setter TargetName="Box" Property="Background" Value="{StaticResource BrandSoft}"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="Rows" TargetType="ListBox">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="SelectionMode" Value="Extended"/>
+      <Setter Property="ItemContainerStyle" Value="{StaticResource RowItem}"/>
+      <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
+      <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
+      <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling"/>
+    </Style>
+    <Style x:Key="Field" TargetType="TextBox" BasedOn="{StaticResource Path}">
+      <Setter Property="FontFamily" Value="{StaticResource Ui}"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="Height" Value="34"/>
+    </Style>
+    <Style x:Key="Small" TargetType="Button" BasedOn="{StaticResource Quiet}">
+      <Setter Property="Height" Value="34"/>
+      <Setter Property="FontSize" Value="13"/>
+      <Setter Property="Padding" Value="12,0"/>
+    </Style>
+    <Style x:Key="SmallChoice" TargetType="ComboBox" BasedOn="{StaticResource Choice}">
+      <Setter Property="Height" Value="34"/>
+    </Style>
+    <!-- the rows of the lists: an item, a flag, an entry -->
+    <DataTemplate x:Key="ItemRow">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/><ColumnDefinition Width="110"/><ColumnDefinition Width="70"/><ColumnDefinition Width="60"/>
+        </Grid.ColumnDefinitions>
+        <TextBlock Text="{Binding Label}" FontWeight="{Binding Weight}" TextTrimming="CharacterEllipsis"/>
+        <TextBlock Grid.Column="1" Text="{Binding Group}" Style="{StaticResource Faint}" VerticalAlignment="Center"/>
+        <TextBlock Grid.Column="2" Text="{Binding Age}" Style="{StaticResource Faint}" VerticalAlignment="Center"/>
+        <TextBlock Grid.Column="3" Text="{Binding Have}" Foreground="{Binding HaveBrush}" FontWeight="SemiBold" HorizontalAlignment="Right"/>
+      </Grid>
+    </DataTemplate>
+    <DataTemplate x:Key="FlagRow">
+      <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="170"/><ColumnDefinition Width="40"/></Grid.ColumnDefinitions>
+        <TextBlock Text="{Binding Name}" FontWeight="{Binding Weight}" FontSize="13" TextTrimming="CharacterEllipsis"/>
+        <TextBlock Grid.Column="1" Text="{Binding Group}" Style="{StaticResource Faint}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+        <TextBlock Grid.Column="2" Text="{Binding Value}" Foreground="{Binding ValueBrush}" FontWeight="SemiBold" FontSize="13" HorizontalAlignment="Right"/>
+      </Grid>
+    </DataTemplate>
+    <DataTemplate x:Key="EntryRow">
+      <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="90"/><ColumnDefinition Width="220"/></Grid.ColumnDefinitions>
+        <TextBlock Text="{Binding Name}" FontWeight="{Binding Weight}" FontSize="13" TextTrimming="CharacterEllipsis"/>
+        <TextBlock Grid.Column="1" Text="{Binding Type}" Style="{StaticResource Faint}" VerticalAlignment="Center"/>
+        <TextBlock Grid.Column="2" Text="{Binding Value}" FontSize="13" Foreground="{StaticResource InkSoft}" TextTrimming="CharacterEllipsis"/>
+      </Grid>
+    </DataTemplate>
+  </UserControl.Resources>
+
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <!-- the head: back, the title, Mods | Save editor -->
+    <Grid>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <Button Style="{StaticResource LinkButton}" Foreground="{StaticResource InkSoft}" VerticalAlignment="Center" Click="BackClick">
+        <StackPanel Orientation="Horizontal">
+          <Path Data="M6,0 L0,6 L6,12" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.6"
+                VerticalAlignment="Center" Margin="0,0,8,0"/>
+          <TextBlock Text="Back" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="13" FontWeight="SemiBold"/>
+        </StackPanel>
+      </Button>
+      <TextBlock Grid.Column="1" Style="{StaticResource Heading}" FontSize="22" Text="Mods + Editor" Margin="20,0,0,0" VerticalAlignment="Center"/>
+      <Border Grid.Column="2" Style="{StaticResource Strip}">
+        <StackPanel Orientation="Horizontal">
+          <RadioButton x:Name="ModsTab" Style="{StaticResource Seg}" GroupName="Top" Content="Mods" IsChecked="True" Checked="TopTabChanged"/>
+          <RadioButton x:Name="SaveTab" Style="{StaticResource Seg}" GroupName="Top" Content="Save editor" Checked="TopTabChanged"/>
+        </StackPanel>
+      </Border>
+    </Grid>
+
+    <!-- ===== Mods ===== -->
+    <Grid x:Name="ModsView" Grid.Row="1" Margin="0,18,0,0">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <TextBlock x:Name="ModsNote" Style="{StaticResource Note}" VerticalAlignment="Center" Margin="0,0,16,0"
+                   Text="Tick a mod to use it. A mod lower in the list wins a file two mods have. Changes apply when the game starts."/>
+        <StackPanel Grid.Column="1" Orientation="Horizontal">
+          <Button Style="{StaticResource Small}" Content="Add mods…" Click="AddModsClick"/>
+          <Button Style="{StaticResource Small}" Content="Open mods folder" Margin="8,0,0,0" Click="OpenModsClick"/>
+        </StackPanel>
+      </Grid>
+      <!-- (the code patches ticked are not the ones the game was built with: Rebuild, or Apply a mix built before; PatchBuilds.cs) -->
+      <Border x:Name="PatchBar" Grid.Row="1" Margin="0,12,0,0" Padding="14,10" CornerRadius="10" Background="{StaticResource WarnSoft}"
+              BorderBrush="#33E2B86B" BorderThickness="1" Visibility="Collapsed">
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBlock x:Name="PatchText" Style="{StaticResource Note}" Foreground="{StaticResource Ink}" VerticalAlignment="Center" Margin="0,0,14,0"/>
+          <Button x:Name="PatchButton" Grid.Column="1" Style="{StaticResource Primary}" Height="34" FontSize="13" Padding="16,0" Click="PatchClick"/>
+        </Grid>
+      </Border>
+      <Border Grid.Row="2" Style="{StaticResource Card}" Margin="0,12,0,0">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel x:Name="ModRows" Margin="6"/>
+        </ScrollViewer>
+      </Border>
+      <!-- (the builds kept for each mix: how much room they take, and letting them go) -->
+      <StackPanel x:Name="KeptRow" Grid.Row="3" Orientation="Horizontal" Margin="2,8,0,0" Visibility="Collapsed">
+        <TextBlock x:Name="KeptText" Style="{StaticResource Faint}" VerticalAlignment="Center"/>
+        <Button Style="{StaticResource LinkButton}" Content="Free this space" FontSize="12" Margin="10,0,0,0" Click="FreeKeptClick"/>
+      </StackPanel>
+    </Grid>
+
+    <!-- ===== Save editor ===== -->
+    <Grid x:Name="SaveView" Grid.Row="1" Margin="0,18,0,0" Visibility="Collapsed">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+      <Grid>
+        <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <ComboBox x:Name="SlotPick" Style="{StaticResource SmallChoice}" SelectionChanged="SlotPicked" Margin="0,0,16,0"/>
+        <Border Grid.Column="1" Style="{StaticResource Strip}">
+          <StackPanel Orientation="Horizontal">
+            <RadioButton x:Name="StatsTab" Style="{StaticResource Seg}" GroupName="Save" Content="Stats" IsChecked="True" Checked="SaveTabChanged"/>
+            <RadioButton x:Name="InvTab" Style="{StaticResource Seg}" GroupName="Save" Content="Inventory" Checked="SaveTabChanged"/>
+            <RadioButton x:Name="FlagTab" Style="{StaticResource Seg}" GroupName="Save" Content="Progress" Checked="SaveTabChanged"/>
+            <RadioButton x:Name="EntryTab" Style="{StaticResource Seg}" GroupName="Save" Content="All entries" Checked="SaveTabChanged"/>
+          </StackPanel>
+        </Border>
+      </Grid>
+
+      <!-- (while the backend starts or reads the names: what it is doing) -->
+      <TextBlock x:Name="SaveWait" Grid.Row="1" Style="{StaticResource Sub}" HorizontalAlignment="Center" VerticalAlignment="Center"
+                 TextAlignment="Center" Visibility="Collapsed"/>
+
+      <ScrollViewer x:Name="StatsView" Grid.Row="1" Margin="0,12,0,0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <WrapPanel x:Name="StatCards"/>
+      </ScrollViewer>
+
+      <Grid x:Name="InvView" Grid.Row="1" Margin="0,12,0,0" Visibility="Collapsed">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="150"/><ColumnDefinition Width="150"/></Grid.ColumnDefinitions>
+          <TextBox x:Name="InvSearch" Style="{StaticResource Field}" TextChanged="InvFilterChanged" ToolTip="Search the items"/>
+          <TextBlock x:Name="InvHint" Grid.Column="0" Text="Search the items…" Style="{StaticResource Faint}" FontSize="13" IsHitTestVisible="False" VerticalAlignment="Center" Margin="14,0,0,0"/>
+          <ComboBox x:Name="InvGroup" Grid.Column="1" Style="{StaticResource SmallChoice}" Margin="8,0,0,0" SelectionChanged="InvFilterChanged"/>
+          <ComboBox x:Name="InvShow" Grid.Column="2" Style="{StaticResource SmallChoice}" Margin="8,0,0,0" SelectionChanged="InvFilterChanged"/>
+        </Grid>
+        <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,10,0,0">
+          <ListBox x:Name="InvList" Style="{StaticResource Rows}" ItemTemplate="{StaticResource ItemRow}" Margin="4" MouseDoubleClick="InvToggle"/>
+        </Border>
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0">
+          <Button Style="{StaticResource Small}" Content="Give" Click="GiveClick"/>
+          <Button Style="{StaticResource Small}" Content="Take away" Margin="8,0,0,0" Click="TakeClick"/>
+          <Button Style="{StaticResource Small}" Content="Give everything missing" Margin="8,0,0,0" Click="GiveAllClick"/>
+          <CheckBox x:Name="ForgetTick" Style="{StaticResource Tick}" Content="Taking away also forgets it was found" Margin="16,0,0,0"
+                    VerticalAlignment="Center"/>
+        </StackPanel>
+      </Grid>
+
+      <Grid x:Name="FlagView" Grid.Row="1" Margin="0,12,0,0" Visibility="Collapsed">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="210"/><ColumnDefinition Width="110"/></Grid.ColumnDefinitions>
+          <TextBox x:Name="FlagSearch" Style="{StaticResource Field}" TextChanged="FlagFilterChanged" ToolTip="Search the story flags"/>
+          <TextBlock x:Name="FlagHint" Grid.Column="0" Text="Search the story flags (forest temple, talk, navi…)" Style="{StaticResource Faint}" FontSize="13" IsHitTestVisible="False" VerticalAlignment="Center" Margin="14,0,0,0"/>
+          <ComboBox x:Name="FlagGroup" Grid.Column="1" Style="{StaticResource SmallChoice}" Margin="8,0,0,0" SelectionChanged="FlagFilterChanged"/>
+          <ComboBox x:Name="FlagShow" Grid.Column="2" Style="{StaticResource SmallChoice}" Margin="8,0,0,0" SelectionChanged="FlagFilterChanged"/>
+        </Grid>
+        <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,10,0,0">
+          <ListBox x:Name="FlagList" Style="{StaticResource Rows}" ItemTemplate="{StaticResource FlagRow}" Margin="4" MouseDoubleClick="FlagFlip"/>
+        </Border>
+        <Grid Grid.Row="2" Margin="0,10,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions>
+          <StackPanel Orientation="Horizontal">
+            <Button Style="{StaticResource Small}" Content="Turn on" Click="FlagOnClick"/>
+            <Button Style="{StaticResource Small}" Content="Turn off" Margin="8,0,0,0" Click="FlagOffClick"/>
+          </StackPanel>
+          <TextBlock x:Name="FlagCount" Grid.Column="1" Style="{StaticResource Faint}" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+        </Grid>
+      </Grid>
+
+      <Grid x:Name="EntryView" Grid.Row="1" Margin="0,12,0,0" Visibility="Collapsed">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <Grid>
+          <Grid.ColumnDefinitions><ColumnDefinition Width="200"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <ComboBox x:Name="EntryKind" Style="{StaticResource SmallChoice}" SelectionChanged="EntryFilterChanged"/>
+          <TextBox x:Name="EntrySearch" Grid.Column="1" Style="{StaticResource Field}" Margin="8,0,0,0" TextChanged="EntryFilterChanged"
+                   ToolTip="Search the entries"/>
+          <TextBlock x:Name="EntryHint" Grid.Column="1" Text="Search the entries…" Style="{StaticResource Faint}" FontSize="13" IsHitTestVisible="False" VerticalAlignment="Center" Margin="22,0,0,0"/>
+          <CheckBox x:Name="EntryEdited" Grid.Column="2" Style="{StaticResource Tick}" Content="Edited only" Margin="12,0,0,0"
+                    VerticalAlignment="Center" Click="EntryFilterChanged"/>
+        </Grid>
+        <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,10,0,0">
+          <ListBox x:Name="EntryList" Style="{StaticResource Rows}" SelectionMode="Single" ItemTemplate="{StaticResource EntryRow}" Margin="4"
+                   SelectionChanged="EntryPicked"/>
+        </Border>
+        <Grid Grid.Row="2" Margin="0,10,0,0">
+          <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBox x:Name="EntryValue" Style="{StaticResource Field}" IsEnabled="False" KeyDown="EntryValueKey"/>
+          <Button x:Name="EntrySet" Grid.Column="1" Style="{StaticResource Small}" Content="Set" Margin="8,0,0,0" IsEnabled="False" Click="EntrySetClick"/>
+        </Grid>
+      </Grid>
+    </Grid>
+
+    <!-- the foot: what happened, and Save / Save and play -->
+    <Grid Grid.Row="2" Margin="0,14,0,0">
+      <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <TextBlock x:Name="Status" Style="{StaticResource Note}" VerticalAlignment="Center" Margin="0,0,16,0" TextTrimming="CharacterEllipsis"/>
+      <StackPanel Grid.Column="1" Orientation="Horizontal">
+        <Button x:Name="ReloadButton" Style="{StaticResource Quiet}" Click="ReloadClick" AutomationProperties.Name="Reload"
+                ToolTip="Read the mods folder and the saves again (your changes not saved yet stay)">
+          <StackPanel Orientation="Horizontal">
+            <Path Data="M13.5,4 A6,6 0 1 0 14,9.5 M13.5,0.5 L13.5,4 L10,4" Stroke="{StaticResource Ink}" StrokeThickness="1.6"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <TextBlock Text="Reload" FontSize="14" FontWeight="SemiBold" Foreground="{StaticResource Ink}"/>
+          </StackPanel>
+        </Button>
+        <Button x:Name="RevertButton" Style="{StaticResource Quiet}" Content="Undo changes" Margin="10,0,0,0" Click="RevertClick"/>
+        <Button x:Name="SaveButton" Style="{StaticResource Primary}" Height="40" Content="Save" Margin="10,0,0,0" Click="SaveClick"/>
+        <Button Style="{StaticResource GoButton}" Height="40" Padding="22,0" Margin="10,0,0,0" Click="SavePlayClick">
+          <StackPanel Orientation="Horizontal">
+            <Path Data="M0,0 L9,6 L0,12 Z" Fill="{StaticResource GoInk}" VerticalAlignment="Center" Margin="0,0,9,0"/>
+            <TextBlock Text="Save and play" FontSize="14" FontWeight="Bold" Foreground="{StaticResource GoInk}"/>
+          </StackPanel>
+        </Button>
+      </StackPanel>
+    </Grid>
+  </Grid>
+</UserControl>

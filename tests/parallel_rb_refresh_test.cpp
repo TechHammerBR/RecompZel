@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
+#include "../gpu/vk/import_reach.h"
 
 struct FakeBuf {
     const char* name;
@@ -64,6 +65,7 @@ std::atomic<bool> par_active{false};
 void memory_table_begin() {}
 bool memory_table_flush() { return false; }
 void memory_protect_gpu(uint64_t, uint64_t) {}
+void memory_gpu_writes_note(uint64_t, uint64_t) {}   // (the uniform snapshot's guard: tests/test_ub_snapshot_gpu_writes.py)
 bool slow_desc_timing() { return false; }
 uint64_t texture_segment();
 void memory_rb_recording_begun();
@@ -74,31 +76,19 @@ bool memory_rb_refresh(VkCommandBuffer up);
 std::mutex pools_mu;
 #include "rb_pool.inc"
 std::map<uint64_t, Pool> imported;
+#include "rb_table.inc"
 uint64_t mirror_epoch = 0;
+int64_t st_mirrors = 0, st_mirrors_freed = 0;
 bool mirror_upload = false;
+uint64_t mem_rec_value = 0;
+void early_in_place_write(uint64_t, uint64_t, uint64_t) {}  // early readback tracking is exercised separately
+thread_local int ec_kind = 0;   // (RX_VK_LOG_EARLY_CHECK's kind: tests/test_readback_early.py)
 #include "rb_writeback.inc"
 std::vector<WriteBack> writebacks;
 void mirror_sync(Pool& p) {   // (model: no CPU page is dirty here)
     p.synced_epoch = mirror_epoch;
     p.sync_seg = texture_segment();
 }
-// (Triforce: mirrors in pieces, direct reads and the event writes; none in this model: whole mirrors, no events)
-static void clip_resident(const Pool&, std::vector<VkBufferCopy>&, bool = false) {}
-static bool pieces_resident(Pool*, uint64_t, uint64_t) { return true; }
-static bool pieces_direct(Pool*, uint64_t, uint64_t) { return false; }
-static bool mirror_pieces_make(Pool&, uint64_t, uint64_t, bool) { return true; }
-static const bool par = false;
-static int64_t st_piece_direct;
-struct PieceWant { uint64_t lo, off, size; };
-static std::vector<PieceWant> piece_wanted;
-static std::map<uint64_t, std::pair<int64_t, int>> direct_by_pool;
-static std::map<uint64_t, uint64_t> direct_bytes_by_pool;
-static void shadow_forget(Pool&, uint64_t, uint64_t) {}
-static void wb_pages_note(uint64_t, uint64_t, uint64_t, uint64_t) {}
-static uint64_t mem_rec_value;
-static void note_in_place_read() {}
-static thread_local bool tl_event_write = false, tl_from_compute = false;
-static void memory_mirror_binds_flush() {}
 #include "rb_refresh.inc"
 // (gpu/vk/wb_learn.h's table: every write-back queued in this model; tests/test_wb_learn.py runs its rules)
 static bool wb_leave_out(uint64_t, uint64_t, std::vector<std::pair<uint64_t, uint64_t>>&) { return false; }
@@ -114,7 +104,6 @@ BufferRef gpu_buffer_bind(uint64_t gpu, uint64_t size, bool written) {
     if (gpu + size > p->hi) return {};
     const uint64_t off = gpu - p->lo;
     if (!mirror_upload || p->mstate != Pool::MIRROR_ON) return {p->buffer, off, size, 0};
-    auto remember = [](BufferRef r) { return r; };   // (the read memo: none in this model)
 #include "rb_bindtail.inc"
     return {p->mirror, off, size, 0};
 }
@@ -143,6 +132,9 @@ BufferRef bind_storage(const Desc& d, uint64_t addr, uint64_t size, uint64_t* ba
     static const uint64_t bare_read = 64ull << 20;   // (the device's reach)
     const uint64_t salign = 16;                      // (minStorageBufferOffsetAlignment)
     bool bare = false;
+// (the memory ledger's scope, RX_VK_LEDGER: nothing here)
+enum { kUseStorage = 8 };
+struct LedgerUse { explicit LedgerUse(uint32_t) {} };
 #include "rb_draw.inc"
     (void)t0;
     *base_out = base;
@@ -175,10 +167,11 @@ void run_gpu() {
         }
     queue.clear();
 }
-void setup() {
+void setup(bool mirrored) {
     Pool p;
-    p.lo = LO, p.hi = LO + SZ, p.buffer = &G, p.mirror = &M, p.mstate = Pool::MIRROR_ON;
-    imported.emplace(LO, p);
+    p.lo = LO, p.hi = LO + SZ, p.buffer = &G;
+    if (mirrored) p.mirror = &M, p.mstate = Pool::MIRROR_ON, st_mirrors = 1;
+    imported_add(p);
 }
 // (memory_begin_submission / memory_end_submission, modelled: the epoch, and the write-back of what was marked written)
 void begin_submission() {
@@ -248,9 +241,24 @@ void expect(const char* what, uint32_t got, uint32_t want) {
 
 int main(int argc, char** argv) {
     const std::string which = argc > 1 ? argv[1] : "";
-    setup();
+    setup(which != "nomirror");
     memory_note_readback(A, 16);   // (the CPU reads A back: OoT's exposure meter)
-    if (which == "parallel") {
+    if (which == "nomirror") {
+        // no pool has a mirror (an integrated GPU): a readback page has none to be copied into. No recording gets a copy,
+        // and the page still leaves the list once it has not been read for a while
+        uint32_t copies = 0;
+        for (int f = 1; f <= 800; f++) {
+            Rec r = begin_recording("nomirror");
+            begin_submission();
+            end_submission(r.cmd);
+            submit(r);
+            copies += (uint32_t)r.up->cmds.size();
+            if (f == 1) expect("no mirror: the page read back is kept at first", (uint32_t)rb_pages.size(), 1);
+            queue.clear();
+        }
+        expect("no mirror: no recording got a refresh copy", copies, 0);
+        expect("no mirror: the page not read for a while is gone", (uint32_t)rb_pages.size(), 0);
+    } else if (which == "parallel") {
         // P1: the part before, 3 segments and the part after each add 1 into the meter, in one submission; the CPU's 0
         // lands after the recording, before the GPU runs it
         Rec r = begin_recording("before");
@@ -312,7 +320,7 @@ int main(int argc, char** argv) {
         fails += stream != want;
         expect("serial: the meter in guest memory", word(G, A), 12);
     } else {
-        std::fprintf(stderr, "usage: parallel | untracked | serial\n");
+        std::fprintf(stderr, "usage: parallel | untracked | serial | nomirror\n");
         return 2;
     }
     return fails ? 1 : 0;

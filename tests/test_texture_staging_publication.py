@@ -3,20 +3,13 @@ import argparse
 from pathlib import Path
 import subprocess
 import tempfile
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
 
 
 def main():
@@ -29,6 +22,16 @@ def main():
     tex = (a.source / "gpu/vk/vk_texture.cpp").read_text(encoding="utf-8")
     vma = (a.source / "gpu/vk/vk_vma.cpp").read_text(encoding="utf-8")
     actual = block(tex, "struct Arena {") + ";\nstd::vector<Arena> arenas;\nconstexpr uint64_t kArena=kModelArena;\n"
+    # (the spare arena made off the replay thread, #2997: off here, so staging() makes its own, as these checks expect)
+    actual += ("#include <atomic>\nstruct SpareArenas { std::atomic<int64_t> taken{0}, made_here{0}; };\nSpareArenas spare_arenas;\n"
+               "bool spare_on() { return false; }\nbool spare_take(Arena&) { return false; }\n")
+    # (RX_VK_RES_LOG's tag of what an allocation is for: the real kinds, the scope counting nothing here)
+    internal = (ROOT / "gpu/vk/vk_internal.h").read_text(encoding="utf-8")
+    kinds = [line for line in internal.splitlines() if line.startswith("enum class MemKind : uint8_t {")]
+    if len(kinds) != 1:
+        raise SystemExit("vk_internal.h: MemKind not found once: update this test")
+    actual += kinds[0] + "\nstruct MemKindScope { explicit MemKindScope(MemKind) {} };\n"
+    actual += block(tex, "bool arena_make(") + "\n"   # (a new arena, made and mapped: staging() calls it, #2997)
     actual += block(tex, "struct Staging {") + ";\n" + block(tex, "Staging staging(")
     actual += "\n" + block(vma, "void flush_mapped_range(")
     astc = block(tex, "bool upload_astc_gpu(")
@@ -46,18 +49,18 @@ def main():
     assert cpu[start:].startswith("                }")
     start = cpu.index("\n", start) + 1
     end = cpu.index("                copies.push_back(c);", start) + len("                copies.push_back(c);")
-    # The publication site must remain after conversion workers joined and before a copy is queued.
-    assert cpu.index("for (std::thread& t : pool) t.join();") < start < cpu.index("vkCmdCopyBufferToImage(upload_cmd(), buffer, tex.image", start)
+    # The publication site must remain after conversion workers joined (fork_join returns joined) and before a copy is queued.
+    assert cpu.index('fork_join("texture unswizzle"') < start < cpu.index("vkCmdCopyBufferToImage(upload_cmd(), buffer, tex.image", start)
     actual += "\nvoid cpu_slice(Staging st, uint64_t out_bytes) {\n" + cpu[start:end] + "\n}\n"
     fixture = (ROOT / "tests/texture_staging_publication_test.cpp").read_text(encoding="utf-8").replace("/* ACTUAL */", actual)
     with tempfile.TemporaryDirectory(prefix="texture-staging-") as temp:
         cpp, exe = Path(temp) / "fixture.cpp", Path(temp) / "fixture.exe"
         cpp.write_text(fixture, encoding="utf-8")
         subprocess.run([a.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-Wno-missing-field-initializers",
-                        "-I" + str(a.headers), *(["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"] if a.sanitize else []),
+                        "-I" + str(a.headers), "-I" + str(ROOT / "gpu" / "vk"), *(["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-fno-pie", "-no-pie"] if a.sanitize else []),
                         str(cpp), "-o", str(exe)], check=True)
         for cache in ["coherent", "noncoherent"]:
-            for case in ["cpu", "astc", "atom", "reuse", "multiple", "failure", "empty-range",
+            for case in ["cpu", "astc", "atom", "reuse", "inflight-tail", "multiple", "failure", "empty-range",
                          "small-fallback", "unmapped-fallback", "unmapped-both", "fallback-astc", "fallback-reuse"]:
                 subprocess.run([str(exe), case, cache], check=True, timeout=15)
 

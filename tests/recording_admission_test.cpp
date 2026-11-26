@@ -52,6 +52,13 @@ int fail_sets = 0, allocation_calls = 0, invalid_pool_calls = 0, destroys = 0, u
 uint64_t largest_request = 0;
 std::mutex par_mutex;
 struct ParLock { std::lock_guard<std::mutex> lock{par_mutex}; };
+namespace rec {   // (vk_recorder.h's RX_VK_RECORDER_OWN marks, as they are with the recorder off)
+inline void slot_begin(uint64_t) {}
+inline void slot_done() {}
+inline uint64_t produced() { return 0; }
+struct OwnSlot { OwnSlot() {} ~OwnSlot() {} };   // (a scope, as the real one)
+}   // namespace rec
+uint64_t rec_end_pos[64];   // (vk_replay.cpp: each slot's end in the recorder's ring)
 void logf(const char*, ...) {}
 bool create_buffer(uint64_t bytes, VkBufferUsageFlags, bool, VkBuffer& buffer, VmaAllocation& allocation, void** map, bool = false) {
     ++allocation_calls; largest_request = std::max(largest_request, bytes);
@@ -96,9 +103,7 @@ std::deque<RecordingRes> res;
 thread_local RecordingRes* cur = nullptr;
 const uint64_t kStream = 1024;
 constexpr VkBufferUsageFlags kStreamUse = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-std::atomic<uint64_t> stream_extra{0}, stream_grown{0}, stream_peak{0};
-bool grow_off = false;
-bool stream_grow_off() { return grow_off; }
+std::atomic<uint64_t> stream_extra{0}, stream_grown{0}, stream_peak{0}, pools_extra{0};
 struct BufferRef { VkBuffer buffer{}; uint64_t offset = 0, size = 0, address = 0; };
 /* POOL */
 /* STREAM */
@@ -107,16 +112,22 @@ thread_local uint64_t rec_value = 0, targets_serial = 0;
 // Global defaults are outside this per-recording allocation contract.
 VkBuffer zero_buffer = reinterpret_cast<VkBuffer>(uintptr_t(99)); VmaAllocation zero_alloc{};
 struct Pass {}; Pass& pass() { static thread_local Pass p; return p; }
-bool work_since_barrier = false, last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false;
-VkPipeline last_pipeline{};
-struct { bool on = false; } vertex_set, last_ib;
+bool work_since_barrier = false;
+struct CmdBound { void reset() {} };   // (vk_draw.cpp's: what the command buffer has bound, forgotten by a new recording)
+CmdBound& bound() { static CmdBound b; return b; }
 void descriptors_disturbed() {}
 std::unordered_map<int, int>& handle_hits() { static thread_local std::unordered_map<int, int> h; return h; }
+// (vk_draw.cpp's front cache of handle_hits, #2960: emptied with it, nothing else read here)
+struct ViewFast { uint64_t key = ~0ull; };
+std::array<ViewFast, 1024>& view_fast() { static thread_local std::array<ViewFast, 1024> a; return a; }
 struct Program {};
 constexpr int kNvnStages = 8;
+int desc_reuse_level() { return 2; }   // (vk_draw.cpp: RX_VK_DESC_REUSE and the Descriptor reuse row; the banks are kept)
 /* BANK_CACHE */
 std::array<std::array<BankCache, kNvnStages>, 2>& bank_cache() { static thread_local std::array<std::array<BankCache, kNvnStages>, 2> b; return b; }
 void make_dummies() {}
+// (vk_draw.cpp's per-program descriptor slots, emptied by a new recording past 8192: nothing kept here)
+std::unordered_map<const void*,int>& prog_slots() { static thread_local std::unordered_map<const void*,int> m; return m; }
 /* BEGIN */
 #define FINE_SCOPE(...) ((void)0)
 #define FINE_N(...) ((void)0)
@@ -140,6 +151,7 @@ Writes& dw() { return writes; }
 bool bind_tail() {
     VkCommandBuffer cmd{}; VkPipelineBindPoint bp = VK_PIPELINE_BIND_POINT_GRAPHICS;
     struct { VkDescriptorSetLayout set_layout{}; VkPipelineLayout layout{}; } p;
+    Writes& wr = dw();   // (bind_descriptors takes it at its top, above the part cut in here)
     /* DESCRIPTORS */
 }
 void begin(int slot = 0, uint64_t value = 1) { draw_begin_recording(slot, VkCommandBuffer{}, value); }
@@ -222,9 +234,6 @@ int main(int argc, char** argv) {
             uint64_t n = mode == "overflow" ? UINT64_MAX : mode == "rounding" ? UINT64_MAX - 1024 : 16;
             uint64_t align = mode == "alignment-zero" ? 0 : mode == "alignment-three" ? 3 : 256;
             require(stream_alloc(n, align) == UINT64_MAX && cur->stream == old && cur->used == used && allocation_calls == calls, "invalid/overflow range changed or admitted");
-        } else if (mode == "grow-off") {
-            grow_off = true; require(!stream_reserve(4096, 256), "disabled growth accepted");
-            require(cur->stream == old && cur->used == used && buffers.size() == count, "disabled growth changed current stream");
         } else if (mode == "retention" || mode == "reuse") {
             copied(4096, 91); const auto grown = cur->stream;
             begin(0, 2); require(cur->stream == old && cur->used == 0 && cur->streams.size() == 2, "recording reuse reset");
@@ -235,10 +244,12 @@ int main(int argc, char** argv) {
             }
         } else if (mode == "descriptor-retained") {
             fail_sets = 1; require(bind_tail() && cur->extra.size() == 1, "first extra pool");
+            require(pools_extra == 1, "a pool made because the recording's own ran out is not counted");
             const auto retained = cur->extra[0]; const auto count_before = pools.size();
             fail_sets = 2; require(!bind_tail(), "second pool allocation failure");
             require(cur->extra.size() == 1 && cur->extra[0] == retained && pools.count(retained) && pools.size() == count_before,
                     "rollback destroyed or displaced a retained pool");
+            require(pools_extra == 1, "a pool that could not be kept is counted as made");
             require(bind_tail() && cur->extra.size() == 1, "retained pool could not retry");
         } else if (mode == "descriptor-pool" || mode == "descriptor-set" || mode == "descriptor-commit") {
             const auto pool_count = pools.size(); fail_sets = mode == "descriptor-set" ? 2 : 1;

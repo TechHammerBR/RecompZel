@@ -1,6 +1,6 @@
 """A game folder from the user's own dump: what the builder app (builder/) runs.
 
-    python -I nx2/make_game.py --nup <file.nup> --out <folder> [--work <folder>] [--jobs <n>]
+    python -I nx2/make_game.py --nup <file.nup or .nx> --out <folder> [--work <folder>] [--jobs <n>]
     python -I nx2/make_game.py --romfs <dir> --exefs <dir> --out <folder> [--work <folder>] [--jobs <n>]
     python -I nx2/make_game.py --check --nup <file.nup>       (or --exefs <dir>: is this the right game and version?)
     python -I nx2/make_game.py --update <folder>             (a folder built before, again with these tools: the game files it keeps)
@@ -26,17 +26,20 @@ build's last step, the shaders' preparation, was skipped or failed and is left t
 """
 import argparse
 import contextlib
+from concurrent.futures import ThreadPoolExecutor
 import errno
 import filecmp
 import hashlib
 import importlib.util
 import json
+import locale
 import ntpath
 import os
 import queue
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import threading
 import time
@@ -49,17 +52,23 @@ PY = [sys.executable, "-I", "-u", "-X", "utf8"]   # (utf8: every step's output i
 BUILD_ID = "e0f3ccfa"   # (the version the patches, the hot list and the profile were made from)
 STARTED = time.time()   # (the build's total time, kept in build_times.json and said as @@times)
 sys.path[:0] = [HERE, os.path.join(ROOT, "third_party", "a64-kit", "tools")]   # (python -I leaves the script folder off)
+import long_paths  # noqa: E402
+long_paths.install()   # (paths past 260 characters on Windows, before anything reads a file)
 import toolchain as _toolchain
 import disk as _disk
+import object_store as _object_store
+import lift_store as _lift_store
+import build_jobs as _build_jobs
+import game_title
+import log_redact as _log_redact
+import prepare_supervisor   # (the shaders' preparation restarted past a shader the driver dies or hangs in; dev_packs.py's too)
 # (hookshot) RX_TARGET=windows on Linux: the Windows game, with llvm-mingw's Linux release (HOOKSHOT_MINGW, or llvm-mingw
 # beside the builder), to run under Proton or copy to a Windows PC
 LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt"
 # (SDL2.dll is sdl2-compat: it loads SDL3.dll from beside the exe. Left out of bin\ since v2.0.0, it said "Failed loading SDL3
 # library" three times and no controller worked: Discord #bug-reporting, 11-08)
-BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "wgpu_native.dll"]
-# (recompzel) the game's own name in a development folder, where no launcher stands in front of it. The installed builder's folders keep
-# bin\hookshot.exe: builder/setup/setup.c and the builder start that name
-GAME_EXE = BESIDE[0] if LINUX else "RecompZel.exe"
+BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0", "renhdrum.so"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "renhdrum.dll"]
+GAME_EXE = BESIDE[0] if LINUX else "RecompZel.exe"   # (recompzel: the game's exe, named for it; the Builder's launcher keeps BESIDE[0])
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
              ("pl", "Polish"), ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"), ("zh-Hans", "Chinese (Simplified)"),
@@ -85,7 +94,7 @@ def no_throttle(handle=None):
 
 
 PREPARE = False   # (--prepare) say() prints RecompLauncher's "progress <0..1> <text>" lines instead of the builder app's @@ lines
-STAGE_SPAN = {"read": (0.0, 0.05), "lift": (0.05, 0.25), "compile": (0.25, 0.95), "finish": (0.95, 1.0)}   # (a share of the whole each stage takes)
+STAGE_SPAN = {"read": (0.0, 0.15), "lift": (0.15, 0.26), "compile": (0.26, 0.87), "finish": (0.87, 1.0)}   # (a share of the whole each stage takes: docs/development.md, Build times)
 _stage = {"span": (0.0, 1.0), "text": ""}
 
 
@@ -103,6 +112,8 @@ def say_prepare(words):
 
 
 def say(*words):
+    if words and words[0] == "stage" and len(words) > 1:
+        PHASES.enter(str(words[1]))
     if PREPARE:
         return say_prepare([str(w) for w in words])
     print("@@" + " ".join(str(w) for w in words), flush=True)
@@ -111,19 +122,20 @@ def say(*words):
 def check_writable(out):
     """The game folder must take new files before anything is read into it. A folder under Program Files (or another protected
     place) only takes them with administrator rights, and the build used to stop minutes later inside nup.py with a bare
-    "PermissionError: [WinError 5]" on its .game folder"""
+    "PermissionError: [WinError 5]" on its .game folder. A write refused another way (#2792: a FileNotFoundError in a folder
+    just made) gets the same plain reason"""
     probe = os.path.join(out, ".hookshot_write_check")
     try:
         os.makedirs(out, exist_ok=True)
         with open(probe, "w") as f:
             f.write("ok")
         os.remove(probe)
-    except PermissionError as e:
+    except OSError as e:
         protected = [os.environ.get(k) for k in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "SystemRoot")]
         inside = any(d and os.path.normcase(os.path.abspath(out)).startswith(os.path.normcase(os.path.abspath(d)) + os.sep)
                      for d in protected)
         where = (" Windows protects folders under Program Files and Windows, and only lets administrators write there."
-                 if inside else "")
+                 if inside and isinstance(e, PermissionError) else "")
         example = "~/Games/Hookshot" if LINUX else r"C:\Games\Hookshot"
         fail("The game folder %s can't be written to (%s).%s In Hookshot Builder, choose a game folder of your own, for example "
              "%s, and build again." % (out, e.strerror or e, where, example))
@@ -228,9 +240,15 @@ def build_log(path):
         log = open(path, "w", encoding="utf-8", newline="\n")
     except OSError as e:
         fail("Could not open build log %s: %s" % (path, e))
+    # (the file without the player's user name, as the game writes its own log: players attach it to build problems. The
+    # console, which a launcher reads, as it is: nx2/log_redact.py)
+    saved = _log_redact.RedactedLines(log)
     with log:
-        with contextlib.redirect_stdout(LogStream(sys.stdout, log)), contextlib.redirect_stderr(LogStream(sys.stderr, log)):
-            yield
+        try:
+            with contextlib.redirect_stdout(LogStream(sys.stdout, saved)), contextlib.redirect_stderr(LogStream(sys.stderr, saved)):
+                yield
+        finally:
+            saved.close()
 
 
 TIMES_FORMAT = 1
@@ -279,15 +297,18 @@ def save_times(work, data):
         print("the build times were not saved (%s)" % e, flush=True)
 
 
-def record_times(work, files, compile_seconds, total_seconds, modules=0, kind="build"):
+def record_times(work, files, compile_seconds, total_seconds, modules=0, kind="build", phases=None):
     """This build in the record: what each module it compiled took (a module a cache already held keeps the time it took
-    before), the compile's and the whole build's seconds. Returns the last build's total, to show beside this one."""
+    before), the compile's and the whole build's seconds, and where they went (phases: PhaseClock's). Returns the last
+    build's total, to show beside this one."""
     data = load_times(work)
     previous = data["builds"][-1]["total_seconds"] if data["builds"] else None
     data["seconds"].update({str(k): round(float(v), 1) for k, v in files.items() if v > 0})
     data["builds"].append({"when": time.strftime("%Y-%m-%d %H:%M:%S"), "kind": kind, "modules": int(modules),
                            "compiled": len(files), "compile_seconds": round(compile_seconds, 1),
                            "total_seconds": round(total_seconds, 1)})
+    if phases:
+        data["builds"][-1]["phases"] = {str(k): round(float(v), 1) for k, v in phases.items()}
     data["builds"] = data["builds"][-KEEP_BUILDS:]
     save_times(work, data)
     return previous
@@ -297,6 +318,109 @@ def clock(seconds):
     """A length of time the way the build's lines say it: '1:02:03'"""
     s = int(round(seconds))
     return "%d:%02d:%02d" % (s // 3600, s // 60 % 60, s % 60)
+
+
+class PhaseClock:
+    """Where a build's time went (the dev-loop proposal's A1): each stage (say("stage", ...)), the lift's steps and the compile's
+    parts, from the lines the steps already print and when they come, with no new line for the builders to read. The planning
+    is build.py's start to its "<n> files, <n> jobs" line (the object keys: every source read and hashed); the compile and
+    each link are its own "compiled in" and "linked" lines. Kept in build_times.json beside the totals (record_times) and shown
+    at the end of the build"""
+    LIFT_STEP = re.compile(r"lift: (.+?) (?:\(\d+ process(?:es)?\) )?in ([\d.]+)s \(")
+    DISCOVERY = re.compile(r"discovered \d+ functions \((\d+)s\)$")
+    PLANNED = re.compile(r"\d+ files, \d+ jobs, ")
+    COMPILED = re.compile(r"compiled in (\d+)s, \d+ failed$")
+    LINKED = re.compile(r"linked (.+?): \d+ MB \((\d+)s\)$")
+
+    def __init__(self, started, now=time.time):
+        self.now, self.seconds, self.stage, self.since = now, {}, "checks", started
+        self.part_since = started
+
+    def add(self, name, seconds):
+        self.seconds[name] = self.seconds.get(name, 0.0) + max(0.0, float(seconds))
+
+    def enter(self, stage):
+        """A stage starts (None: the build's timed part ends); the one before it has taken until now"""
+        t = self.now()
+        if self.stage is not None:
+            self.add(self.stage, t - self.since)
+        self.stage, self.since = stage, t
+
+    def part(self, name):
+        """(the finish's pieces) the time since the stage began, or since its last part, as "<stage>: <name>\""""
+        t = self.now()
+        self.add("%s: %s" % (self.stage, name), t - max(self.since, self.part_since))
+        self.part_since = t
+
+    def line(self, line):
+        """A line a step printed, as it comes"""
+        m = self.LIFT_STEP.match(line)
+        if m:
+            return self.add("lift: " + m.group(1), m.group(2))
+        m = self.DISCOVERY.match(line)
+        if m:   # (the image and the functions' discovery, before the steps that say their own time)
+            return self.add("lift: image and discovery", m.group(1))
+        if self.stage == "compile" and self.PLANNED.match(line):
+            return self.add("compile: planning", self.now() - self.since)
+        m = self.COMPILED.match(line)
+        if m:
+            return self.add("compile: compiling", m.group(1))
+        m = self.LINKED.match(line)
+        if m:
+            return self.add("compile: linking " + os.path.basename(m.group(1).replace("\\", "/")), m.group(2))
+
+    def table(self):
+        """The lines the build ends with: each stage, the parts it is known to be made of under it"""
+        rows = []
+        for stage in ("checks", "read", "lift", "compile", "finish"):
+            if stage in self.seconds:
+                rows.append("  %-34s %6.0f s" % (stage, self.seconds[stage]))
+                rows += ["    %-32s %6.0f s" % (name.split(": ", 1)[1], s) for name, s in self.seconds.items()
+                         if name.startswith(stage + ": ")]
+        return ["where the time went:"] + rows
+
+
+PHASES = PhaseClock(STARTED)
+
+# (the lift's steps in the order nx2/lift.py ends them, as PhaseClock names them, with the seconds each took on a Ryzen 5 5600 under
+# Windows (nightly-34, 2026-11-13): the weights of Translate's progress until this PC has a lift of its own in build_times.json)
+LIFT_STEPS = (("image and discovery", 47.0), ("coverage", 24.6), ("emit and write", 99.6), ("big chunks split", 17.6),
+              ("patches", 10.0), ("output size and page-mark groups", 37.5), ("runtime tables and standalone files", 11.5))
+
+
+def lift_weights(work):
+    """Each lift step's share of Translate: the seconds this PC's last whole lift took (build_times.json's phases), else
+    LIFT_STEPS's. A record missing a step is not this lift's (an older translator, a lift cut short): LIFT_STEPS then"""
+    for b in reversed(load_times(work)["builds"]):
+        phases = b.get("phases")
+        took = {} if not isinstance(phases, dict) else {
+            k[len("lift: "):]: v for k, v in phases.items() if k.startswith("lift: ") and isinstance(v, (int, float))}
+        if not took:
+            continue
+        mine = [next((v for k, v in took.items() if k.startswith(name)), None) for name, _ in LIFT_STEPS]
+        if all(v is not None and v > 0 for v in mine):
+            return [(name, float(v)) for (name, _), v in zip(LIFT_STEPS, mine)]
+        break
+    return list(LIFT_STEPS)
+
+
+def lift_progress(work, tell=None):
+    """An on_line for the lift: Translate's '@@progress' as each of its steps ends (its 'lift: <step> in <s>s' line, or the
+    discovery's), weighted by lift_weights. Before this the builders' bar sat at Translate's start for its whole 4 minutes"""
+    tell = tell or (lambda f: say("progress", "%.3f" % f))
+    weights = lift_weights(work)
+    total = sum(w for _, w in weights) or 1.0
+    done = set()
+
+    def on_line(line):
+        m = PhaseClock.LIFT_STEP.match(line)
+        step = m.group(1) if m else "image and discovery" if PhaseClock.DISCOVERY.match(line) else None
+        name = next((n for n, _ in weights if step and step.startswith(n)), None)
+        if name is None or name in done:
+            return
+        done.add(name)
+        tell(min(1.0, sum(w for n, w in weights if n in done) / total))
+    return on_line
 
 
 class Silent(Exception):
@@ -333,10 +457,12 @@ def output_lines(p, silence):
         yield line
 
 
-def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROOT, base=None, silence=None):
+def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROOT, base=None, silence=None, allow=(),
+        again=None):
     """A step, its output printed as it comes. show: what of each line is printed (its None: nothing; on_line and a failure's
     reason still get the line itself). base: the environment it starts from (os.environ). silence: seconds without a line after
-    which the step is stopped; it returns None then (with check, the build fails)"""
+    which the step is stopped; it returns None then (with check, the build fails). allow: exit statuses returned, not failed.
+    again: asked before a step that failed fails the build; its True returns the status instead"""
     e = dict(os.environ if base is None else base, PYTHONIOENCODING="utf-8")
     e.update(env or {})
     p = subprocess.Popen(cmd, cwd=cwd, env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
@@ -350,6 +476,7 @@ def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROO
             if shown is not None:
                 print(shown, file=output, flush=True)
             lines.append(line)
+            PHASES.line(line)
             if on_line:
                 on_line(line)
     except Silent:
@@ -360,7 +487,7 @@ def run(cmd, env=None, on_line=None, check=True, output=None, show=None, cwd=ROO
         return None
     p.stdout.close()
     code = p.wait()
-    if code and check:
+    if code and check and code not in allow and not (again and again()):
         step = next((os.path.basename(c) for c in cmd[1:] if c.endswith(".py")), os.path.basename(cmd[-1]))   # (issue 154: not "-u")
         status = "signal %d" % -code if os.name == "posix" and code < 0 else "exit status %d" % code
         fail("%s stopped (%s): %s" % (step, status, killed_reason() if os.name == "posix" and -code in (9, 15) else failure_reason(lines)))
@@ -415,6 +542,26 @@ def file_progress(verb, clock=time.monotonic):
 HEADS = ".hookshot_romfs_heads"   # (the extraction's damaged .zs list, under the stamp of the unpack that made it)
 
 
+def read_stamp(path):
+    """An unpack's stamp, which holds the .nup's name: UTF-8, or the Windows code page a builder before #2246 wrote it in.
+    Decoded exactly or not at all: a replaced letter would let another .nup's name match, and its unpack be skipped. A
+    stamp that cannot be read is "", which no unpack's stamp equals"""
+    with open(path, "rb") as f:
+        raw = f.read()
+    # (getencoding: the code page also in Python's UTF-8 mode; Python 3.11 and later, getpreferredencoding before)
+    for encoding in ("utf-8", getattr(locale, "getencoding", locale.getpreferredencoding)()):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            pass
+    return ""
+
+
+def write_stamp(path, stamp):
+    with open(path, "w", encoding="utf-8", newline="") as f:   # (not the code page: a name outside it stopped the build, #2246)
+        f.write(stamp)
+
+
 def keep_heads(out, game, stamp):
     """nup.py's list of the romfs .zs files that do not start as zstd (its HEADS_NAME, beside the extracted romfs), kept in the
     game folder under this unpack's stamp for stand_in_damaged_files: the ~100,000 files are then not opened again"""
@@ -430,21 +577,26 @@ def keep_heads(out, game, stamp):
         f.write(stamp.strip() + "\n" + listed)
 
 
+DAMAGED_NOTE = "hookshot_damaged_files.txt"   # (in the game folder: the damaged game files the last unpack replaced)
+SHOWN_DAMAGED = 50   # (damaged files named in the log, the rest only in DAMAGED_NOTE: #1275's 1896 filled the launcher's log)
+
+
 def stand_in_damaged_files(out, romfs):
     """An incomplete dump's damaged textures replaced by whole ones of the same kind, and said: without them the game
-    leaves out the walls and floors that use them (the Water Temple, #1002). Only in a romfs this builder unpacked (its
-    .hookshot_romfs stamp), and once per unpack: .hookshot_romfs_checked holds the stamp it was checked under"""
+    leaves out the walls and floors that use them (the Water Temple). Only in a romfs this builder unpacked (its
+    .hookshot_romfs stamp), and once per unpack: .hookshot_romfs_checked holds the stamp it was checked under. A romfs it
+    did not unpack keeps them: the game reads the same stand-ins in their place (host/oot_damaged_files.c)"""
     good = os.path.join(out, ".hookshot_romfs")
     checked = os.path.join(out, ".hookshot_romfs_checked")
     if not os.path.isfile(good) or not os.path.isdir(romfs):
         return
     check_cache_paths(out, (good, checked, romfs))
-    with open(good) as f:
-        stamp = f.read()
+    stamp = read_stamp(good)
+    checked_stamp = "resolved-v2\n" + stamp   # (v2: also files still in the .nup's zstd frame, #2361)
     if os.path.isfile(checked):
-        with open(checked) as f:
-            if f.read() == stamp:
-                return
+        if read_stamp(checked) == checked_stamp:
+            return
+        os.remove(checked)   # Earlier checks also marked files with no replacement as checked.
     import nup
     heads = os.path.join(out, HEADS)
     known = None
@@ -460,23 +612,71 @@ def stand_in_damaged_files(out, romfs):
               "minutes", flush=True)
         done = nup.stand_in_damaged(romfs, file_progress("checked"))
     else:   # (found while the .nup was extracted: no file opened again)
+        if known:   # (said before the stand-ins are looked for, so the log does not end at the extraction's last line)
+            print("%d damaged game file%s found while reading your game files: looking for stand-ins" %
+                  (len(known), "" if len(known) == 1 else "s"), flush=True)
         done = nup.stand_in_damaged(romfs, damaged=[os.path.normpath(os.path.join(romfs, rel)) for rel in known])
-    with open(checked, "w") as f:
-        f.write(stamp)
+    note = os.path.join(out, DAMAGED_NOTE)
+    if not done:
+        with contextlib.suppress(FileNotFoundError):   # (a whole dump unpacked over a damaged one)
+            os.remove(note)
+    else:
+        too_many = len(done) > nup.MOST_STAND_INS   # (none was looked for: nup.stand_in_damaged)
+        lines = ["Your game dump is incomplete: %d game file%s in it %s damaged (a complete dump is about 23.8 GB, an incomplete "
+                 "one 23.3 GB). %s Dump the game again for the original files:" %
+                 (len(done), "" if len(done) == 1 else "s", "is" if len(done) == 1 else "are",
+                  "That is too many to replace with similar files (an incomplete dump has a few)." if too_many else
+                  "Similar files are used where available, with different textures in those places.")]
+        for path, other in done:
+            lines.append("  %s: %s" % (os.path.relpath(path, romfs),
+                                       "in its place " + os.path.basename(other) if other else "no replacement found; build cannot continue"))
+        shown = 1 + SHOWN_DAMAGED   # (the first line, then the files: the note keeps them all)
+        for line in lines[:shown]:
+            print(line, flush=True)
+        if len(lines) > shown:
+            print("  ... and %d more, listed in %s" % (len(lines) - shown, note), flush=True)
+        # (#2237: keep the list even when an unresolved file stops this build, before marking a successful check)
+        with open(note, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines) + "\n")
+        unresolved = sum(other is None for _, other in done)
+        if unresolved:
+            fail("The game dump still has %d damaged file%s with no replacement. The build stopped before compiling. "
+                 "Dump the game again and select the complete dump in Hookshot Builder. The affected files are listed above." %
+                 (unresolved, "" if unresolved == 1 else "s"))
+    write_stamp(checked, checked_stamp)
     with contextlib.suppress(FileNotFoundError):
         os.remove(heads)
-    if not done:
-        return
-    print("Your game dump is incomplete: %d game file%s in it %s damaged (a complete dump is about 23.8 GB, an incomplete "
-          "one 23.3 GB). Each is replaced by a similar file so that the places using it are still drawn, with a different "
-          "texture there. Dump the game again for the original look:" % (len(done), "" if len(done) == 1 else "s",
-                                                                          "is" if len(done) == 1 else "are"), flush=True)
-    for path, other in done:
-        print("  %s: %s" % (os.path.relpath(path, romfs),
-                            "in its place " + os.path.basename(other) if other else "nothing similar found, left as it is"),
-              flush=True)
 
 
+ROMFS_TABLE = "ResourceSizeTable.Product.111.Nin_Ounce_NVN2.rsizetable.zs"   # (the supported version's, in System/Resource)
+def romfs_problem(romfs, nup=None):
+    """Why a romfs folder chosen by hand is not the supported game's RomFS, or None. A romfs taken from another PC
+    port's folder (a few packed .bin files, no subfolders) was accepted, built for 40 minutes, and the game died in its first
+    second: its own allocator returned null. The game's RomFS has System/Resource/<the table above> and hundreds of folders.
+    nup: the romfs was read from this .nup file, whose code is the supported build's: a dump with the update's code and the
+    first version's files was built in full, and the game then said at each start that its files are another version's"""
+    res = os.path.join(romfs, "System", "Resource")
+    if os.path.isfile(os.path.join(res, ROMFS_TABLE)):
+        return None
+    others = sorted(f for f in os.listdir(res) if f.startswith("ResourceSizeTable")) if os.path.isdir(res) else []
+    if nup:
+        return ("The game files in %s are %s (Hookshot needs the version whose files have System\\Resource\\%s), while its code is "
+                "the supported version's. The game's code and files must be from the same version: dump the game again with its "
+                "update applied to the whole game, files included, and choose that dump."
+                % (nup, "from another version of the game (%s)" % others[0] if others else "not the game's own RomFS", ROMFS_TABLE))
+    if others:
+        return ("The romfs folder %s is from another version of the game (%s). Hookshot needs the version whose romfs has "
+                "System\\Resource\\%s: dump the game with its update applied, and use that romfs with the exefs from the same "
+                "dump." % (romfs, others[0], ROMFS_TABLE))
+    try:
+        top = os.listdir(romfs)
+    except OSError:
+        top = []
+    folders = sum(os.path.isdir(os.path.join(romfs, t)) for t in top)
+    return ("The romfs folder %s is not the game's own RomFS: it has no System\\Resource\\%s (at its top: %d files, %d folders; "
+            "the game's has hundreds of folders). Folders taken from another PC port or tool hold the game in their own format "
+            "and do not work here. Use your own dump of the game: the .nup file, or the romfs and exefs folders dumped from it."
+            % (romfs, ROMFS_TABLE, len(top) - folders, folders))
 def check_cache_paths(out, paths):
     """Resolve generated paths and reject symbolic links/reparse points before replacement."""
     root = os.path.realpath(out)
@@ -493,32 +693,31 @@ def check_cache_paths(out, paths):
                  "Choose a different output folder." % path)
 
 
-def check_cpu():
-    """(linux) The AppImage's Vulkan back end (HOOKSHOT_VK_PREBUILT) is built for x86-64-v3 elsewhere
-    (scripts/linux/appimage.sh), while the game follows this PC (nx2/host_cpu.py): on a CPU without AVX2 it would stop at
-    its start. Said now, before the game is read, not 40 minutes in (issue 363)"""
-    if not os.environ.get("HOOKSHOT_VK_PREBUILT") or os.environ.get("RX_MARCH"):
-        return
-    sys.path.insert(0, HERE)
-    from host_cpu import host_march
-    m = host_march()
-    if m != "x86-64-v3":
-        fail("Your processor has no AVX2 (it runs %s), and the AppImage's renderer needs it. Build Hookshot from source "
-             "instead (see the readme): a source build follows your processor." % m)
+def package_script(path):
+    """The reader for a game file: nxar.py for a .nx archive (told by its first bytes, not its name), else nup.py"""
+    try:
+        with open(path, "rb") as f:
+            nx = f.read(4) == b"NXAR"
+    except OSError:   # (nup.py says what is wrong with the file)
+        nx = False
+    return "nx2/nxar.py" if nx else "nx2/nup.py"
 
 
 def check(a, work):
-    check_windows_sdk()   # (first: said in plain words when the game is chosen, not after it has been read)
-    check_cpu()
+    check_windows_sdk(work)   # (first: said in plain words when the game is chosen, not after it has been read)
     if a.nup:
         probe = os.path.join(work, "probe")
         shutil.rmtree(probe, ignore_errors=True)
-        run(PY + ["nx2/nup.py", a.nup, "--extract", probe, "--only", "exefs"])
+        run(PY + [package_script(a.nup), a.nup, "--extract", probe, "--only", "exefs"])
         check_modules(os.path.join(probe, "exefs"))
         bid = build_id(os.path.join(probe, "exefs", "main"))
         shutil.rmtree(probe, ignore_errors=True)
     else:
         bid = build_id(os.path.join(a.exefs, "main"))
+        why = romfs_problem(a.romfs) if a.romfs else None
+        if why:
+            say("check", "bad", why)
+            return
     if bid.startswith(BUILD_ID):
         say("check", "ok", "This is the version Hookshot supports (build %s)." % bid[:8])
     else:
@@ -618,48 +817,78 @@ def check_cpp_library(toolchain):
              "Visual Studio 2022 (or install it), then build again.")
 
 
-def check_linux_compiler():
-    """(linux) A C compiler that builds and links a program here (the AppImage's own clang and sysroot, else the system's):
-    found now, not 40 minutes in"""
-    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
-    import toolchain
-    cc = toolchain.find("clang")
-    if not os.path.isfile(cc):
-        fail("No C compiler was found. Install clang (and lld), or use the Hookshot AppImage, which brings its own.")
-    sysroot = os.environ.get("HOOKSHOT_SYSROOT")
-    with tempfile.TemporaryDirectory() as d:
-        src = os.path.join(d, "t.c")
-        with open(src, "w") as f:
-            f.write(chr(10).join(("#include <stdio.h>", "#include <pthread.h>", "int main(void) { return 0; }", "")))
-        r = subprocess.run([cc] + (["--sysroot=" + sysroot] if sysroot else []) + ["-fuse-ld=lld", src, "-o", os.path.join(d, "t")],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if r.returncode:
-        print(r.stdout + r.stderr, flush=True)
-        errors = [l for l in r.stderr.splitlines() if "error" in l]
-        fail("The compiler could not build a test program: %s (install clang, lld and your system's C library headers: "
-             "libc6-dev on Debian and Ubuntu, glibc-devel on Fedora)" % (errors[0] if errors else "no message"))
+def check_linux_prerequisites(work=None):
+    """Use the compile's own resolvers before reading a dump; report all missing prerequisites together."""
+    import build
+    missing = []
+    requirements = os.path.join(ROOT, "requirements.txt")
+    source_build = os.path.isfile(requirements)
+    if source_build:   # (the AppImage already carries its Python environment)
+        with open(requirements, encoding="utf-8") as f:
+            for line in f:
+                # The top-level pins are mandatory; -r nx2/prompt_requirements.txt is optional.
+                pin = re.match(r"([A-Za-z0-9_]+)==", line)
+                if pin and importlib.util.find_spec(pin[1]) is None:
+                    missing.append("Python module %s (not on %s's isolated import path; install requirements.txt "
+                                   "with that Python)" % (pin[1], sys.executable))
+    # (the Vulkan back end is compiled by every build, the AppImage's too: its headers, and clang++ for it and a64emit)
+    for (name, package, probe, env), found in zip(build.VK_HEADERS, build.vulkan_headers(work)):
+        if not found:
+            missing.append("%s header %s (CPM package %s: RX_CPM, clone/cpm, work/eg/.cache/cpm, then sibling "
+                           "mkw-recomp/Eglantine caches; then %s, package root or include/; then /usr/local, /usr)"
+                           % (name, probe, package, env))
+    if build.FSR and not os.path.isfile(os.path.join(build.FSR_HEADERS, "api", "include", "ffx_api.h")):
+        missing.append("AMD's FSR API headers in %s (AMD FSR 4: third_party/fidelityfx; or build without --fsr)"
+                       % os.path.normpath(build.FSR_HEADERS))
+    build.ffmpeg_linux(missing)
+    cc = build.toolchain.find("clang")
+    tools = [("clang", cc), ("clang++", build.toolchain.find("clang++"))]
+    for name, path in tools:
+        if not os.path.isfile(path):
+            missing.append("%s compiler %s (EMSDK/upstream/bin, else ~/emsdk/upstream/bin, then PATH; "
+                           "install clang or use the AppImage)" % (name, path))
+    if os.path.isfile(cc):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "t.c")
+            with open(src, "w") as f:
+                f.write(chr(10).join(("#include <stdio.h>", "#include <pthread.h>", "int main(void) { return 0; }", "")))
+            try:
+                r = subprocess.run([cc] + build.target() + ["-fuse-ld=lld", src, "-o", os.path.join(d, "t")],
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace")
+                if r.returncode:
+                    missing.append("C compiler/linker test (clang -fuse-ld=lld, HOOKSHOT_SYSROOT when set; install "
+                                   "clang, lld and C library development headers): " + (r.stdout + r.stderr).strip())
+            except OSError as e:
+                missing.append("C compiler/linker test (%s): %s" % (cc, e))
+    if missing:
+        # One protocol message: GUI builders show the whole set, not only its first line.
+        fail("Missing Linux build prerequisites: " + "; ".join(" ".join(m.splitlines()) for m in missing))
+    print("Linux build prerequisites: OK", flush=True)
 
 
 def requested_jobs(value):
-    """The builder's explicit worker override, or None to keep its automatic selection."""
-    if value is None or value == "":
-        return None
-    error = "HOOKSHOT_JOBS must be a whole number: use 1 or more, or 0 for automatic."
-    try:
-        jobs = int(value)
-    except ValueError:
-        raise ValueError(error) from None
-    if jobs < 0:
-        raise ValueError(error)
-    return jobs or None
+    """The builder's explicit worker override, or None to keep its automatic selection (nx2/build_jobs.py requested)"""
+    return _build_jobs.requested(value)
 
 
 def default_jobs():
-    """(issue 418) One compiler per CPU thread: nx2/build.py starts each one only when the memory free holds it (MemoryGate), so the
-    count no longer has to fit the biggest files in the memory free at the start. HOOKSHOT_JOBS or --jobs choose"""
+    """(issue 418) One compiler per CPU thread but one: nx2/build.py starts each one only when the memory free holds it (MemoryGate),
+    so the count no longer has to fit the biggest files in the memory free at the start. The thread left over keeps the PC usable
+    while it builds (the desktop, a browser, the launcher's own window), as the launcher's Automatic does (SystemInfo.AutomaticWorkers).
+    HOOKSHOT_JOBS or --jobs choose"""
     cpus = os.cpu_count() or 2
-    print("build: up to %d compilers at once (one per CPU thread), as the memory allows; HOOKSHOT_JOBS=<n> to change" % cpus, flush=True)
-    return cpus
+    jobs = max(1, cpus - 1)
+    print("build: up to %d compilers at once (one per CPU thread but one), as the memory allows; HOOKSHOT_JOBS=<n> to change" % jobs,
+          flush=True)
+    return jobs
+
+
+def requested_jobs_or_none(value):
+    """requested_jobs, None for a value that is no count (chosen_jobs says so and stops the build)"""
+    try:
+        return requested_jobs(value)
+    except ValueError:
+        return None
 
 
 def chosen_jobs(given):
@@ -694,6 +923,44 @@ def bundled_mingw():
     return os.environ.get("HOOKSHOT_MINGW", "")
 
 
+def compiler_failure(r):
+    """What a compiler run that failed said, for one line of a message: its first error, else its last line (clang that
+    could not start said only "<clang.exe>: permission denied", and the message had "no message"), with the exit code when it
+    names no error. A Windows code is an NTSTATUS in hex (0xC0000135: a DLL not found; 0xC0000022: access denied)"""
+    lines = [l.strip() for l in (r.stderr + "\n" + r.stdout).splitlines() if l.strip()]
+    errors = [l for l in lines if "error" in l]
+    if errors:
+        return errors[0]
+    code = "exit code 0x%08X" % (r.returncode & 0xFFFFFFFF) if os.name == "nt" else "exit code %d" % r.returncode
+    return "%s, %s" % (lines[-1], code) if lines else "no output, %s" % code
+
+
+def unlistable_above(path):
+    """The highest folder above path that Windows lets no program list, or None. The compiler (LLVM) looks up its own
+    long name as it starts (GetLongPathNameW), which lists every folder on the way: C:\\Users\\<name>\\Cookies and the other junctions
+    Windows keeps for old programs deny everyone that, and a Desktop moved into one took the launcher there. The launcher says it
+    before it runs the builder (MakeGameRun.Blocked); this is for a builder run otherwise. Windows only"""
+    if os.name != "nt":
+        return None
+    chain = []
+    at = os.path.dirname(os.path.abspath(path))
+    while True:
+        chain.append(at)
+        up = os.path.dirname(at)
+        if up == at:
+            break
+        at = up
+    for folder in reversed(chain):   # (the drive first: the folder named is the one to move out of)
+        try:
+            with os.scandir(folder) as entries:
+                next(entries, None)
+        except PermissionError:
+            return folder
+        except OSError:
+            pass   # (a folder not there, or another error: not this one's to say)
+    return None
+
+
 def check_mingw():
     """The bundled compiler builds and links a Windows program: found now, not 40 minutes in"""
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
@@ -710,16 +977,19 @@ def check_mingw():
                            [src, "-o", os.path.join(d, "t.exe")], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if r.returncode:
         print(r.stdout + r.stderr, flush=True)
-        errors = [l for l in r.stderr.splitlines() if "error" in l]
+        blocked = unlistable_above(cc)
+        if blocked:   # (LLVM's tools stop at once there, "<clang.exe>: permission denied", before they compile anything)
+            fail("Windows doesn't let programs look inside %s, a folder above the builder's own compiler, so it can't start. Move "
+                 "Hookshot's folder out of it (for example to C:\\Hookshot) and start Hookshot from there." % blocked)
         fail("The builder's own compiler (tools/llvm-mingw) could not build a test program: %s. Unpack the zip again into a folder "
-             "your antivirus allows." % (errors[0] if errors else "no message"))
+             "your antivirus allows." % compiler_failure(r))
     print("the compiler: %s (no Visual Studio needed)" % os.environ["HOOKSHOT_MINGW"], flush=True)
 
 
-def check_windows_sdk():
+def check_windows_sdk(work=None):
     """The compiler is bundled; Microsoft's C library and Windows SDK may not be, by their licences. Found now, not 40 minutes in."""
     if LINUX:
-        return check_linux_compiler()
+        return check_linux_prerequisites(work)
     if bundled_mingw():
         return check_mingw()
     if CROSS:
@@ -780,48 +1050,223 @@ def check_windows_sdk():
     fail("The compiler could not run a test build: %s" % why)
 
 
+def _cleanup_argv(command):
+    """Windows quoted arguments (backslashes escape quotes, not ordinary path characters).
+    Reject unmatched quotes rather than using an ambiguous command as ownership evidence."""
+    args, word, quoted, started = [], [], False, False
+    i = 0
+    while i < len(command):
+        char = command[i]
+        if char in " \t" and not quoted:
+            if started:
+                args.append("".join(word))
+                word, started = [], False
+            i += 1
+            continue
+        started = True
+        if char == "\\":
+            j = i
+            while j < len(command) and command[j] == "\\":
+                j += 1
+            count = j - i
+            if j < len(command) and command[j] == '"':
+                word.extend("\\" * (count // 2))
+                if count % 2:
+                    word.append('"')
+                    i = j + 1
+                    continue
+            else:
+                word.extend("\\" * count)
+                i = j
+                continue
+            i = j
+            char = command[i]
+        if char == '"':
+            if quoted and i + 1 < len(command) and command[i + 1] == '"':
+                word.append('"')
+                i += 2
+                continue
+            quoted = not quoted
+        else:
+            word.append(char)
+        i += 1
+    if quoted:
+        return []
+    if started:
+        args.append("".join(word))
+    return args
+
+
+def _cleanup_path(path):
+    # CIM has no working directory: relative and drive-relative arguments prove nothing.
+    drive, tail = ntpath.splitdrive(path)
+    if not drive or not tail.startswith(("\\", "/")):
+        return None
+    return ntpath.normcase(ntpath.normpath(path))
+
+
+def _cleanup_python(argv):
+    i = 1
+    while i < len(argv) and argv[i].startswith("-"):
+        if argv[i] in ("-I", "-u", "-B", "-E", "-s", "-S", "-O", "-OO"):
+            i += 1
+        elif argv[i] in ("-X", "-W") and i + 1 < len(argv):
+            i += 2
+        else:
+            return None          # -c/-m and unknown invocation forms are not script evidence.
+    return (argv[i], argv[i + 1:]) if i < len(argv) else None
+
+
+def _cleanup_owns(q, work, default_work):
+    argv = _cleanup_argv(q.get("CommandLine") or "")
+    name = (q.get("Name") or "").lower()
+    if not argv or not work:
+        return False
+    if name in ("python.exe", "pythonw.exe", "python3.exe"):
+        invocation = _cleanup_python(argv)
+        if not invocation:
+            return False
+        script, options = invocation
+        entry = ntpath.basename(script).lower()
+        if entry not in ("make_game.py", "lift.py", "build.py"):
+            return False
+        works = []
+        for j, option in enumerate(options):
+            if option == "--work":
+                if j + 1 == len(options):
+                    return False
+                works.append(_cleanup_path(options[j + 1]))
+            elif option.startswith("--work="):
+                works.append(_cleanup_path(option[7:]))
+        if works:
+            # build.py gets OOT_WORK through its environment; it has no --work option.
+            return entry != "build.py" and all(w == work for w in works)
+        # Versions share the default work folder. An update must also recognize the
+        # packaged entry point of an earlier version, not arbitrary make_game scripts.
+        path, home = _cleanup_path(script), _cleanup_path(default_work)
+        if entry != "make_game.py" or path is None or work != home:
+            return False
+        if path == _cleanup_path(__file__):
+            return True
+        prefix = home.rstrip("\\") + "\\"
+        parts = path[len(prefix):].split("\\") if path.startswith(prefix) else []
+        return (len(parts) == 6 and parts[0] == "versions" and bool(parts[1])
+                and parts[2:] == ["hookshotbuilder", "tools", "nx2", "make_game.py"])
+    if name not in ("clang.exe", "clang++.exe", "clang-cl.exe", "ld.lld.exe", "lld-link.exe"):
+        return False
+    outputs = []
+    for i, arg in enumerate(argv[1:], 1):
+        if arg == "-o" and i + 1 < len(argv):
+            outputs.append(_cleanup_path(argv[i + 1]))
+        elif name == "lld-link.exe" and arg.lower().startswith("/out:"):
+            outputs.append(_cleanup_path(arg[5:]))
+        elif name == "clang-cl.exe" and arg.startswith("/Fo"):
+            outputs.append(_cleanup_path(arg[3:]))
+    # Input/include/response-file paths do not establish where a compiler writes.
+    return bool(outputs) and all(o and o.startswith(work.rstrip("\\") + "\\") for o in outputs)
+
+
+def _cleanup_build_child(child, parent):
+    """make_game runs this exact child in ROOT with OOT_WORK; an orphan has no such proof."""
+    python_names = ("python.exe", "pythonw.exe", "python3.exe")
+    if child.get("Name", "").lower() not in python_names or parent.get("Name", "").lower() not in python_names:
+        return False
+    c = _cleanup_python(_cleanup_argv(child.get("CommandLine") or ""))
+    p = _cleanup_python(_cleanup_argv(parent.get("CommandLine") or ""))
+    if not c or not p or not _cleanup_path(p[0]) or ntpath.basename(p[0]).lower() != "make_game.py":
+        return False
+    expected = ntpath.join(ntpath.dirname(p[0]), "build.py")
+    script, options = c
+    return ("--standalone" in options and
+            (_cleanup_path(script) == _cleanup_path(expected) or ntpath.normcase(script) == "nx2\\build.py"))
+
+
+WORK_LOCK = "make_game.lock"   # (in the work folder: held by the build using it, lock_work)
+_WORK_LOCK = []   # ([its path, the open lock file], kept open for the whole run: closing it, or the process ending, lets it go)
+
+
+def lock_work(work):
+    """One build at a time in a work folder. Two builds in one share its lift, its object cache and its lists: a player's second
+    build, started 7.5 minutes after the first into the same work folder, found the lift done and compiled again every object the
+    first had not cached yet (197 of 480 files, 451 s of compiling, the two ending 19 s apart), and one can delete or cut short the
+    other's files (issue 1197). The second now stops at once, saying so. A lock, not a file that says so: it goes with the process
+    that held it, however that ended, so a stopped build never keeps the next one out. A second main() in the same process (the
+    tests) keeps the lock it holds on that folder, and lets go of one on another"""
+    path = os.path.join(os.path.abspath(work), WORK_LOCK)
+    if _WORK_LOCK and _WORK_LOCK[0] == path:
+        return
+    release_work()
+    f = open(path, "a+b")
+    try:
+        f.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        fail("Another build is using the work folder %s. Wait for it to end (or stop it), then build again." % work)
+    _WORK_LOCK[:] = [path, f]
+
+
+def release_work():
+    """Let go of the work folder's lock, if this process holds one. A build doesn't need to: the lock goes when its process ends.
+    The tests do, after running main() in their own process: Windows can't delete a temporary work folder while its
+    make_game.lock is still open"""
+    if _WORK_LOCK:
+        _WORK_LOCK[1].close()
+        _WORK_LOCK.clear()
+
+
 def stop_stray_compilers(work, default_work):
-    """(issues 501, 530) A build left running by an earlier one on this work folder (the builder closed, crashed, or replaced by an
-    update mid-build) keeps its files open: the next build stopped at once with 'OSError: [Errno 22]' writing sa/gen/a64_fpx.h, or
-    WinError 1224 on the play profile. Only that build goes: an earlier make_game on this work folder, the build and lift steps
-    whose make_game is gone, and compilers whose command line names this work folder. Never this build or what started it."""
+    """Best-effort cleanup for issues 501/530, restricted to proven target outputs/work.
+    An interrupted Builder update can leave a compiler holding a64_fpx.h (Errno 22)
+    or its output executable (WinError 1224), including across packaged versions.
+    Unknown orphan ownership is preserved. Never terminate an unexamined child tree."""
     if LINUX:
         return
-    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'clang*' -or $_.Name -like 'ld.lld*' -or $_.Name -like 'python*' } "
-          "| Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress")
+    ps = ("Get-CimInstance Win32_Process | "
+          "Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress")
     try:
-        import json
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True, timeout=90)
+        if r.returncode:
+            print("could not look for an earlier build's processes: process query exited with status %d"
+                  % r.returncode, flush=True)
+            return
         procs = json.loads(r.stdout or "[]")
         if isinstance(procs, dict):
             procs = [procs]
         alive = {q["ProcessId"]: q for q in procs}
-        mine, pid = set(), os.getpid()        # (this process and the chain that started it)
+        mine, pid = set(), os.getpid()
         while pid in alive and pid not in mine:
             mine.add(pid)
             pid = alive[pid]["ParentProcessId"]
         mine.add(pid)
-        w = os.path.normcase(os.path.abspath(work))
-        names = lambda c: os.path.normcase((c or "").replace("/", "\\"))
-        doomed = {}
+        w = _cleanup_path(os.fspath(work))
+        doomed = {q["ProcessId"]: q["Name"] for q in procs
+                  if q["ProcessId"] not in mine and _cleanup_owns(q, w, os.fspath(default_work))}
+        # A live, proven make_game parent establishes the build.py child's OOT_WORK contract.
+        # Do not infer this from an absent parent or propagate it to arbitrary descendants.
+        owned = set(doomed)
         for q in procs:
-            c, n = names(q.get("CommandLine")), q["Name"].lower()
-            if q["ProcessId"] in mine:
-                continue
-            if "make_game.py" in c and (w in c or ("--work" not in c and w == os.path.normcase(default_work))):
-                doomed[q["ProcessId"]] = n
-            elif ("build.py" in c or "lift.py" in c) and "--standalone" in c and q["ParentProcessId"] not in alive:
-                doomed[q["ProcessId"]] = n           # (its make_game is gone)
-            elif not n.startswith("python") and w in c:
-                doomed[q["ProcessId"]] = n
-        for k in doomed:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(k)], capture_output=True, timeout=60)
-        if doomed:
+            parent = alive.get(q["ParentProcessId"])
+            if q["ProcessId"] not in mine and q["ParentProcessId"] in owned and parent and _cleanup_build_child(q, parent):
+                doomed[q["ProcessId"]] = q["Name"]
+        stopped = []
+        for k, name in doomed.items():
+            # /T would also kill descendants whose folder was never established.
+            result = subprocess.run(["taskkill", "/F", "/PID", str(k)], capture_output=True, timeout=60)
+            if result.returncode == 0:
+                stopped.append(name)
+        if stopped:
             print("stopped %d process(es) an earlier build left running on this work folder: %s"
-                  % (len(doomed), " ".join(sorted(set(doomed.values())))), flush=True)
+                  % (len(stopped), " ".join(sorted(set(stopped)))), flush=True)
             time.sleep(2)
     except Exception as e:   # (not finding them is no reason to stop)
         print("could not look for an earlier build's processes: %s" % e, flush=True)
+
 
 
 def makefile_words(text):
@@ -837,8 +1282,8 @@ def makefile_words(text):
 
 def _drop_stale_linux(work):
     """The AppImage's sysroot is a new /tmp/.mount_... path every start. The stamp is the compiler's version and stdio.h's
-    bytes, not that path, so an update reuses the compiled game when the headers did not change (the Windows stamp leaves
-    the builder's install folder out for the same reason, issue 565)."""
+    bytes, not that path, so an update reuses the compiled game when the headers did not change. This Linux stamp excludes
+    installation paths; the Windows stamp separately retains the compiler invocation identity."""
     import hashlib
     sysroot = os.environ.get("HOOKSHOT_SYSROOT", "")
     stdio = os.path.join(sysroot, "usr", "include", "stdio.h") if sysroot else "/usr/include/stdio.h"
@@ -870,6 +1315,17 @@ def _drop_stale_linux(work):
             shutil.rmtree(sub, ignore_errors=True)
     with open(note, "w") as f:
         f.write(stamp + chr(10))
+
+
+def object_stamps(obj_dir):
+    """The object keys the objects in obj_dir are stamped with (<obj>.sha1, nx2/build.py compile_one)"""
+    keys = []
+    with contextlib.suppress(OSError):
+        for f in os.listdir(obj_dir):
+            if f.endswith(".sha1"):
+                with contextlib.suppress(OSError), open(os.path.join(obj_dir, f)) as h:
+                    keys.append(h.read().strip())
+    return keys
 
 
 def prune_object_cache(work):
@@ -942,15 +1398,17 @@ def drop_stale_objects(work):
         src = os.path.join(d, "t.c")
         with open(src, "w") as f:
             f.write(chr(10).join(("#include <stdio.h>", "#include <stdlib.h>", "#include <windows.h>", "")))
-        r = subprocess.run([toolchain.need(toolchain.find("clang"))] + toolchain.native_target() + ["-M", src], capture_output=True, text=True,
+        cc = toolchain.need(toolchain.find("clang"))
+        r = subprocess.run([cc] + toolchain.native_target() + ["-M", src], capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
     if r.returncode:
         return
-    found = sorted({h.lower() for h in makefile_words(r.stdout) if h.endswith(".h")})
+    header_paths = {h.lower(): h for h in makefile_words(r.stdout) if h.endswith(".h")}
+    found = sorted(header_paths)
 
-    # (issue 565) The paths are taken relative to the builder's own folder, with the compiler's version: under
-    # versions\<tag>\ every release looked like new headers, and an update compiled everything again (2+ hours). clang
-    # writes them with / where the folder has \: compared with / on both sides, each path's own spelling kept for the old stamp
+    # (issue 565) Keep ROOT-relative spelling for legacy path-only compatibility stamps. Compiler headers are normalized
+    # separately below, with an absolute invocation discriminator: relocating a bundled compiler deliberately misses.
+    # clang writes paths with / where the folder has \; compare / on both sides, retaining each spelling for the old stamp.
     mine = os.path.normcase(os.path.abspath(ROOT)).lower().replace(os.sep, "/")
     ours = lambda h: h.replace(os.sep, "/").startswith(mine + "/")
 
@@ -959,10 +1417,30 @@ def drop_stale_objects(work):
         moved = [((root if "/" in h[:len(mine)] else root.replace("/", os.sep)) + h[len(mine):]) if ours(h) else h for h in found]
         return hashlib.sha1(chr(10).join(sorted(moved)).encode(), usedforsecurity=False).hexdigest()
 
-    rel = sorted(("<tools>" + h[len(mine):].replace(os.sep, "/")) if ours(h) else h for h in found)
-    ver = subprocess.run([toolchain.need(toolchain.find("clang")), "--version"], capture_output=True, text=True, encoding="utf-8",
+    # A worktree may use the original checkout's compiler. Normalize its own
+    # installation before ROOT, so identical header paths do not change identity
+    # merely because that installation is now outside the source checkout.
+    compiler_root = os.path.normcase(os.path.dirname(os.path.dirname(os.path.abspath(cc)))).lower().replace(os.sep, "/")
+    rel = []
+    for h in found:
+        path = h.replace(os.sep, "/")
+        if path.startswith(compiler_root + "/"):
+            # Do not turn two installations with different headers but the same
+            # compiler version into a cache hit by dropping their absolute paths.
+            with open(header_paths[h], "rb") as f:
+                content = hashlib.sha1(f.read(), usedforsecurity=False).hexdigest()
+            rel.append("<compiler>" + path[len(compiler_root):] + ":" + content)
+        else:
+            rel.append(("<tools>" + h[len(mine):].replace(os.sep, "/")) if ours(h) else h)
+    rel.sort()
+    ver = subprocess.run([cc, "--version"], capture_output=True, text=True, encoding="utf-8",
                          errors="replace").stdout.splitlines()[:1]
-    stamp = hashlib.sha1(chr(10).join(ver + rel).encode(), usedforsecurity=False).hexdigest()
+    # ROOT may move around a shared compiler, but distinct compiler locations
+    # may have different implicit driver configurations despite equal versions
+    # and headers. Keep the invocation path independent of ROOT; do not resolve
+    # symlinks, since the invoked name/location can select a driver config.
+    compiler_id = os.path.normcase(os.path.abspath(cc)).replace(os.sep, "/")
+    stamp = hashlib.sha1(chr(10).join(ver + [compiler_id] + rel).encode(), usedforsecurity=False).hexdigest()
     note = os.path.join(work, "system_headers.txt")
     try:
         with open(note) as f:
@@ -992,14 +1470,23 @@ def drop_stale_objects(work):
 
 def seed_pipelines(out):
     """The pipelines recorded on the development PC (hookshot_pipelines_seed.bin in the tools: program keys and draw states, no game
-    code), as the game folder's list, so its first start builds them before the title, as TotK Recomp's shipped shader list does,
-    instead of compiling each when it is first drawn (the stutter of a first visit). Each release ships the list its own build
-    made: the file's first 8 bytes are that build's stamp, and a list the folder has from the same build is kept (it grows as
-    the player plays)"""
+    code), as the game folder's list (cache/hookshot_pipelines.bin, where the game keeps its notes: gpu/vk/vk_draw.cpp
+    pipe_notes_path), so its first start builds them before the title, as TotK Recomp's shipped shader list does, instead of
+    compiling each when it is first drawn (the stutter of a first visit). Each release ships the list its own build made: the
+    file's first 8 bytes are that build's stamp, and a list the folder has from the same build is kept (it grows as the player
+    plays). One loose beside the game goes into cache/ first, as the game's own start moves it (host/game_layout.c)"""
     seed = os.path.join(ROOT, "hookshot_pipelines_seed.bin")
-    dst = os.path.join(out, "hookshot_pipelines.bin")
+    cache = os.path.join(out, "cache")
+    dst = os.path.join(cache, "hookshot_pipelines.bin")
     if not os.path.isfile(seed):
         return
+    os.makedirs(cache, exist_ok=True)
+    loose = os.path.join(out, "hookshot_pipelines.bin")
+    if os.path.isfile(loose) and not os.path.exists(dst):
+        try:
+            os.replace(loose, dst)
+        except OSError:
+            pass
     with open(seed, "rb") as f:
         stamp = f.read(8)
     try:
@@ -1065,8 +1552,57 @@ def game_env(environ=None):
     return env
 
 
-def not_prepared(why):
-    print("%s (%s): the game prepares them at its first start" % (NOT_PREPARED, why), flush=True)
+FIRST_START = "the game prepares them at its first start"   # (the builders' windows tell this ending from the others)
+
+
+def not_prepared(why, then=FIRST_START):
+    print("%s (%s): %s" % (NOT_PREPARED, why, then), flush=True)
+
+
+# (Compile shaders, the builders' and the launcher's choice: compile_shaders= in the game folder's hookshot_options.ini, the
+# number the game reads (gpu/vk/vk_draw.cpp compile_all). Most, the default: every shader program and the pipelines the lists
+# name, before the title. All: the predicted pipelines too, about 40 % more time for pipelines play almost never draws)
+COMPILE_LEVELS = {"most": 0, "all": 1}
+COMPILE_KEY = "compile_shaders"
+
+
+def options_path(out):
+    return os.path.join(out, "hookshot_options.ini")
+
+
+def folder_compile_level(out):
+    """The Compile shaders choice the folder's hookshot_options.ini holds ("most" or "all"), or None when it holds none"""
+    try:
+        with open(options_path(out), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                key, eq, value = line.strip().partition("=")
+                if eq and key == COMPILE_KEY:
+                    n = int(value) if value.strip().lstrip("-").isdigit() else 0
+                    return next((name for name, v in COMPILE_LEVELS.items() if v == n), "most")
+    except OSError:
+        pass
+    return None
+
+
+def write_compile_level(out, level):
+    """compile_shaders=<n> into the folder's hookshot_options.ini, the file's other lines as they are (the game's menu keeps the
+    line too). A file with only this line still makes the game's first start a first start (gpu/vk/vk_menu.cpp menu_init)"""
+    path = options_path(out)
+    lines = []
+    try:
+        with open(path, encoding="utf-8", errors="replace", newline="") as f:
+            lines = [l for l in f.read().splitlines() if l.partition("=")[0].strip() != COMPILE_KEY]
+    except OSError:
+        pass
+    lines.append("%s=%d" % (COMPILE_KEY, COMPILE_LEVELS[level]))
+    with open(path + ".new", "w", encoding="utf-8", newline="\n") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(path + ".new", path)
+
+
+def compile_level(a, out):
+    """This build's Compile shaders: --compile-shaders, else the folder's own choice, else Most"""
+    return getattr(a, "compile_shaders", None) or (folder_compile_level(out) if out else None) or "most"
 
 
 def prepare_skipped(a, environ=None):
@@ -1091,17 +1627,37 @@ def prepare_shaders(cmd, folder=None, silence=PREPARE_SILENCE):
     """The shaders prepared now, under the builder's progress bar, not at the game's first start behind a black window (minutes on
     some GPUs, issue 711): hookshot --prepare-shaders (host/hos_main.c, gpu/vk/vk_main.cpp), the same work as that first start, in
     the game's folder and environment, as the builders' Play starts it. A PC whose Vulkan can't (exit 3), a run silent for `silence` seconds (then stopped), or
-    any other failure leaves the work to the first start, as before: never a failed build. Returns its exit code (None: stopped)"""
+    any other failure leaves the work to the first start, as before: never a failed build. Returns its exit code (None: stopped).
+
+    The run is supervised (nx2/prepare_supervisor.py, docs/shader-preparation.md): it keeps a journal of its calls
+    into the driver's compiler, and one that dies or hangs inside a call is started again without that shader, which goes into
+    the game's list of programs that driver is not asked for (cache/hookshot_driver_faults.txt). A run that ends with nothing
+    inside the driver is started once more; past the supervisor's bounds the work is left to the first start, as any failure"""
+    where = folder or os.path.dirname(cmd[0]) or None
+
+    def start(extra):
+        return run(cmd + extra, check=False, show=show_prepared, cwd=where, base=game_env(), silence=silence)
+
     try:
-        code = run(cmd, check=False, show=show_prepared, cwd=folder or os.path.dirname(cmd[0]) or None,
-                   base=game_env(), silence=silence)
+        # (a count asked for: the game started on that many CPUs, which its preparation's pools follow; nx2/build_jobs.py)
+        with _build_jobs.children_on_cpus(_build_jobs.asked()):
+            code, decision = prepare_supervisor.supervise(start, os.path.join(where or os.getcwd(), "cache"))
     except OSError as e:
         not_prepared(str(e))
         return 1
-    if code is None:
+    if decision.action == "done":
+        return code
+    if decision.why:   # (the supervisor's own reasons: its bounds, a shader of the renderer's own)
+        not_prepared(decision.why)
+    elif code is None:
         not_prepared("the game printed nothing for %s and was stopped" % span(silence))
     elif code == 3:
         not_prepared("no usable Vulkan here")
+    elif code == 4:   # (gpu/vk/vk_main.cpp prepare_watchdog: nothing moved for minutes, the driver stuck after a fault in it)
+        # (it left hookshot_prepare_skipped beside the game: its starts skip the preparation too, so none stops in the same place,
+        # until a --prepare-shaders run goes through and removes it)
+        not_prepared("the GPU driver stopped responding",
+                     "the game builds each shader when it first draws it, and the next build or update tries the preparation again")
     elif code:
         not_prepared("the game stopped with exit status %d" % code)
     return code
@@ -1120,10 +1676,61 @@ def folder_language(out):
     return None
 
 
-def profile_readable(prof):
+def windows_ui_language():
+    """Windows' display language ("de-DE"): the first of the user's preferred UI languages, else the user's default UI language;
+    "" when neither can be read. Not GetUserDefaultLocaleName: that is the regional format (Settings > Region), often another"""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.windll.kernel32
+    count, size = wintypes.ULONG(0), wintypes.ULONG(0)
+    if k32.GetUserPreferredUILanguages(0x8, ctypes.byref(count), None, ctypes.byref(size)) and size.value:   # (MUI_LANGUAGE_NAME)
+        buf = ctypes.create_unicode_buffer(size.value)
+        if k32.GetUserPreferredUILanguages(0x8, ctypes.byref(count), buf, ctypes.byref(size)) and buf.value:
+            return buf.value   # (a list ended by an empty name: the first)
+    buf = ctypes.create_unicode_buffer(85)
+    return buf.value if k32.LCIDToLocaleName(k32.GetUserDefaultUILanguage(), buf, 85, 0) else ""
+
+
+def system_language(name=None):
+    """The game language closest to the system's own, as the Windows builder's window picks its first one: the exact one, then the same
+    family; None when the game has none of it. name: the system's, "de-DE" or "pt_BR.UTF-8" (asked for when not given)"""
+    if name is None and os.name == "nt":   # (the display language, as .NET's CurrentUICulture, not the regional format)
+        name = windows_ui_language()
+    elif name is None:   # (as gettext reads them: the first of these that is set, and LANGUAGE's first over it unless that is C)
+        name = next((v for v in map(os.environ.get, ("LC_ALL", "LC_MESSAGES", "LANG")) if v), "")
+        first = os.environ.get("LANGUAGE", "").split(":")[0]
+        if first and name and re.split("[.@]", name)[0] not in ("C", "POSIX"):
+            name = first
+    name = re.split("[.@]", name)[0].replace("_", "-")
+    family = name.split("-")[0].lower()
+    for code, _ in LANGUAGES:
+        if code.lower() == name.lower():
+            return code
+    if family == "zh":
+        return "zh-Hant" if any(t in name for t in ("TW", "HK", "MO", "Hant")) else "zh-Hans"
+    if family == "es" and name.lower() not in ("es", "es-es"):
+        return "es-419"
+    if family == "pt":
+        return "pt-BR"
+    return next((code for code, _ in LANGUAGES if code == family), None)
+
+
+def build_language(a, out):
+    """The language a build writes to the folder's language.txt: the one asked for (--language); else the one the folder has,
+    from the build before or the player's own change to the file; else, in a launcher's build (--prepare: no window to choose
+    one in), the system's own; else English (US). An update keeps the folder's, whatever was asked."""
+    kept = folder_language(out)
+    if a.update and kept:
+        return kept
+    return a.language or kept or (system_language() if a.prepare else None) or "en-US"
+
+
+def profile_readable(prof, any_os=False):
     """(linux) the profile is made by a recent clang (the Windows tools'): an older one, the system's, cannot read it and stops the
-    build. Then the game is built without it (a little slower in play), not at all"""
-    if not LINUX:
+    build. Then the game is built without it (a little slower in play), not at all, and the line says which clang and where the
+    one that reads it is (profile_unread_message). any_os: asked on Windows too (the renderer's
+    committed profile is recorded on Linux, and llvm-mingw's clang is another LLVM)"""
+    if not LINUX and not any_os:
         return True
     sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
     import toolchain
@@ -1131,12 +1738,170 @@ def profile_readable(prof):
         src = os.path.join(d, "t.c")
         with open(src, "w") as f:
             f.write("int f(int x) { return x + 1; }" + chr(10))
+        quiet = {"creationflags": 0x08000000} if os.name == "nt" else {}   # (CREATE_NO_WINDOW: no console from the launcher)
         r = subprocess.run([toolchain.find("clang"), "-O2", "-Wno-everything", "-fprofile-instr-use=" + prof, "-c", src, "-o",
-                            os.path.join(d, "t.o")], capture_output=True, text=True, encoding="utf-8", errors="replace")
+                            os.path.join(d, "t.o")], capture_output=True, text=True, encoding="utf-8", errors="replace", **quiet)
     if r.returncode:
-        print("this compiler cannot read the play profile (%s): building without it" % (r.stderr.strip().splitlines() or ["?"])[-1],
-              flush=True)
+        ver = subprocess.run([toolchain.find("clang"), "--version"], capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", **quiet).stdout
+        print(profile_unread_message(prof, ver, r.stderr, LINUX, build_tools_llvm()), flush=True)
     return r.returncode == 0
+
+
+def build_tools_llvm(root=ROOT):
+    """The LLVM of the Linux build tools (tools.lock's, the AppImage's: scripts/linux/deps.sh's LLVM_VER), or None without it"""
+    try:
+        with open(os.path.join(root, "scripts", "linux", "deps.sh"), encoding="utf-8") as f:
+            m = re.search(r"^LLVM_VER=(\S+)", f.read(), re.M)
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
+def profile_unread_message(prof, version_text, stderr, linux, wanted):
+    """The line a build prints when this clang cannot read a play profile: which clang, which profile, what it costs (nothing
+    stops), and on Linux, with a clang older than the build tools' LLVM (a system clang: a distro's 18 reads no LLVM 23
+    profile), where the one that reads it is. version_text: clang --version's output; stderr: the test compile's"""
+    m = re.search(r"clang version (\d+)([\w.]*)", version_text or "")
+    who = "clang %s%s" % (m.group(1), m.group(2)) if m else "this compiler"
+    why = (stderr or "").strip().splitlines()
+    line = ("%s cannot read the play profile %s (%s): building without it, a little slower in play"
+            % (who, os.path.basename(prof), why[-1] if why else "no message"))
+    major = re.match(r"\d+", wanted or "")
+    if linux and major and (not m or int(m.group(1)) < int(major.group(0))):
+        line += (". The build tools' LLVM %s reads it: `python -I scripts/dev_build.py env` installs them and prints the "
+                 "variables that point the build at them (EMSDK), or install clang %s or newer" % (wanted, major.group(0)))
+    return line
+
+
+VK_PROFILE = "hookshot_vk.profdata"   # (the renderer's play profile, llvm-profdata's merge of an RX_VK_PGO=gen run's counters)
+# (the one every build uses: committed, xz, with its note in assets/profiles/README.md; unpacked into the work folder under its
+# own name, so a developer's work/hookshot_vk.profdata copied there earlier is never mistaken for it)
+VK_PROFILE_SHIPPED = os.path.join("assets", "profiles", VK_PROFILE + ".xz")
+VK_PROFILE_UNPACKED = "hookshot_vk.shipped.profdata"
+
+
+def vk_profile_for(work, environ, readable=None, root=ROOT):
+    """The renderer's profile nx2/build.py is given (RX_VK_PGO), or None. The checkout's work/hookshot_vk.profdata when it has one
+    (a developer's recording, copied to <work> by main), else the committed assets/profiles/hookshot_vk.profdata.xz, unpacked
+    into <work>; either only when this compiler reads it (on every system: the committed one comes from another LLVM than
+    llvm-mingw's). Not when RX_VK_PGO is set already (gen, or another profile: the developer's choice stands); with neither file
+    the renderer is built as it always was"""
+    if environ.get("RX_VK_PGO"):
+        return None
+    own = os.path.join(work, VK_PROFILE)
+    if os.path.exists(os.path.join(root, "work", VK_PROFILE)) and os.path.exists(own):
+        prof = own
+    elif os.path.exists(os.path.join(root, VK_PROFILE_SHIPPED)):
+        import lzma
+        with lzma.open(os.path.join(root, VK_PROFILE_SHIPPED)) as f:
+            data = f.read()
+        prof = os.path.join(work, VK_PROFILE_UNPACKED)
+        # (written only when it differs: the object keys are its contents, and a compiler still ending from a cancelled build
+        # keeps the file mapped on Windows, WinError 1224)
+        if not os.path.exists(prof) or open(prof, "rb").read() != data:
+            with open(prof, "wb") as f:
+                f.write(data)
+    else:
+        return None
+    return prof if (readable or (lambda p: profile_readable(p, any_os=True)))(prof) else None
+
+
+HOT_LIST = "hot_funcs.txt"   # (the lift's hot list, A64_HOT_FUNCS: one lifted function a line, f_<its guest address>)
+# (the one every build uses: committed, with its note in assets/profiles/README.md: guest addresses only, no game code. Copied to
+# <work>/hot_funcs.txt, where the lift key hashes its contents as it hashes a developer's own list)
+HOT_LIST_SHIPPED = os.path.join("assets", "profiles", HOT_LIST)
+
+
+def hot_list_for(work, environ, root=ROOT):
+    """The hot list the lift is given (A64_HOT_FUNCS): <work>/hot_funcs.txt; "" for none, every lifted function in the -O1
+    chunks; or None, which leaves the lift the shell's A64_HOT_FUNCS. In this order:
+      - HOOKSHOT_HOT_LIST=0: none (an A/B against the list, or a quicker build: no hot pieces at -O2);
+      - explicit A64_HOT_FUNCS in the shell: None (the child inherits it, including "" to disable the list);
+      - the checkout's own work/hot_funcs.txt (a developer's list): staged at <work>/hot_funcs.txt;
+      - else the committed assets/profiles/hot_funcs.txt, copied to <work>/hot_funcs.txt when it differs (in the AppImage and
+        the Windows builder's tools folder too: both carry assets/profiles/), or read where it is when <work> is the
+        checkout's own work folder (a copy there would count as the checkout's own list from then on). A tree without one
+        builds with no list.
+    A <work>/hot_funcs.txt the build does not use is removed: it was used whenever it was there, so after a build with a list
+    a build without one still got that list (issue 505). Never the checkout's own file (--work in the checkout's work folder)
+    or the one the shell's A64_HOT_FUNCS names"""
+    dst = os.path.join(work, HOT_LIST)
+    own = os.path.join(root, "work", HOT_LIST)
+    shell = environ.get("A64_HOT_FUNCS", "")
+
+    def drop_stale(say=True):
+        if not os.path.exists(dst):
+            return
+        if os.path.exists(own) and os.path.samefile(own, dst):
+            return
+        if shell and os.path.isfile(os.path.join(root, shell)) and os.path.samefile(os.path.join(root, shell), dst):
+            return
+        os.remove(dst)
+        if say:
+            print("the hot list: %s, another list from an earlier build (or put there by hand), removed: a list of your own "
+                  "goes in the checkout's work/ or A64_HOT_FUNCS" % dst, flush=True)
+
+    if environ.get("HOOKSHOT_HOT_LIST", "").strip() == "0":
+        drop_stale(say=False)   # (asked for: whatever list the work folder holds is not this build's)
+        return ""
+    if "A64_HOT_FUNCS" in environ:
+        drop_stale()
+        return None
+    if os.path.isfile(own):
+        if not os.path.isfile(dst) or not filecmp.cmp(own, dst, shallow=False):
+            copy_writable(own, dst)
+        return dst
+    shipped = os.path.join(root, HOT_LIST_SHIPPED)
+    if not os.path.isfile(shipped):
+        drop_stale()
+        return None
+    checkout_work = os.path.join(root, "work")
+    if os.path.isdir(work) and os.path.isdir(checkout_work) and os.path.samefile(work, checkout_work):
+        # (--work in the checkout's own work folder: a copy there would be the checkout's own list from then on, the first
+        # choice of every later build, and a change of the committed list would never reach it. The lift reads the committed
+        # file where it is, and lift_key hashes a list outside <work> by its contents)
+        return shipped
+    # (written only when it differs, as the profiles are: an unchanged list keeps the lift and the hot pieces)
+    if not (os.path.exists(dst) and filecmp.cmp(shipped, dst, shallow=False)):
+        if os.path.exists(dst):
+            print("the hot list: %s, another list from an earlier build (or put there by hand), replaced by the committed one: "
+                  "a list of your own goes in the checkout's work/ or A64_HOT_FUNCS" % dst, flush=True)
+        copy_writable(shipped, dst)
+    return dst
+
+
+def hot_list_line(hot, environ, root=ROOT):
+    """The build log's line for hot_list_for's answer (the lift then says how many of its functions it found)"""
+    if hot == "":
+        return "the hot list: none (HOOKSHOT_HOT_LIST=0): every lifted function at -O1"
+    if hot is None:
+        return "the hot list: %s" % ("the one A64_HOT_FUNCS names" if environ.get("A64_HOT_FUNCS") else "none")
+    if os.path.isfile(os.path.join(root, "work", HOT_LIST)):
+        return "the hot list: the checkout's work/%s" % HOT_LIST
+    return "the hot list: the committed %s" % HOT_LIST_SHIPPED.replace(os.sep, "/")
+
+
+def game_name(out, work, nup=None):
+    """The game's own name and icon (nx2/game_title.py): read from the .nup when there is one and kept in the folder, then, on
+    Windows, the name made into what Windows shows for the exe (work/hookshot_game.res, linked by nx2/build.py beside
+    Hookshot's own icon, which every exe has). A folder built from an unpacked dump has neither: the game stays "Hookshot".
+    Nothing here stops a build"""
+    if nup:
+        try:
+            got = game_title.from_nup(nup)
+        except (OSError, SystemExit, ValueError, struct.error) as e:
+            got = None
+            print("the game's name and icon could not be read from the .nup (%s): the game is named Hookshot" % e, flush=True)
+        if got:
+            game_title.keep(out, *got)
+    title, icon = game_title.kept(out)
+    print("the game's name: %s, its icon: %s" % (title or "none (Hookshot)", "yes" if icon else "none"), flush=True)
+    if not LINUX:
+        try:
+            game_title.write_res(out, os.path.join(work, game_title.RES_FILE))
+        except OSError as e:
+            print("the exe's icon and name were not made (%s): it is named Hookshot" % e, flush=True)
 
 
 def copy_writable(src, dst):
@@ -1144,8 +1909,47 @@ def copy_writable(src, dst):
     store, a packaged tools folder) the copies in the work folder were read-only, so lift.py could not write chunks.txt
     again (PermissionError) and every later build failed on the same file"""
     if os.path.exists(dst):
+        if os.path.samefile(src, dst):   # (--work is the checkout's own work folder: the file is already there; copyfile stopped)
+            return
         os.chmod(dst, stat.S_IREAD | stat.S_IWRITE)
     shutil.copyfile(src, dst)
+
+
+# What a romfs must hold for the build and the game's start, each as (any one of its names, test): the build reads
+# Pack/ZsDic.pack.zs and System/Resource (prompt_assets.py, shader_census.py), and the game cannot start without its heap
+# definition, which it opens as Product. then Default. (#689 and a v3.0.0-rc.4 player: a romfs with no System folder crashed
+# at boot every time, "write 0x100000000000, guest 0", its heaps set up without their sizes; that file alone missing does too)
+ROMFS_NEEDED = ((("Pack/ZsDic.pack.zs",), os.path.isfile), (("System/Resource",), os.path.isdir),
+                (("System/HeapSize/Product.Nin_Ounce_NVN2.HeapDef.byml.zs",
+                  "System/HeapSize/Default.Nin_Ounce_NVN2.HeapDef.byml.zs"), os.path.isfile))
+
+
+def romfs_missing(romfs):
+    """The first of ROMFS_NEEDED that romfs lacks (its first name), or None"""
+    folder = long_path(romfs)   # (a dump's deepest paths pass 260 characters: #1468)
+    return next((names[0] for names, there in ROMFS_NEEDED
+                 if not any(there(os.path.join(folder, *name.split("/"))) for name in names)), None)
+
+
+def check_romfs_folder(romfs):
+    """A chosen romfs folder holds what the build and the game's start need (ROMFS_NEEDED), said before the game folder is
+    made. Issue 467: another tool's packed copy (index.json and one romfs.bin) was built for 15 minutes into 27 GB, and the
+    game stopped at boot without its system files"""
+    folder = long_path(romfs)
+    missing = romfs_missing(romfs)
+    if missing:
+        packed = (" It holds a romfs.bin, a packed copy of the game's files: extract it first."
+                  if os.path.isfile(os.path.join(folder, "romfs.bin")) else "")
+        fail("The romfs folder %s does not hold the game's files (no %s): choose the extracted RomFS.%s" % (romfs, missing, packed))
+
+
+def check_unpacked_romfs(romfs, source):
+    """The same for a romfs this builder unpacked from a .nup, or kept in the game folder for an update (source says which):
+    a game built from it could not start. Before the build, as for a chosen folder"""
+    missing = romfs_missing(romfs)
+    if missing:
+        fail("%s does not hold all of the game's files (no %s): a game built from it could not start. Dump the game again and "
+             "choose the complete dump in Hookshot Builder." % (source, missing))
 
 
 def refuse_dump_links(folder):
@@ -1206,33 +2010,186 @@ def shader_census_cmd(romfs, out):
     return PY + [os.path.join(HERE, "shader_census.py"), long_path(romfs), "--out", out]
 
 
-LIFT_KEY = ".lift_key"   # (in <work>/sa/gen: what the lifted C there was made from)
+SHADER_LIST_NOTE = "shader_list.txt"   # (in <work>: what the game folder's hookshot_shaders.bin was made from)
+CENSUS_READS = ("Shader", "Layout2Shader", "Lib", "Movie", "Effect", os.path.join("Pack", "ZsDic.pack.zs"))   # (shader_census.py)
 
 
-def lift_key(exefs, work, env):
-    """What the lift's output depends on: the game's code, the translator (nx2/, the vendored a64-kit), the HLE functions host/ defines
-    (hooked in the lift; the rest of host/ is compiled after it, so a change there alone does not lift again), the hot list and chunk
-    boundaries, the lift's environment and the Python running it. A file the lift never reads may be in it (a new build then lifts
-    again); one it reads must be"""
-    import kit  # noqa: F401  (a64-kit on the path, for standalone)
-    import standalone
+def shader_list_key(romfs):
+    """What shader_census.py's list depends on: the script, the Python running it, and the game files it reads (CENSUS_READS: their
+    names, sizes and times)"""
     h = hashlib.sha1(sys.version.encode(), usedforsecurity=False)
-    h.update(" ".join(sorted(standalone.implemented())).encode())
-    # (each file named from its own base: the exefs and the work folder may be on another drive than the source, which relpath refuses)
-    files = [(exefs, os.path.join(exefs, f)) for f in sorted(os.listdir(exefs))]
-    for top in (HERE, os.path.join(ROOT, "third_party", "a64-kit")):
+    with open(os.path.join(HERE, "shader_census.py"), "rb") as f:
+        h.update(f.read())
+    for top in CENSUS_READS:
+        p = os.path.join(romfs, top)
+        if os.path.isfile(p):
+            files = [p]
+        else:
+            files = []
+            for d, dirs, names in os.walk(p):
+                dirs.sort()
+                files += [os.path.join(d, n) for n in sorted(names)]
+        for f in files:
+            st = os.stat(f)
+            h.update(("%s %d %d\n" % (os.path.relpath(f, romfs).replace(os.sep, "/"), st.st_size, st.st_mtime_ns)).encode())
+    return h.hexdigest()
+
+
+def shader_list_note(romfs, out):
+    try:
+        st = os.stat(out)
+    except OSError:
+        return None
+    return "%s %s %d %d" % (shader_list_key(romfs), os.path.normcase(os.path.abspath(out)), st.st_size, st.st_mtime_ns)
+
+
+def shader_list_current(work, romfs, out):
+    """out (the game folder's hookshot_shaders.bin) is the list the last build made in this work folder from the same files and tools"""
+    try:
+        with open(os.path.join(work, SHADER_LIST_NOTE), encoding="utf-8") as f:
+            had = f.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return False
+    return bool(had) and had == shader_list_note(romfs, out)
+
+
+def note_shader_list(work, romfs, out):
+    note = shader_list_note(romfs, out)
+    if note:
+        with open(os.path.join(work, SHADER_LIST_NOTE), "w", encoding="utf-8") as f:
+            f.write(note + "\n")
+
+
+LIFT_KEY = ".lift_key"   # (in <work>/sa/gen: what the lifted C there was made from)
+# (the compile's own switches, read by nx2/build.py alone: the hot pieces' level and their profile. They are not the lift's, so a
+# development build at RX_HOT_OPT=O1 keeps the lifted C instead of translating the game again; tests/test_lift_cache.py checks
+# that nothing else the key covers reads them. The renderer's profile too: a renderer profile made, changed or
+# taken away does not translate the game again. Shared A64 helpers' optimisation level is compile-only as well)
+COMPILE_ONLY_ENV = ("RX_HOT_OPT", "RX_PGO", "RX_VK_PGO", "RX_VK_PGO_FILE", "RX_A64_RT_O2")
+# (the dev-loop proposal's A2) what of the environment the key hashes: the variables whose values change the lifted C. The key
+# took every A64_, OOT_ and RX_ variable, so an RX_VK_ switch left set in the shell, or RX_RELEASE, which the lift does not read,
+# translated the game again, and so did a work folder or a game folder somewhere else: OOT_WORK, OOT_EXEFS, OOT_ROMFS, OOT_DUMP and
+# A64_HOT_FUNCS are paths, and what the lift reads through them (the exefs files, the selected hot list, the chunks, the hot pieces) is
+# hashed by its contents: the hot list A64_HOT_FUNCS names in env or the shell (resolved from ROOT when relative), or its path when
+# there is no such file, while an explicit empty A64_HOT_FUNCS disables hot-function selection and hashes neither.
+# SUYU_RECOMP_ is the emitter's own (third_party/a64-kit/lift/suyu/arm64_to_c.h), and was not in the key.
+# tests/test_lift_cache.py checks that every variable the lift's sources read is one of these, a path, or in LIFT_ENV_NOT_OUTPUT
+LIFT_ENV_PREFIXES = ("A64_", "SUYU_RECOMP_")
+LIFT_ENV_NAMES = ("RX_TARGET",   # (toolchain.py: the target the emitter and its tables are made for)
+                  "OOT_EXEFS_PATCHES_SHA1")   # (the mods' ExeFS patches the lift writes into main, by their content)
+LIFT_PATH_ENV = ("OOT_WORK", "OOT_EXEFS", "OOT_ROMFS", "OOT_DUMP", "A64_HOT_FUNCS", "OOT_EXEFS_PATCHES")
+LIFT_ENV_NOT_OUTPUT = {   # (read by the lift's sources, and no change to what it writes)
+    "HOOKSHOT_LIFT_JOBS": "how many processes", "HOOKSHOT_JOBS": "how many processes (nx2/build_jobs.py)", "HOOKSHOT_LIFT_NO_FORK": "how they are started", "RX_JOBS": "how many processes",
+    "EMSDK": "where the compiler is", "HOOKSHOT_MINGW": "where the compiler is",
+    "A64_SITE_PROFILE": "the game's runtime (a64_rt.c), at play", "RX_VK_NAN_GUARD": "nx2/bake_ds's own run",
+    "RX_VK_NO_F16": "nx2/bake_ds's own run",
+    "HOS_MODS": "the mods folder: the ExeFS patches found in it are in the key by content (OOT_EXEFS_PATCHES_SHA1)",
+    "HOS_NO_FASTFP": "the game's runtime (the lifted C reads it at play)",
+    "HOS_FMA_FAST": "the game's runtime (nx2/fma_soft.h, read by the generated C at play)",
+}
+
+
+def lift_reads_env(name):
+    """A variable whose value is part of the lift key (LIFT_ENV_PREFIXES, LIFT_ENV_NAMES; not a path, not the compile's)"""
+    return ((name.startswith(LIFT_ENV_PREFIXES) or name in LIFT_ENV_NAMES) and name not in LIFT_PATH_ENV
+            and name not in COMPILE_ONLY_ENV)
+
+
+LIFT_SCRIPTS = ("lift.py", "split_hot.py")   # (in nx2/: the two steps of the lift)
+LIFT_DATA = (".c", ".h", ".cpp", ".hpp", ".txt", ".json")
+
+
+def lift_sources():
+    """The translator's files: the Python modules the lift's scripts import, followed through every import statement (in functions
+    too) to the modules in nx2/ and the vendored a64-kit, found as kit.py puts them on the path (a64-kit's folders first); and
+    every other source file there (a64emit.cpp, compiled when the lift starts, and whatever data a module may read). The other
+    Python in nx2/ (the builder, the compile, the bake, the prompts, the shader census: 60 modules) is not the lift's: a change
+    there no longer translates the game again, minutes on every build"""
+    import ast
+    kit_dir = os.path.join(ROOT, "third_party", "a64-kit")
+    path = [os.path.join(kit_dir, d) for d in ("rt", "hos", "tools", "lift")] + [HERE]
+    todo = [os.path.join(HERE, f) for f in LIFT_SCRIPTS]
+    seen = set()
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        with open(f, "rb") as src:
+            tree = ast.parse(src.read(), f)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [n.name for n in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                names = [node.module]
+            else:
+                continue
+            for name in names:
+                for d in path:
+                    mod = os.path.join(d, name.split(".")[0] + ".py")
+                    if os.path.isfile(mod):
+                        todo.append(mod)
+                        break
+    for top in (HERE, kit_dir):
         for d, dirs, fs in os.walk(top):
             dirs[:] = sorted(x for x in dirs if x != "__pycache__")
-            files += [(ROOT, os.path.join(d, f)) for f in sorted(fs) if f.endswith((".py", ".c", ".h", ".cpp", ".hpp", ".txt", ".json"))]
-    files += [(work, os.path.join(work, "hot_funcs.txt")), (work, os.path.join(work, "image", "chunks.txt"))]
+            seen.update(os.path.join(d, f) for f in fs if f.endswith(LIFT_DATA))
+    return sorted(seen)
+
+
+def lift_key(exefs, work, env, planning=True, paths=None):
+    """What the lift's output depends on: the game's code, the translator (lift_sources: the modules the lift imports from nx2/ and
+    the vendored a64-kit, and their other files), the HLE functions and ENTRY_HOOK_SYM hooks host/ defines (hooked
+    in the lift; the rest of host/ is compiled after it, so a change there alone does not lift again), the hot list, the chunk boundaries and the hot pieces, the lift's environment and the
+    Python running it. A file the lift never reads may be in it (a new build then lifts again); one it reads must be.
+    planning=False: all of it but the two files the lift itself writes for the next one (image/chunks.txt, image/hot_pieces.txt),
+    to tell whether anything else it reads changed while it ran. paths: each of the environment's values through it
+    (lift_share_key)"""
+    import kit  # noqa: F401  (a64-kit on the path, for standalone)
+    import standalone
+    import entry_hooks
+    h = hashlib.sha1(sys.version.encode(), usedforsecurity=False)
+    h.update(" ".join(sorted(standalone.implemented())).encode())
+    h.update((" entry hooks: " + " ".join(entry_hooks.hooked_symbols())).encode())   # (spliced in the lift: nx2/entry_hooks.py)
+    # (each file named from its own base: the exefs and the work folder may be on another drive than the source, which relpath refuses)
+    files = [(exefs, os.path.join(exefs, f)) for f in sorted(os.listdir(exefs))]
+    files += [(ROOT, f) for f in lift_sources()]
+    # (hot_pieces.txt: split_hot's pieces of the last lift, which the next split keeps. The pieces' C follows it, so two work folders
+    # with other histories may lift the same game into other pieces: their keys differ too)
+    if planning:
+        files += [(work, os.path.join(work, "image", "chunks.txt")), (work, os.path.join(work, "image", "hot_pieces.txt"))]
     for base, f in files:
         if os.path.isfile(f):
             h.update(os.path.relpath(f, base).replace(os.sep, "/").encode() + bytes(1))
             with open(f, "rb") as src:
                 h.update(hashlib.sha1(src.read(), usedforsecurity=False).digest())
-    lift_env = dict(env, **{k: v for k, v in os.environ.items() if k.startswith(("A64_", "OOT_", "RX_"))})
+    # (the hot list the lift reads: env's A64_HOT_FUNCS over the shell's, as run() gives them, including an explicit empty
+    # value to turn the list off; relative paths are opened in ROOT, the child's cwd. Its path is not in LIFT_PATH_ENV's
+    # env hash, so the selected file's contents are hashed, or its path when no such file is there)
+    hot = env.get("A64_HOT_FUNCS", os.environ.get("A64_HOT_FUNCS"))
+    if hot:
+        hot_path = os.path.join(ROOT, hot)
+        if os.path.isfile(hot_path):
+            with open(hot_path, "rb") as src:
+                h.update(b"A64_HOT_FUNCS" + bytes(1) + hashlib.sha1(src.read(), usedforsecurity=False).digest())
+        else:
+            h.update(b"A64_HOT_FUNCS path" + bytes(1) + (paths(hot) if paths else hot).encode())
+    # (the build's env over the shell's, as run() gives them to the lift: A64_HOT_CHUNK left in the shell is not what the lift reads)
+    lift_env = dict(os.environ, **env)
+    lift_env = {k: v for k, v in lift_env.items() if lift_reads_env(k)}
+    if paths:
+        lift_env = {k: paths(v) for k, v in lift_env.items()}
     h.update(repr(sorted(lift_env.items())).encode())
     return h.hexdigest()
+
+
+def lift_share_key(exefs, work, out, env):
+    """(HOOKSHOT_LIFT_STORE, nx2/lift_store.py) lift_key with the work and game folders' paths taken out of the lift's environment:
+    the path variables (LIFT_PATH_ENV) are not in lift_key's at all, and this takes those folders out of any other value that
+    names them. The files are hashed by their names in those folders already, and the lifted C holds no folder path, so two work
+    folders with the same share key lift the same C"""
+    w, o = os.path.abspath(work), os.path.abspath(out)
+    return lift_key(exefs, work, env, paths=lambda v: v.replace(w, "<work>").replace(o, "<out>"))
 
 
 def gen_print(gen):
@@ -1241,7 +2198,7 @@ def gen_print(gen):
     h = hashlib.sha1(usedforsecurity=False)
     for name in sorted(os.listdir(gen)):
         p = os.path.join(gen, name)
-        if name != LIFT_KEY and os.path.isfile(p):
+        if name not in (LIFT_KEY, KEPT_LIST, KEPT_LIST + ".new") and os.path.isfile(p):   # (KEPT_LIST: build.py's, written after the lift)
             st = os.stat(p)
             h.update(("%s %d %d\n" % (name, st.st_size, st.st_mtime_ns)).encode())
     return h.hexdigest()
@@ -1275,6 +2232,30 @@ def lifted_cut_short(gen):
     return bad
 
 
+def lifted_zero_bytes(gen):
+    """The lifted C files (code_*.c) with a zero byte in them. The lift never writes one: the PC's memory or the drive changed the
+    file after it was written, its size and end as they were (17 of a player's files in one build, issue 2296). The compile refuses
+    such a file (nx2/build.py compile_one), but by then the build can only stop. Each is read whole (0.2-0.6 s for the game's 1.5 GB just
+    written), so translate() asks only for a translation without a record of a successful check"""
+    bad = []
+    if not os.path.isdir(gen):
+        return bad
+    for f in sorted(os.listdir(gen)):
+        if f.startswith("code_") and f.endswith(".c"):
+            try:
+                with open(os.path.join(gen, f), "rb") as h:
+                    if b"\0" in h.read():
+                        bad.append(f)
+            except OSError:
+                pass   # (lifted_cut_short names a file it cannot read)
+    return bad
+
+
+def lifted_damaged(gen):
+    """The lifted C files that are not as the lift writes them: cut short, or with a zero byte in them"""
+    return sorted(set(lifted_cut_short(gen)) | set(lifted_zero_bytes(gen)))
+
+
 def lifted_before(work, key):
     """The lift (and split_hot) in <work>/sa finished before with this key, its C is as that lift left it, and what the later
     steps read of it is there"""
@@ -1284,16 +2265,181 @@ def lifted_before(work, key):
             lines = f.read().split()
     except OSError:
         return False
-    if len(lines) != 2 or lines[0] != key or lines[1] != gen_print(gen):
+    if (len(lines) not in (2, 3) or (len(lines) == 3 and lines[2] != "zero-checked")
+            or lines[0] != key or lines[1] != gen_print(gen)):
         return False
     return os.path.isfile(os.path.join(image, "image.bin")) and os.path.isfile(os.path.join(gen, "a64_table.c"))
+
+
+KEPT_LIST = "lifted_objects.txt"   # (nx2/build.py's list of the lifted files' object keys, in <work>/sa/gen)
+KEPT_SCHEME = 1   # (that list's format: its first line names it with the lift key, nx2/build.py kept_header)
+KEPT_STALE = 75   # (nx2/build.py's exit status when that list no longer fits the build: the game is translated again. Not 3: abort())
+
+
+def kept_list_fits(gen, key):
+    """KEPT_LIST is there and was written for the lift with this key, in this format"""
+    try:
+        with open(os.path.join(gen, KEPT_LIST), encoding="utf-8") as f:
+            return f.readline() == "# lift %s %d\n" % (key, KEPT_SCHEME)
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def kept_before(work, key):
+    """The last build had this lift key and its clean-up let the lifted C go but kept the rest of the lift and the list of its object
+    keys (keep_translation): the lift can be skipped, build.py linking the lifted files' objects from the cache by that list"""
+    gen = os.path.join(work, "sa", "gen")
+    try:
+        with open(os.path.join(gen, LIFT_KEY)) as f:
+            lines = f.read().split()
+    except OSError:
+        return False
+    if len(lines) != 3 or lines[0] != key or lines[1] != gen_print(gen) or lines[2] != "kept":
+        return False
+    if any(f.startswith("code_") for f in os.listdir(gen)):
+        return False
+    return kept_list_fits(gen, key) and all(os.path.isfile(p) for p in (os.path.join(gen, "a64_table.c"),
+                                                                        os.path.join(work, "sa", "image", "image.bin")))
+
+
+def keep_translation(work, key):
+    """(after a build that compiled every file) What a player's clean-up keeps of the lift: everything but the lifted C itself (1.5 GB:
+    code_*.c) and the build's outputs. The lift's other files (~130 MB: the headers the objects are keyed by, the runtime tables, the
+    image) and build.py's list of the lifted files' object keys stay, with the lift key marked "kept" (kept_before). Returns the
+    bytes kept, or None when there is nothing to keep it by (the lift and that list not from this build). A file it cannot remove
+    (Windows: one still held open) is no failed build: the game folder is ready by then. All of sa goes as before, as far as it can"""
+    gen = os.path.join(work, "sa", "gen")
+    if not (lifted_before(work, key) or kept_before(work, key)) or not kept_list_fits(gen, key):
+        return None
+    try:
+        for f in os.listdir(gen):
+            if f.startswith("code_"):
+                os.remove(os.path.join(gen, f))
+        shutil.rmtree(os.path.join(work, "sa", "build"), ignore_errors=True)
+        with open(os.path.join(gen, LIFT_KEY), "w") as f:
+            f.write(key + "\n" + gen_print(gen) + "\nkept\n")
+        kept = 0
+        for d, _, fs in os.walk(os.path.join(work, "sa")):
+            kept += sum(os.path.getsize(os.path.join(d, f)) for f in fs)
+        return kept
+    except OSError as e:
+        print("the translation could not be kept for the next update (%s): it is translated again then" % e, flush=True)
+        shutil.rmtree(os.path.join(work, "sa"), ignore_errors=True)
+        return None
+
+
+def generated_names(work):
+    """The names of the files the lift and build.py write and compile (sa/gen, the runtime in sa/build/rt64, sa/build/gen)"""
+    names = set()
+    for d in (os.path.join(work, "sa", "gen"), os.path.join(work, "sa", "build", "rt64"), os.path.join(work, "sa", "build", "gen")):
+        with contextlib.suppress(OSError):
+            names.update(os.listdir(d))
+    return names
+
+
+def forget_renderer_objects(work):
+    """The renderer's objects (sa/build/obj/vk_*, nx2/build.py's vk_jobs) out of the work folder, its object cache and the store:
+    the next build compiles the renderer again, and nothing else"""
+    obj_dir = os.path.join(work, "sa", "build", "obj")
+    try:
+        names = [f for f in os.listdir(obj_dir) if f.startswith("vk_")]
+    except OSError:
+        return
+    keys = []
+    for f in names:
+        if f.endswith(".sha1"):
+            with contextlib.suppress(OSError), open(os.path.join(obj_dir, f)) as h:
+                keys.append(h.read().strip())
+    store = _object_store.folder(work)
+    if store:
+        _object_store.forget(store, keys)
+    for key in keys:
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(work, "objcache", key + ".o"))
+    for f in names:
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(obj_dir, f))
+
+
+COMPILE_ERROR = re.compile(r".*\.[ch]:\d+:\d+: (?:fatal )?error: ")   # (clang's, at a place in a source; a compiler out of memory names none)
+
+
+def lifted_sums(gen):
+    """{name: the contents' SHA-1} of the lift's C and headers (<work>/sa/gen): ~0.8 s for the game's 1.5 GB"""
+    sums = {}
+    for f in sorted(os.listdir(gen)):
+        if f.endswith((".c", ".h")):
+            with open(os.path.join(gen, f), "rb") as h:
+                sums[f] = hashlib.sha1(h.read(), usedforsecurity=False).hexdigest()
+    return sums
+
+
+def refused_lift(gen, failed, errors):
+    """The compile failed in the lift's files alone (failed: build.py's "FAILED <name>" lines), with a compiler's error at a place in
+    a source in each final attempt (errors: one boolean per FAILED line). Not a compiler that ran out of memory, nor a source of the repository"""
+    return bool(failed) and len(errors) == len(failed) and all(errors) and all(os.path.isfile(os.path.join(gen, name)) for name in failed)
+
+
+def changed_lift(gen, translate):
+    """(translate(): the game translated again) The lift's files that came out different, and how many there are. The same inputs
+    give the same files, byte for byte, so the PC changed one of the two: a player's memory flips a bit in some of them in each
+    build ("uint65_t", issues 985, 990, 1414, 1441, 1762), which the compiler's error alone made look like the translator's"""
+    before = lifted_sums(gen)
+    translate()
+    after = lifted_sums(gen)
+    both = before.keys() & after.keys()   # (a lift whose C the last build's clean-up let go, keep_translation, had none to compare)
+    return sorted(f for f in both if before[f] != after[f]), len(both)
+
+
+def forget_failed_build(work, linked, failed=(), game_linked=False):
+    """(hookshot) After a compile or link that failed. It forgets the lift: the next build translates the game again. A lifted file
+    cut short (an antivirus, a full disk, a stopped run: "g_module_b" for g_module_base, issue 1197) or lifted C another builder
+    left (20 undefined game functions at the link, issue 1176) otherwise failed the same way at every try, the key still matching.
+    linked: every file compiled and the link (or a step after it) failed: the compiled objects go too, as a cached runtime object
+    from another version linked with every object "compiled in 0s" and a64_dirty, a64_icall, a64_lookup, recomp_cntpct undefined,
+    at every try (issue 1197, Linux, v2.0.10). A compile that failed or was stopped (a compiler out of memory twice, the build
+    closed or killed) never linked: the objects it finished are kept (each is cached only once its compiler succeeded, named by
+    its source, flags and headers), so the next try compiles only the rest, not up to an hour again on a small PC.
+    failed: the files build.py could not compile, alone too (its "FAILED <name>" lines). When every one is a source of the
+    repository (host/, gpu/, third_party/), none the lift's or build.py's own, the translation is not what failed: it is kept, and
+    the next build compiles the files not compiled yet without translating the game again (a typo in a host file cost a whole
+    lift, ~5 minutes on Windows). A build stopped without such a line, or one with a generated file among them, forgets it as before.
+    game_linked: the game itself linked (build.py's "linked <exe>: N MB"), and what failed came after it: the renderer's link or its
+    unresolved symbols (check_vk_symbols), made only of gpu/vk and its libraries. The translation and the game's objects linked, so
+    they are kept; only the renderer's objects go, in case a cached one is what failed (an extern written inside an
+    anonymous namespace in gpu/vk cost a whole lift and compile)"""
+    if game_linked:
+        forget_renderer_objects(work)
+        print("the build failed after the game linked, in the renderer: the next one keeps the translation and the game's "
+              "objects, and compiles only the renderer again", flush=True)
+        return
+    if not linked and failed:
+        generated = generated_names(work)
+        if not any(name.startswith("code_") or name in generated for name in failed):
+            print("the build failed in %s, not in the translated game: the next one keeps the translation and compiles only the "
+                  "files not compiled yet" % ", ".join(sorted(failed)[:6]), flush=True)
+            return
+    key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
+    if os.path.exists(key_file):
+        os.remove(key_file)
+    if not linked:
+        print("the build failed before the link: the next one translates the game again, and compiles only the files not "
+              "compiled yet", flush=True)
+        return
+    # (HOOKSHOT_OBJ_STORE: the objects this link was made from go from the store as well, or the next try takes them from there)
+    store = _object_store.folder(work)
+    if store:
+        _object_store.forget(store, object_stamps(os.path.join(work, "sa", "build", "obj")))
+    for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
+        shutil.rmtree(sub, ignore_errors=True)
+    print("the build failed: the next one translates and compiles the game again (nothing of this one is reused)", flush=True)
 
 
 def ngx_script():
     """scripts/ngx_sdk.py: NVIDIA's DLSS SDK, its file table and where each file goes"""
     import importlib.util
     path = os.path.join(ROOT, "scripts", "ngx_sdk.py")
-    if not os.path.isfile(path):   # (the AppImage carries no scripts/: its Vulkan back end comes built, without DLSS)
+    if not os.path.isfile(path):   # (a builder without scripts/ngx_sdk.py: an older AppImage carried none)
         fail("NVIDIA DLSS (HOOKSHOT_NGX_SDK) needs %s, which this builder does not carry: its renderer is built without DLSS. "
              "Unset HOOKSHOT_NGX_SDK, or build Hookshot from source for DLSS." % path)
     spec = importlib.util.spec_from_file_location("ngx_sdk", path)
@@ -1306,13 +2452,19 @@ def ngx_platform():
     return "linux" if LINUX else "windows"
 
 
+def ngx_folder():
+    """Where --fetch-ngx-sdk keeps NVIDIA's DLSS SDK between builds: HOOKSHOT_NGX_SDK, else work/ngx-sdk here"""
+    return os.environ.get("HOOKSHOT_NGX_SDK") or os.path.join(ROOT, "work", "ngx-sdk")
+
+
 def fetch_ngx_sdk(a):
     """--fetch-ngx-sdk (the Hookshot Builder's NVIDIA DLSS tick): NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build, once
     NVIDIA's license was accepted (--accept-nvidia-license: the builder asked first). Only what is missing or not the file
     expected is downloaded"""
-    sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
-    if not sdk:
-        fail("--fetch-ngx-sdk needs HOOKSHOT_NGX_SDK, the folder NVIDIA's DLSS SDK goes into.")
+    # (the Builder drops a HOOKSHOT_NGX_SDK set on the PC, so a launcher asking through --cli has none: the folder is ours then,
+    # and the rest of the build, which reads the variable, finds the SDK there)
+    sdk = ngx_folder()
+    os.environ["HOOKSHOT_NGX_SDK"] = sdk
     if not a.accept_nvidia_license:
         fail("NVIDIA DLSS needs NVIDIA's license accepted first (--accept-nvidia-license).")
     ngx = ngx_script()
@@ -1386,59 +2538,198 @@ def place_fsr_runtime(out):
     return dst
 
 
+def xess_script():
+    """scripts/xess_sdk.py as a module: Intel's XeSS library, its files and SHA-256s"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("xess_sdk", os.path.join(ROOT, "scripts", "xess_sdk.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def xess_folder():
+    """Where --fetch-xess-runtime keeps Intel's XeSS library between builds: HOOKSHOT_XESS_SDK, else work/xess-sdk here"""
+    return os.environ.get("HOOKSHOT_XESS_SDK") or os.path.join(ROOT, "work", "xess-sdk")
+
+
+def fetch_xess_runtime(a):
+    """--fetch-xess-runtime (Windows; the launchers' Intel XeSS switch): Intel's signed libxess.dll (scripts/xess_sdk.py) into
+    xess_folder() before the build, once Intel's license was accepted (--accept-intel-license: the launcher asked first, as
+    for AMD's and NVIDIA's), each file checked against its SHA-256; only what is missing or not the file expected is
+    downloaded. Off unless asked: every Windows build has XeSS (gpu/vk/vk_xess.cpp), which runs once the library is there"""
+    if not getattr(a, "accept_intel_license", False):
+        fail("Intel XeSS needs Intel's license accepted first (--accept-intel-license).")
+    xess = xess_script()
+    print(xess.NOTICE, flush=True)
+    print("Intel's license accepted: getting Intel's XeSS library into %s" % xess_folder(), flush=True)
+    try:
+        xess.fetch(xess_folder(), say=lambda line: print(line, flush=True))
+    except (OSError, ValueError) as e:
+        fail("Intel's XeSS library could not be downloaded (%s). Check the connection and build again, or leave out "
+             "--fetch-xess-runtime and put Intel's libxess.dll beside the game yourself (the readme)." % e)
+
+
+def place_xess_runtime(out):
+    """(Intel XeSS, --fetch-xess-runtime) Intel's library into the game folder, where gpu/vk/vk_xess.cpp looks. Returns the
+    folder, or None when nothing was fetched or the player's own libxess.dll is there (left alone)"""
+    xess = xess_script()
+    if LINUX or not xess.complete(xess_folder()):
+        return None
+    if xess.other(out):
+        xess.install(xess_folder(), out, say=lambda line: print(line, flush=True))   # (it says what it left alone)
+        return None
+    dst = xess.install(xess_folder(), out)
+    print("Intel XeSS: Intel's libxess.dll in %s (Intel's, under Intel's license)" % dst, flush=True)
+    return dst
+
+
 def place_ngx_runtime(out):
     """(NVIDIA DLSS) a game built with NVIDIA's SDK (HOOKSHOT_NGX_SDK, as nx2/build.py takes it) gets DLSS's runtime in its ngx
-    folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux. Never
-    NGX's core (_nvngx.dll is the driver's) and nothing beside the exe. Returns the file placed, or None"""
+    folder, where gpu/vk/vk_dlss.cpp looks first: nvngx_dlss.dll on Windows, libnvidia-ngx-dlss.so.<version> on Linux; and
+    DLSS Frame Generation's beside it (nvngx_dlssg.dll, libnvidia-ngx-dlssg.so.<version>), without which NGX takes the
+    driver's own, maybe older, copy. Never NGX's core (_nvngx.dll is the driver's) and nothing beside the exe. Returns DLSS's
+    runtime placed, or None"""
     ngx = ngx_script()
     platform = ngx_platform()
     sdk = os.environ.get("HOOKSHOT_NGX_SDK", "")
     if not sdk or not (os.path.isfile(ngx.library(sdk, platform)) and os.path.isfile(ngx.runtime(sdk, platform))):
-        # (a folder built with DLSS before and rebuilt without it loses NVIDIA's runtime too)
-        stale = os.path.join(out, "ngx", ngx.runtime_name(platform))
-        if os.path.isfile(stale):
-            with contextlib.suppress(OSError):
-                os.remove(stale)
-                os.rmdir(os.path.dirname(stale))
+        # (a folder built with DLSS before and rebuilt without it loses NVIDIA's runtimes too)
+        for kind in ngx.RUNTIMES:
+            stale = os.path.join(out, "ngx", ngx.runtime_name(platform, kind))
+            if os.path.isfile(stale):
+                with contextlib.suppress(OSError):
+                    os.remove(stale)
+        with contextlib.suppress(OSError):
+            os.rmdir(os.path.join(out, "ngx"))
         return None
     dst = ngx.install_runtime(sdk, platform, os.path.join(out, "ngx"))
     print("NVIDIA DLSS: %s (NVIDIA's, under NVIDIA's license: never share this game folder)" % dst, flush=True)
+    fg = os.path.join(out, "ngx", ngx.runtime_name(platform, "framegen"))
+    if os.path.isfile(ngx.runtime(sdk, platform, "framegen")):
+        print("NVIDIA DLSS Frame Generation: %s (NVIDIA's too)" % fg, flush=True)
+    else:
+        print("NVIDIA DLSS Frame Generation: %s has no %s yet (scripts/ngx_sdk.py, or the Builder's DLSS tick, fetches it): "
+              "until then NGX takes the driver's own, which may be older" % (sdk, ngx.runtime_name(platform, "framegen")),
+              flush=True)
     return dst
+
+
+def portable_game_home(out):
+    """Validate the portable context before a build changes output; association is relative to this game."""
+    if os.name != "nt" or os.environ.get("HOOKSHOT_BUILDER_PORTABLE") != "1":
+        return None
+    home = os.environ.get("HOOKSHOT_SETUP_BASE", "")
+    if not ntpath.isabs(home) or not ntpath.splitdrive(home)[0] or home.startswith(("\\\\?\\", "\\\\.\\")):
+        raise ValueError("The portable Builder home must be a fully qualified drive or UNC folder.")
+    home = os.path.abspath(home)
+    with open(os.path.join(home, ".hookshot-portable"), "rb") as f:
+        marker = f.read(36)
+    magic = b"Hookshot Builder portable home v1"
+    if len(marker) > len(magic) + 2 or marker.rstrip(b"\r\n") != magic:
+        raise ValueError("The portable Builder home marker is invalid.")
+    if os.path.dirname(home) == home:
+        raise ValueError("The portable Builder home must be a dedicated folder.")
+    launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HookshotBuilder-Setup.exe")
+    if not os.path.isfile(launcher):
+        raise ValueError("A portable game needs the packaged Builder setup launcher.")
+    try:
+        relative = os.path.relpath(home, os.path.abspath(out))
+    except ValueError as e:
+        raise ValueError("Keep a portable game and its Builder on the same volume.") from e
+    if len(home) >= 260 or len(relative.encode("utf-8")) >= 780 or any(c in relative for c in "\r\n\0:"):
+        raise ValueError("The portable Builder association cannot be represented by the Windows setup.")
+    return relative
+
+
+# (hookshot) the toolchain's switches a build was made with, kept in its record (write_build_record)
+RECORD_ENV = ("EMSDK", "RX_CPM", "HOOKSHOT_MINGW", "HOOKSHOT_NGX_SDK", "HOOKSHOT_FFX_SDK", "WGPU_NATIVE", "HOOKSHOT_TOOLS")
+
+
+def write_build_record(out, work, tag, fsr):
+    """(hookshot) .hookshot_build.json in the game folder: how it was built (the version, these tools, their Python, the work
+    folder, the toolchain's switches, AMD FSR 4), so the launcher's Mods page builds it again the same way when the mods' code
+    patches change: the same version and work folder, nothing downloaded (builder/HookshotBuilder/BuildRecord.cs)"""
+    record = {"version": tag, "tools": os.path.abspath(ROOT), "python": sys.executable, "work": os.path.abspath(work),
+              "env": {k: os.environ[k] for k in RECORD_ENV if os.environ.get(k)}, "fsr": bool(fsr)}
+    path = os.path.join(out, ".hookshot_build.json")
+    try:
+        with open(path + ".new", "w", encoding="utf-8", newline="\n") as f:
+            json.dump(record, f, indent=1)
+        os.replace(path + ".new", path)
+    except OSError as e:
+        print("the build's record was not written (%s): the Mods page cannot rebuild this folder by itself" % e, flush=True)
+
+
+def write_game_home(out, relative):
+    """Only called after successful output finalization; never resolves relative to the process cwd."""
+    destination = os.path.join(out, ".hookshot_builder_home")
+    if relative is None:
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(destination)
+        return
+    fd, partial = tempfile.mkstemp(prefix=".hookshot-home-", dir=out)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(relative)
+        os.replace(partial, destination)
+    finally:
+        if os.path.exists(partial):
+            os.remove(partial)
+
+
+ROMFS_IN_PLACE_ENV = "HOOKSHOT_ROMFS_IN_PLACE"   # (--romfs-in-place, as scripts/dev_packs.py asks it of the build)
 
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--nup")
+    p.add_argument("--nup", help="your copy as one file: a .nup package, or a .nx archive made from one (nxconvert pack-nup)")
     p.add_argument("--romfs")
     p.add_argument("--exefs")
     p.add_argument("--out")
     p.add_argument("--work", default=os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
                                                   "hookshot-builder-windows" if CROSS else "hookshot-builder")   # (the objects apart)
-                   if os.name != "nt" else os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
+                   if os.name != "nt" else os.environ.get("HOOKSHOT_SETUP_BASE") or
+                   os.path.join(os.environ.get("LOCALAPPDATA", ROOT), "HookshotBuilder"))
     # (HOOKSHOT_JOBS: fewer compilers on a PC short of memory; the AppImage's builds pass no --jobs)
     p.add_argument("--jobs", type=int)
-    p.add_argument("--language", default="en-US", help="the game's language: a code from LANGUAGES, written to language.txt")
+    p.add_argument("--language", help="the game's language: a code from LANGUAGES, written to language.txt. Not given: the one the "
+                                      "folder has; else the system's with --prepare; else en-US")
     p.add_argument("--check", action="store_true")
-    p.add_argument("--game", help="your copy: a .nup file, or a folder with romfs and exefs in it (the same as --nup, or --romfs and --exefs)")
+    p.add_argument("--game", help="your copy: a .nup or .nx file, or a folder with romfs and exefs in it (the same as --nup, or --romfs and --exefs)")
     p.add_argument("--prepare", action="store_true", help="for RecompLauncher: no window, progress lines, --out ~/Games/Hookshot unless given")
     p.add_argument("--update", help="a game folder built before: built again from the game files it keeps (the game's update offer)")
+    p.add_argument("--romfs-in-place", action="store_true", default=None,
+                   help="with --romfs (development: scripts/dev_packs.py): read the romfs where it is, without a copy or links in "
+                        "the game folder, which then has no romfs: the game is started with --romfs naming it. "
+                        "HOOKSHOT_ROMFS_IN_PLACE=1 asks the same of a --romfs build and is passed over by any other")
     p.add_argument("--no-prepare-shaders", action="store_true",
                    help="leave the shaders' preparation to the game's first start (the builder's \"Prepare shaders now\" unticked)")
+    p.add_argument("--compile-shaders", choices=tuple(COMPILE_LEVELS),
+                   help="what the shaders' preparation builds: most (the default) every shader and the pipelines the lists name; "
+                        "all the predicted pipelines too (about 40%% longer). Kept in the folder's hookshot_options.ini "
+                        "(compile_shaders=), which the game's own preparations follow; not given: the folder's")
     p.add_argument("--log", metavar="FILE", help="also save build output to a UTF-8 file (replaces the file if it exists)")
     # (NVIDIA DLSS, off unless asked: NVIDIA's SDK into HOOKSHOT_NGX_SDK first, under NVIDIA's license. scripts/ngx_sdk.py)
     p.add_argument("--fetch-ngx-sdk", action="store_true", help="download NVIDIA's DLSS SDK into HOOKSHOT_NGX_SDK before the build")
     p.add_argument("--accept-nvidia-license", action="store_true", help="NVIDIA's DLSS SDK license, accepted (with --fetch-ngx-sdk)")
     # (AMD FSR 4, off unless asked: nothing is downloaded. gpu/vk/vk_fsr4.cpp)
-    p.add_argument("--fsr", action="store_true", help="build with AMD FSR 4 (AMD's DLLs are not included: see the readme)")
+    p.add_argument("--fsr", action="store_true", help="build with AMD FSR 4 (AMD's DLLs are not included: --fetch-fsr-runtime downloads them, or see the readme)")
     p.add_argument("--no-fsr", action="store_true", help="with --update: build without AMD FSR 4 even if the folder had it")
     p.add_argument("--fetch-fsr-runtime", action="store_true",
                    help="with --fsr (Windows): download AMD's FSR runtime (scripts/ffx_sdk.py) and put it in the game folder")
     p.add_argument("--accept-amd-license", action="store_true", help="AMD's FSR SDK license, accepted (with --fetch-fsr-runtime)")
+    # (Intel XeSS: every Windows build has it, and it runs once Intel's libxess.dll is beside the game. gpu/vk/vk_xess.cpp)
+    p.add_argument("--fetch-xess-runtime", action="store_true",
+                   help="(Windows) download Intel's XeSS library (scripts/xess_sdk.py) and put it in the game folder")
+    p.add_argument("--accept-intel-license", action="store_true",
+                   help="Intel's XeSS SDK license, accepted (with --fetch-xess-runtime)")
     a = p.parse_args()
     if a.prepare:   # (first: a bad --game below is said as RecompLauncher's "error" line)
         global PREPARE
         PREPARE = True
-        a.out = a.out or os.path.join(os.path.expanduser("~"), "Games", "Hookshot")
+        a.out = a.out or (os.path.join(os.path.dirname(os.environ["HOOKSHOT_SETUP_BASE"]), "Hookshot")
+                          if os.name == "nt" and os.environ.get("HOOKSHOT_BUILDER_PORTABLE") == "1" and
+                          os.environ.get("HOOKSHOT_SETUP_BASE") else os.path.join(os.path.expanduser("~"), "Games", "Hookshot"))
     if a.game:   # (a path from a launcher: said plainly before any folder is made, not as a traceback halfway in)
         if os.path.isdir(a.game):
             a.romfs, a.exefs = os.path.join(a.game, "romfs"), os.path.join(a.game, "exefs")
@@ -1448,6 +2739,11 @@ def parse_args():
             a.nup = a.game
         else:
             fail("Your copy of the game was not found: %s" % a.game)
+    if a.romfs_in_place and (a.nup or a.update or not a.romfs):
+        fail("--romfs-in-place reads a romfs folder where it is: give it with --romfs and --exefs, not a .nup or --update.")
+    if a.romfs_in_place is None:   # (scripts/dev_packs.py sets it for the builds it runs; a tree from before ignores it and links)
+        a.romfs_in_place = (os.environ.get(ROMFS_IN_PLACE_ENV, "0") not in ("", "0") and bool(a.romfs)
+                            and not a.nup and not a.update)
     a.default_work = p.get_default("work")   # (main: the builder's own work folder, stop_stray_compilers)
     return a
 
@@ -1455,6 +2751,34 @@ def parse_args():
 def spinning_disk(folder):
     """True on a hard drive, False on an SSD, None when the drive cannot be told (nx2/disk.py)"""
     return _disk.spinning(folder)
+
+
+def overlap_package_read(jobs, package_stat, out, work, kept, romfs):
+    """A large first unpack can feed the lift while the archive's remaining files are extracted."""
+    if jobs <= 1 or package_stat.st_size < 1 << 30 or os.path.lexists(kept) or os.path.lexists(romfs):
+        return False
+    from build import free_mb
+    # The reader keeps its directory tables while the lift holds the decoded functions.
+    # Leave small-memory machines and known spinning drives on the sequential path.
+    return (free_mb() or 0) >= 8192 and not any(spinning_disk(folder) for folder in (out, work))
+
+
+def package_identity(st):
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+
+
+@contextlib.contextmanager
+def clean_incomplete_unpack(game):
+    try:
+        yield
+    except (OSError, SystemExit):
+        try:
+            shutil.rmtree(game)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print("Could not remove the incomplete extraction at %s (%s)." % (game, e), flush=True)
+        raise
 
 
 def warn_slow_disk(*folders):
@@ -1469,8 +2793,82 @@ def warn_slow_disk(*folders):
 
 
 
+def stale_copies(found, parents, visible):
+    """The copies end_stale_games ends: those with no visible window, but not the crash window's helper of a game still open
+    (host/hos_crash_dialog.c: hookshot --crash-watch, a windowless child of the game it waits on). Ending it would lose that
+    run's watcher, and the game's own window stops the update anyway; a helper showing its window is visible, so left alone"""
+    return [pid for pid in found if pid not in visible and parents.get(pid) not in visible]
+
+
+INSTALLED_NOTE = ".hookshot_installed.json"   # (in the game folder: what the finish copied in, each file's hash and stat)
+
+
+def file_sha1(path):
+    h = hashlib.sha1(usedforsecurity=False)
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def installed_stat(st):
+    """What says a file in the game folder is still the one the finish put there: nothing but a write that keeps its size
+    and time, in place, changes all four"""
+    return [st.st_size, st.st_mtime_ns, st.st_ino, stat.S_IMODE(st.st_mode)]
+
+
+def read_installed(out):
+    try:
+        with open(os.path.join(out, INSTALLED_NOTE), encoding="utf-8") as f:
+            note = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return note if isinstance(note, dict) else {}
+
+
+def installed_already(src, dst, out, note):
+    """dst is src as the finish would copy it (shutil.copy2): the file the last finish put there (INSTALLED_NOTE: its stat
+    unchanged) with src's bytes (its hash) and mode. dst itself is never read: on a cold cache that read took longer than
+    the copy (10 s for the exe on the lab's btrfs, where the copy is a clone). A <dst>.new an earlier build stopped before
+    swapping goes then, as nothing is staged over it. Anything unreadable or unnoted is not the same: copied as before"""
+    try:
+        s, d = os.stat(src), os.stat(dst)
+        had = note.get(os.path.relpath(dst, out).replace(os.sep, "/"))
+        same = (isinstance(had, dict) and had.get("stat") == installed_stat(d) and s.st_size == d.st_size
+                and stat.S_IMODE(s.st_mode) == stat.S_IMODE(d.st_mode) and had.get("sha1") == file_sha1(src))
+    except OSError:
+        return False
+    if same:
+        with contextlib.suppress(OSError):
+            os.remove(dst + ".new")
+    return same
+
+
+def note_installed(out, note, files):
+    """After the swap: each of files (src, dst) as it is in the folder now, for the next finish's installed_already. Not
+    written, the next finish copies them all again, as before"""
+    try:
+        for src, dst in files:
+            note[os.path.relpath(dst, out).replace(os.sep, "/")] = {"sha1": file_sha1(src), "stat": installed_stat(os.stat(dst))}
+        path = os.path.join(out, INSTALLED_NOTE)
+        with open(path + ".new", "w", encoding="utf-8") as f:
+            json.dump(note, f, sort_keys=True)
+        os.replace(path + ".new", path)
+    except OSError as e:
+        print("the note of the files copied in was not saved (%s): the next build copies them again" % e, flush=True)
+
+
+def game_copy(path, roots):
+    """Whether the process running path is a copy of the game being updated: hookshot.exe directly in one of roots (the
+    folder's launcher, bin\\hookshot.exe or its crash-watch helper), each root normcased and ending in a separator. Another
+    program the player keeps in the folder is not: the Hookshot Builder's exe kept there would be taken for the game, its window
+    named as Hookshot still running and the update stopped, and a windowless one would have been ended"""
+    path = os.path.normcase(path)
+    return os.path.basename(path).lower() in ("hookshot.exe", GAME_EXE.lower()) and os.path.dirname(path) + os.sep in roots
+
+
 def end_stale_games(folders):
-    """(Windows) The running processes whose exe is in one of folders (the game being updated): those with no visible window, a
+    """(Windows) The running copies of the game (game_copy) in one of folders, the game being updated: those with no visible window, a
     copy left behind (a shader preparation that hung, a game whose window closed but whose process did not end), are ended and
     waited for, as their file could not be replaced while they ran ("Could not replace bin/hookshot.exe", Discord 2026-11-10).
     Returns the process ids of those with a window, which the player is to close: a game in play is never ended."""
@@ -1494,7 +2892,7 @@ def end_stale_games(folders):
     snap = k32.CreateToolhelp32Snapshot(0x2, 0)
     if not snap or snap == wintypes.HANDLE(-1).value:
         return []
-    found = []
+    found, parents = [], {}
     try:
         e = Entry()
         e.dwSize = ctypes.sizeof(Entry)
@@ -1505,9 +2903,9 @@ def end_stale_games(folders):
                 if h:
                     buf, n = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
                     if k32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n)):
-                        path = os.path.normcase(buf.value)
-                        if any(path.startswith(r) for r in roots) and os.path.dirname(path) + os.sep in roots:
+                        if game_copy(buf.value, roots):
                             found.append(e.th32ProcessID)
+                            parents[e.th32ProcessID] = e.th32ParentProcessID
                     k32.CloseHandle(h)
             ok = k32.Process32NextW(snap, ctypes.byref(e))
     finally:
@@ -1525,9 +2923,7 @@ def end_stale_games(folders):
                 visible.add(pid.value)
         return True
     u32.EnumWindows(proc(each), 0)
-    for pid in found:
-        if pid in visible:
-            continue
+    for pid in stale_copies(found, parents, visible):
         h = k32.OpenProcess(0x0001 | 0x00100000, False, pid)   # (PROCESS_TERMINATE | SYNCHRONIZE)
         if h:
             print("A copy of Hookshot left running without a window (process %d) was ended so the update can replace it" % pid,
@@ -1540,9 +2936,13 @@ def end_stale_games(folders):
 def main(a=None):
     if a is None:
         a = parse_args()
+    portable_home = portable_game_home(a.update or a.out) if not a.check and (a.update or a.out) else None
     if a.jobs is not None and a.jobs < 0:
         fail("--jobs must be 1 or more, or 0 for automatic.")
+    given = a.jobs or requested_jobs_or_none(os.environ.get("HOOKSHOT_JOBS"))
     a.jobs = chosen_jobs(a.jobs)
+    if given:   # (every step that runs work side by side takes at most this many, not only the compile: nx2/build_jobs.py)
+        os.environ["HOOKSHOT_JOBS"] = str(a.jobs)
     os.makedirs(a.work, exist_ok=True)
     no_throttle()
     if os.name == "nt":   # (the PC kept awake while this runs: a build is 45 minutes, and sleep stopped it)
@@ -1552,41 +2952,48 @@ def main(a=None):
         return check(a, a.work)
     if a.update:
         a.out = a.update
-        a.language = folder_language(a.update) or a.language
     if not a.out or not (a.update or a.nup or (a.romfs and a.exefs)):
         fail("needs --out, and --nup or --romfs with --exefs")
+    if not (a.update or a.nup):
+        check_romfs_folder(a.romfs)
     out = os.path.abspath(a.out)
     work = os.path.abspath(a.work)
+    lock_work(work)   # (before anything is read or cleared in it: stop_stray_compilers, drop_stale_objects, the lift)
+    a.language = build_language(a, out)   # (now: the folder's own language.txt is still the one the player left)
     warn_slow_disk(out, work)   # (a warning, not a stop: a hard drive still builds, only much slower)
     check_writable(out)
-    # (linux) the compiler probe waits until the compile. The game-free cache test stops at the lift, and a missing
-    # compiler is still said before the long compile, not after the package has been read
-    check_cpu()   # (no game read yet: the AppImage on a CPU without AVX2 stops here)
-    if not LINUX:
-        check_windows_sdk()
+    # (AMD FSR 4: the build's switch for nx2/build.py, set or cleared here, before the checks: the Vulkan back end is compiled
+    # with it, and its headers are checked. One set in the shell is not taken for this build's: --fsr, or the folder's mark, decides)
+    fsr = fsr_wanted(a, out)
+    if fsr:
+        os.environ["HOOKSHOT_FSR"] = "1"
+    else:
+        os.environ.pop("HOOKSHOT_FSR", None)
+    if getattr(a, "fetch_ngx_sdk", False):
+        fetch_ngx_sdk(a)   # (the Vulkan back end is compiled with NVIDIA DLSS)
+    check_windows_sdk(work)
     stop_stray_compilers(work, a.default_work)
     drop_stale_objects(work)
-    if getattr(a, "fetch_ngx_sdk", False):
-        fetch_ngx_sdk(a)
-    # (AMD FSR 4: the build's switch for nx2/build.py, and the folder's mark for the next --update)
-    if fsr_wanted(a, out):
-        os.environ["HOOKSHOT_FSR"] = "1"
+    # (AMD FSR 4: the folder's mark for the next --update)
+    if fsr:
         if getattr(a, "fetch_fsr_runtime", False) and not LINUX:
             fetch_fsr_runtime(a)
         elif getattr(a, "fetch_fsr_runtime", False):
             print("--fetch-fsr-runtime: AMD publishes this runtime for Windows only; on Linux see the readme "
                   "(amd_fidelityfx_upscaler_vk.so)", flush=True)
         open(os.path.join(out, FSR_MARK), "w").close()
-        if os.environ.get("HOOKSHOT_VK_PREBUILT"):   # (the AppImage's back end, built without FSR 4)
-            print("--fsr: this build uses the prebuilt Vulkan back end (HOOKSHOT_VK_PREBUILT), which has no AMD FSR 4: the "
-                  "Upscaler row will not offer it", flush=True)
     else:
-        os.environ.pop("HOOKSHOT_FSR", None)
         if os.path.isfile(os.path.join(out, FSR_MARK)):
             os.remove(os.path.join(out, FSR_MARK))
+    # (Intel XeSS: no mark, every Windows build has it; Intel's library only when asked, and never taken away by a build without)
+    if getattr(a, "fetch_xess_runtime", False) and not LINUX:
+        fetch_xess_runtime(a)
+    elif getattr(a, "fetch_xess_runtime", False):
+        print("--fetch-xess-runtime: Intel publishes no XeSS library for Linux, so a Linux build has no XeSS", flush=True)
     exefs = os.path.join(work, "exefs")
     romfs = os.path.join(out, "romfs")
 
+    remaining_assets = None
     say("stage", "read", "Reading your game files")
     clear_folder(exefs)
     kept = os.path.join(out, ".hookshot_exefs")   # (the game's code as read, kept in the folder: what an update builds from again)
@@ -1595,6 +3002,7 @@ def main(a=None):
             fail("This game folder has no copy of the game files to update from: it was built before updates came in. Choose your game files "
                  "in Hookshot Builder and build into the same folder once; updates after that work by themselves.")
         check_cache_paths(out, (kept, romfs))
+        check_unpacked_romfs(romfs, "This game folder's copy of the game files (%s)" % romfs)
         shutil.copytree(kept, exefs)
         check_modules(exefs)
         stand_in_damaged_files(out, romfs)   # (a folder unpacked by an earlier builder from a 23.3 GB dump)
@@ -1613,10 +3021,10 @@ def main(a=None):
         stamp = "unpacked by this builder: %s %d" % (os.path.basename(a.nup), st.st_size)
         same = False
         if os.path.exists(good) and os.path.isdir(romfs) and os.path.isdir(kept):
-            with open(good) as f:
-                same = f.read().strip() == stamp
+            same = read_stamp(good).strip() == stamp
         if same:
             print("the game was read from this .nup before: reading it again is skipped", flush=True)
+            check_unpacked_romfs(romfs, "Your .nup file %s" % a.nup)   # (unpacked by a builder before this check)
             shutil.copytree(kept, exefs)
         else:
             shutil.rmtree(game, ignore_errors=True)
@@ -1624,46 +3032,81 @@ def main(a=None):
                 os.remove(os.path.join(out, ".hookshot_romfs_checked"))
             # Keep the last usable cache until the new package has been read and validated.
             staged_exefs = os.path.join(game, "exefs")
-            try:
-                run(PY + ["nx2/nup.py", a.nup, "--extract", game])
-                check_modules(staged_exefs)
-                check_supported_build(staged_exefs)
-                if not os.path.isdir(os.path.join(game, "romfs")):
-                    fail("The package did not contain a romfs folder.")
-            except (OSError, SystemExit):
-                try:
-                    shutil.rmtree(game)
-                except FileNotFoundError:
-                    pass
-                except OSError as e:
-                    print("Could not remove the incomplete extraction at %s (%s)." % (game, e), flush=True)
-                raise
-            if os.path.exists(romfs):
-                shutil.rmtree(romfs)
-            shutil.move(os.path.join(game, "romfs"), romfs)
-            keep_heads(out, game, stamp)
-            shutil.move(staged_exefs, exefs)
-            shutil.rmtree(game, ignore_errors=True)
-            shutil.rmtree(kept, ignore_errors=True)
-            shutil.copytree(exefs, kept)
-            with open(good, "w") as f:
-                f.write(stamp + chr(10))
+            # (a .nup alone: nxar.py reads a .nx archive whole)
+            overlap = package_script(a.nup) == "nx2/nup.py" and overlap_package_read(a.jobs, st, out, work, kept, romfs)
+            extract = PY + [package_script(a.nup), a.nup, "--extract", game]
+
+            def read_assets():
+                with clean_incomplete_unpack(game):
+                    run(extract + (["--only", "romfs"] if overlap else []))
+                    if overlap:
+                        if package_identity(os.stat(a.nup)) != package_identity(st):
+                            fail("The game package changed during extraction. Start the build again with the complete package.")
+                    else:
+                        check_modules(staged_exefs)
+                        check_supported_build(staged_exefs)
+                    staged_romfs = os.path.join(game, "romfs")
+                    if not os.path.isdir(staged_romfs):
+                        fail("The package did not contain a romfs folder.")
+                    check_unpacked_romfs(staged_romfs, "Your .nup file %s" % a.nup)
+                    why = romfs_problem(staged_romfs, nup=a.nup)   # (the files' version, said before anything is built)
+                    if why:
+                        fail(why)
+                    if overlap and (os.path.lexists(romfs) or os.path.lexists(kept)):
+                        fail("Another build populated this game folder while its assets were being extracted.")
+                if not overlap and os.path.exists(romfs):
+                    shutil.rmtree(romfs)
+                shutil.move(staged_romfs, romfs)
+                keep_heads(out, game, stamp)
+                if not overlap:
+                    shutil.move(staged_exefs, exefs)
+                shutil.rmtree(game, ignore_errors=True)
+                shutil.rmtree(kept, ignore_errors=True)
+                shutil.copytree(exefs, kept)
+                write_stamp(good, stamp + chr(10))
+
+            if overlap:
+                with clean_incomplete_unpack(game):
+                    run(extract + ["--only", "exefs"])
+                    check_modules(staged_exefs)
+                    check_supported_build(staged_exefs)
+                    shutil.move(staged_exefs, exefs)
+                remaining_assets = read_assets
+            else:
+                read_assets()
         check_modules(exefs)
-        # (also when the .nup was read before: a folder built from a 23.3 GB dump by an earlier builder gets them too)
-        stand_in_damaged_files(out, romfs)
+        if not remaining_assets:
+            stand_in_damaged_files(out, romfs)
     else:
-        check_cache_paths(out, (kept, romfs))
+        # (--romfs-in-place: the romfs is read where it is, never linked or copied into the game folder, which so has none; the
+        # game is started with --romfs naming it. scripts/dev_packs.py's packs and bases: where a hard link is refused (a
+        # Windows sandbox may only read the dump) the link was a 26 GB copy, and the pack's comparison with the base read both)
+        in_place = bool(getattr(a, "romfs_in_place", False))
+        if in_place:
+            romfs = os.path.abspath(a.romfs)
+        check_cache_paths(out, (kept,) if in_place else (kept, romfs))
         refuse_dump_links(a.exefs)
         refuse_dump_links(a.romfs)
+        why = romfs_problem(a.romfs)   # (said before anything is read or built)
+        if why:
+            fail(why)
         shutil.copytree(a.exefs, exefs)   # (unpacked in place: the user's copy stays as it is)
         run(PY + ["nx2/unpack.py", exefs])
-        link_or_copy(a.romfs, romfs)
+        # (before the folder's copies are touched: a dump of another version, refused, used to replace .hookshot_exefs first, and
+        # the next build from the .nup those were read from took them as its own and was refused too)
+        check_supported_build(exefs)
+        if not in_place:
+            link_or_copy(a.romfs, romfs)
         shutil.rmtree(kept, ignore_errors=True)
         shutil.copytree(exefs, kept)
+        with contextlib.suppress(FileNotFoundError):   # (the copies are this dump's now, not the .nup's that stamp names)
+            os.remove(os.path.join(out, ".hookshot_romfs"))
     check_supported_build(exefs)
+    game_name(out, work, None if a.update else a.nup)
 
     # (made once on the development PC: lists of addresses and counts, no game code)
-    for name in ("hot_funcs.txt", "hot_order.txt", "hookshot_pieces.prof", "hookshot.res"):
+    # (hookshot_vk.profdata: the renderer's own profile, counts over Hookshot's own code)
+    for name in ("hot_order.txt", "hookshot_pieces.prof", VK_PROFILE, "hookshot.res"):
         src = os.path.join(ROOT, "work", name)
         dst = os.path.join(work, name)
         # (copied only when it differs: a compiler still ending from a cancelled build keeps the profile mapped, WinError 1224)
@@ -1679,10 +3122,34 @@ def main(a=None):
     if os.path.exists(src):
         copy_writable(src, os.path.join(work, "image", "chunks.txt"))
     env = {"OOT_WORK": work, "OOT_EXEFS": exefs, "OOT_ROMFS": romfs, "OOT_DUMP": out, "RX_RELEASE": "1", "A64_HOT_CHUNK": "1"}
-    if os.path.exists(os.path.join(work, "hot_funcs.txt")):
-        env["A64_HOT_FUNCS"] = os.path.join(work, "hot_funcs.txt")
+    hot = hot_list_for(work, os.environ)
+    if hot is not None:
+        env["A64_HOT_FUNCS"] = hot
+    print(hot_list_line(hot, os.environ), flush=True)
     if os.path.exists(os.path.join(work, "hookshot_pieces.prof")) and profile_readable(os.path.join(work, "hookshot_pieces.prof")):
         env["RX_PGO"] = os.path.join(work, "hookshot_pieces.prof")
+    vk_profile = vk_profile_for(work, os.environ)
+    if vk_profile:
+        env["RX_VK_PGO"] = vk_profile
+
+    # (hookshot) the mods' ExeFS patches (nx2/exefs_patches.py): the lift writes them into main before it translates it, so they
+    # are part of its key; none (no mods, or none with ExeFS patches for this version): the lift and its key as without mods
+    import exefs_patches
+    patch_files = exefs_patches.collect(exefs, out)
+    patches_json = os.path.join(work, "exefs_patches.json")
+    if any(f["kind"] in ("code", "data") for f in patch_files):
+        with open(patches_json, "w", encoding="utf-8") as f:
+            json.dump(patch_files, f)
+        env[exefs_patches.ENV] = patches_json
+        with open(patches_json, "rb") as f:
+            env[exefs_patches.ENV + "_SHA1"] = hashlib.sha1(f.read(), usedforsecurity=False).hexdigest()
+    elif os.path.exists(patches_json):
+        os.remove(patches_json)
+    built_list = os.path.join(work, "exefs_patches.txt")   # (put in the game folder once the build is in: below)
+    if patch_files:
+        exefs_patches.write_list(patch_files, built_list)
+    elif os.path.exists(built_list):
+        os.remove(built_list)
 
     say("stage", "lift", "Translating the game to PC code")
     # (the same game, tools and settings as the lift before: its C is what this lift would write, and nothing recompiles from it. A
@@ -1690,45 +3157,120 @@ def main(a=None):
     key = lift_key(exefs, work, env)
     gen_dir = os.path.join(work, "sa", "gen")
     # (issue 1197: a lifted file cut short, "g_module_b" where g_module_base was, stopped the compile at every try. Before the compile
-    # every one must end as a function does: one that does not is translated again, once; a second time says what to check)
-    for _ in range(2):
-        if lifted_before(work, key):   # (never on the second pass: its key was taken away below)
-            print("the game was translated with these tools before: translating it again is skipped", flush=True)
-        else:
-            key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
-            if os.path.exists(key_file):
-                os.remove(key_file)   # (a lift stopped halfway leaves no key behind)
-            # (hookshot) the lifted C of an earlier lift goes first: a file that lift made and this one does not (another builder's naming,
-            # a chunk cut short) was compiled with the new ones, undefined or doubly defined game functions at the link (issue 1176).
-            # The objects stay cached by their contents, so a file this lift writes the same is not compiled again
-            gen_dir = os.path.join(work, "sa", "gen")
-            if os.path.isdir(gen_dir):
-                for f in os.listdir(gen_dir):
-                    if f.startswith("code_") and (f.endswith(".c") or f.endswith(".c.whole") or f.endswith(".part")):
-                        try:
-                            os.remove(os.path.join(gen_dir, f))
-                        except FileNotFoundError:
-                            pass   # (already gone: another cleanup removed it)
-                        except OSError as e:
-                            fail("Could not remove earlier translated file %s: %s. The new translation has not started." %
-                                 (os.path.join(gen_dir, f), e))
-            run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env)
-            if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
-                run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
-            write_lift_key(work, key)
-        cut = lifted_cut_short(gen_dir)
-        if not cut:
-            break
-        key_file = os.path.join(gen_dir, LIFT_KEY)
-        if os.path.exists(key_file):
-            os.remove(key_file)
-        print("translated files cut short (%s): the game is translated again" % ", ".join(cut[:6]), flush=True)
-    else:
-        fail("The translated game came out cut short twice (%s). Check that the drive with %s has free space, and that no antivirus "
-             "and no second Hookshot Builder is working in that folder, then update again." % (", ".join(cut[:6]), work))
+    # every one must end as a function does, with no zero byte: one that does not is translated again, once; a second time says what
+    # to check)
+    kept_lift = []   # (build.py's --kept-lift: the lift skipped, its objects by the kept list)
 
-    if LINUX:
-        check_linux_compiler()
+    def translate():
+        nonlocal key
+        for _ in range(2):
+            checked = False
+            compiled_kept = False
+            if lifted_before(work, key):   # (never on the second pass: its key was taken away below)
+                with open(os.path.join(gen_dir, LIFT_KEY)) as f:
+                    checked = f.read().split()[-1] == "zero-checked"
+                print("the game was translated with these tools before: translating it again is skipped", flush=True)
+            elif kept_before(work, key):   # (a player's update with the same tools: keep_translation, below)
+                compiled_kept = True
+                print("the game was translated with these tools before (its compiled code kept): translating it again is skipped",
+                      flush=True)
+                kept_lift[:] = ["--kept-lift", os.path.join(gen_dir, KEPT_LIST)]
+            else:
+                kept_lift.clear()
+                key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
+                if os.path.exists(key_file):
+                    os.remove(key_file)   # (a lift stopped halfway leaves no key behind)
+                for name in (KEPT_LIST, KEPT_LIST + ".new"):   # (the list of the lift before: it names that lift's objects)
+                    with contextlib.suppress(FileNotFoundError):
+                        os.remove(os.path.join(gen_dir, name))
+                # (hookshot) the lifted C of an earlier lift goes first: a file that lift made and this one does not (another builder's
+                # naming, a chunk cut short) was compiled with the new ones, undefined or doubly defined game functions at the link (issue
+                # 1176). The objects stay cached by their contents, so a file this lift writes the same is not compiled again
+                if os.path.isdir(gen_dir):
+                    for f in os.listdir(gen_dir):
+                        if f.startswith("code_") and (f.endswith(".c") or f.endswith(".c.whole") or f.endswith(".part")):
+                            try:
+                                os.remove(os.path.join(gen_dir, f))
+                            except FileNotFoundError:
+                                pass   # (already gone: another cleanup removed it)
+                            except OSError as e:
+                                fail("Could not remove earlier translated file %s: %s. The new translation has not started." %
+                                     (os.path.join(gen_dir, f), e))
+                # (HOOKSHOT_LIFT_STORE: the lift another work folder made from the same inputs, nx2/lift_store.py. Its share key is taken
+                # before the lift, from what this one starts from, as that folder's was; the restored folder gets that lift's chunk
+                # boundaries and hot pieces too, so its key is taken again after it)
+                lifts = _lift_store.root()
+                share = lift_share_key(exefs, work, out, env) if lifts else None
+                if share and _lift_store.restore(lifts, share, work, bad=lambda: lifted_damaged(gen_dir)):
+                    print("the game was translated with these tools in another work folder: its translation is copied (%s)" %
+                          os.path.join(lifts, share), flush=True)
+                    key = lift_key(exefs, work, env)
+                    write_lift_key(work, key)
+                else:
+                    inputs = lift_key(exefs, work, env, planning=False)   # (what the lift reads and does not write, as it starts)
+                    run(PY + ["nx2/lift.py", "--standalone", "--write", "--exefs", exefs, "--work", work], env, lift_progress(work))
+                    if os.path.isfile(os.path.join(work, "sa", "gen", "code_hot.c")):
+                        run(PY + ["nx2/split_hot.py", os.path.join(work, "sa", "gen")], env)   # (eight files side by side: ~6 minutes, not 79)
+                    # (the lift writes inputs of the next one: split_hot's kept pieces, image/hot_pieces.txt, which the key hashes. Its key is
+                    # taken again now, from what the next build reads: taken before, in a fresh work folder (no hot_pieces.txt yet) it never
+                    # matched the next build's, which translated the game again for nothing, ~5 minutes on Windows, and a player's first
+                    # update after a new install did not keep the translation). Only when nothing else it reads changed while it ran: a
+                    # translator file edited during the lift would otherwise stamp C made from the old one with the new one's key, and the
+                    # next build would skip a lift it needs. Then the key from before stays, and the next build translates again. The key is
+                    # taken before that comparison: a file edited between the two is caught by it, and one edited after it is in no key that is
+                    # kept (SimonKimDev, #2686)
+                    after = lift_key(exefs, work, env)
+                    if lift_key(exefs, work, env, planning=False) == inputs:
+                        key = after
+                        if share and not lifted_damaged(gen_dir):   # (for other work folders: nx2/lift_store.py)
+                            _lift_store.save(lifts, share, work)
+                    write_lift_key(work, key)
+            cut, zero = lifted_cut_short(gen_dir), [] if checked or compiled_kept else lifted_zero_bytes(gen_dir)
+            if not cut and not zero:
+                if not checked and not compiled_kept:
+                    # The key and its file fingerprint now vouch for this check, including on the next build.
+                    with open(os.path.join(gen_dir, LIFT_KEY), "a") as f:
+                        f.write("zero-checked\n")
+                break
+            key_file = os.path.join(gen_dir, LIFT_KEY)
+            if os.path.exists(key_file):
+                os.remove(key_file)
+            if zero:
+                print("translated files with a zero byte, which the translation never writes (%s): the game is translated again" %
+                      ", ".join(zero[:6]), flush=True)
+            else:
+                print("translated files cut short (%s): the game is translated again" % ", ".join(cut[:6]), flush=True)
+        else:
+            if zero:
+                files = [f for f in os.listdir(gen_dir) if f.startswith("code_") and f.endswith(".c")]
+                fail("The translated game came out damaged twice: %d of %d files have a zero byte (%s), which the translation never "
+                     "writes, so this PC's memory or the drive with %s changes what is written. Turn off any memory overclock (XMP, "
+                     "EXPO), test the memory, check the drive for errors, then build again." %
+                     (len(zero), len(files), ", ".join(zero[:6]), work))
+            fail("The translated game came out cut short twice (%s). Check that the drive with %s has free space, and that no antivirus "
+                 "and no second Hookshot Builder is working in that folder, then update again." % (", ".join(cut[:6]), work))
+
+    if remaining_assets:
+        print("Reading the remaining game assets alongside translation.", flush=True)
+        with ThreadPoolExecutor(max_workers=1) as reader:
+            assets = reader.submit(remaining_assets)
+            try:
+                translate()
+            finally:
+                assets.result()
+        stand_in_damaged_files(out, romfs)
+    else:
+        translate()
+    # (Hookshot native engine) the entry gates host/hl_*.c asks for (nx2/hl_gates.py), after the translation (it ran or was skipped):
+    # the lift puts them in, but its key does not cover the HL_GATE lines of host/, so an update that adds a gate would
+    # leave it out, and one that drops a gate would leave a gate line calling a function no host file defines any more (an
+    # undefined symbol at every link). A change here rewrites the key: the files were as it vouched for just before
+    import hl_gates
+    before = gen_print(gen_dir)
+    hl_gates.apply(gen_dir, quiet=True)
+    if gen_print(gen_dir) != before:
+        write_lift_key(work, key)
+
     # (the compile's timer: build.py reads the record of the earlier builds on this PC, says which files this run really
     # rebuilds and how long the rest will take, and reports each module's seconds; they go into the record below)
     env["HOOKSHOT_TIMES"] = times_path(work)
@@ -1776,20 +3318,79 @@ def main(a=None):
             parts = line.split(" ")
             if len(parts) == 3 and parts[1].isdigit() and parts[2].isdigit():
                 plan[:] = [int(parts[1]), int(parts[2])]
+    linking = []   # (build.py's "compiled in Ns, 0 failed": every object made, the link next)
+    failed = []   # (build.py's "FAILED <name> (...": a file that did not compile, alone either)
+    game_linked = []   # (build.py's "linked <...>/hookshot[.exe]: N MB": the game linked, the renderer's link next)
+
+    errors = []   # (whether each final FAILED attempt has a compiler error at a place in a source)
+    in_failure = []   # (the diagnostics following a FAILED line, until build.py's next result)
+    changed = []   # (the game translated again came out different: which files, for the build's lines)
+
+    def compile_line(line):
+        if re.match(r"compiled in \d+s, 0 failed$", line):
+            linking.append(line)
+        if re.match(r"linked .*[\\/]hookshot(\.exe)?: \d+ MB \(", line):
+            game_linked.append(line)
+        m = re.match(r"FAILED (\S+) \(", line)
+        if m:
+            failed.append(m.group(1))
+            errors.append(False)
+            in_failure[:] = [True]
+        elif line.startswith("@@") or re.match(r"\s+\S+\s+\d+ MB\s+\d+s", line) or line.startswith("compiled in "):
+            in_failure.clear()
+        elif in_failure and COMPILE_ERROR.match(line):
+            errors[-1] = True
+        compiled(line)
+
+    def translate_again():
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(os.path.join(gen_dir, LIFT_KEY))
+        say("stage", "lift", "Translating the game to PC code")
+        translate()
+
+    # (a compile that refuses translated files: they are made again, and compiled again when they come out different, changed_lift.
+    # The lift key as it was: another translator, edited since, or other settings make other files, and no PC is at fault then)
+    def lift_changed():
+        if not refused_lift(gen_dir, failed, errors) or lift_key(exefs, work, env) != key:
+            return False
+        print("the compiler refused translated files (%s): the game is translated again, to see whether they come out the same" %
+              ", ".join(sorted(failed)[:6]), flush=True)
+        names, of = changed_lift(gen_dir, translate_again)
+        if not names:
+            print("they came out the same", flush=True)
+            return False
+        changed.append("%d of %d files (%s%s)" % (len(names), of, ", ".join(names[:6]), ", ..." if len(names) > 6 else ""))
+        print("translating the game again gave other contents for %s: this PC's memory, processor or drive changes what the build "
+              "writes. They are compiled again. Turn off any overclock (XMP, EXPO) and test the memory: a game built with a changed file "
+              "can fail in any way" % changed[0], flush=True)
+        failed.clear()
+        errors.clear()
+        in_failure.clear()
+        return True
+
+    def changed_twice():
+        if refused_lift(gen_dir, failed, errors):
+            fail("The compiler refused translated files twice, and translating the game again gave other contents for %s: this PC's "
+                 "memory, its processor or the drive with %s changes what the build writes. Turn off any overclock (XMP, EXPO), test the "
+                 "memory, check the drive for errors, then build again." % (changed[0], work))
+        return False
+
     try:
-        run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compiled)
+        if run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)] + kept_lift, env, compile_line,
+               allow=(KEPT_STALE,) if kept_lift else (), again=lift_changed) == KEPT_STALE:
+            # (the translation kept from the last build no longer fits: an object of it gone, other flags or headers. Nothing was
+            # compiled: the game is translated, then compiled, as when nothing was kept)
+            translate_again()
+            say("stage", "compile", "Compiling")
+            run_files.clear()
+            done["n"] = 0.0
+            run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compile_line, again=lift_changed)
+        if changed:   # (what compiled is cached by its contents: only the files that came out different, and those refused, compile)
+            say("stage", "compile", "Compiling")
+            done["n"] = 0.0
+            run(PY + ["nx2/build.py", "--standalone", "--jobs", str(a.jobs)], env, compile_line, again=changed_twice)
     except SystemExit:
-        # (hookshot) a compile or link that failed forgets the lift: the next build translates the game again. A lifted file cut short
-        # (an antivirus, a full disk, a stopped run: "g_module_b" for g_module_base, issue 1197) or lifted C another builder left (20
-        # undefined game functions at the link, issue 1176) otherwise failed the same way at every try, the key still matching
-        key_file = os.path.join(work, "sa", "gen", LIFT_KEY)
-        if os.path.exists(key_file):
-            os.remove(key_file)
-        # (and its compiled objects go too: a cached runtime object from another version linked with every object "compiled in 0s"
-        # and a64_dirty, a64_icall, a64_lookup, recomp_cntpct undefined, at every try (issue 1197, Linux, v2.0.10))
-        for sub in (os.path.join(work, "objcache"), os.path.join(work, "sa", "build", "obj")):
-            shutil.rmtree(sub, ignore_errors=True)
-        print("the build failed: the next one translates and compiles the game again (nothing of this one is reused)", flush=True)
+        forget_failed_build(work, bool(linking), failed, bool(game_linked))
         raise
     compile_seconds = time.time() - compile_started
 
@@ -1798,7 +3399,7 @@ def main(a=None):
     # (the new files are copied in beside the old ones as <name>.new and swapped in only once all are complete: a build stopped while
     # copying, or a full disk, left a half-written 460 MB hookshot.exe and no game to play. The old game stays playable until the swap)
     # (Windows) hookshot.exe in the folder is the game's launcher: the builder's small setup, which opens the installed builder as a
-    # launcher for this folder (Play, and Update left of it when a newer release is out: builder/setup/setup.c launch mode), or starts
+    # launcher for this folder (Play, and Update left of it when its builder is newer than the game: builder/setup/setup.c launch mode), or starts
     # the game when no builder is installed. The game and its DLLs are in bin\; its files (image.bin, romfs, saves, settings, caches)
     # stay in the folder (host/hos_paths.h). Without the setup (a development build) the game stays hookshot.exe in the folder
     staged = []
@@ -1820,6 +3421,17 @@ def main(a=None):
     staged.append((os.path.join(work, "sa", "image", "image.bin"), os.path.join(out, "image.bin")))
     if launcher:
         staged.append((launcher, os.path.join(out, BESIDE[0])))
+    # (a file the last finish put in the folder, still as it was and with the same bytes as the new one, is not copied again:
+    # an update with nothing changed links the same 460 MB exe again, and its copy and swap were 4-8 s of the finish on the
+    # lab, more where an antivirus reads each new exe. A file that differs is staged and swapped as before)
+    installed = read_installed(out)
+    # (a loop, not a comprehension: tests/test_linux_update.py runs this part of main with out among exec's locals, which a
+    # comprehension's own scope does not see before Python 3.12)
+    fresh = []
+    for src, dst in staged:
+        if not installed_already(src, dst, out, installed):
+            fresh.append((src, dst))
+    staged = fresh
     for src, dst in staged:
         try:
             if os.path.exists(dst + ".new"):
@@ -1829,6 +3441,7 @@ def main(a=None):
             fail("Could not stage the new build at %s. Check that %s is readable and the staged file and output folder are writable, "
                  "close any program using that file, then retry. No installed files were replaced; the compiled source is still available."
                  % (dst + ".new", src))
+    PHASES.part("copying the new files in")
     if not LINUX:   # (a copy of this game still running holds its exe: one with no window is a leftover, ended; else named)
         shown = end_stale_games([game_dir, out])
         if shown:
@@ -1840,6 +3453,15 @@ def main(a=None):
         except PermissionError:
             fail("Could not replace %s. Close any running copy of Hookshot and check that the file and folder are writable, then retry. "
                  "Staged replacements remain beside the installed files; the compiled source remains at %s." % (dst, src))
+    if staged:
+        note_installed(out, installed, staged)
+    if not LINUX:   # (the WebGPU renderer's library, which builds from before the Vulkan back end was the only renderer left)
+        for d in sorted({game_dir, out}):
+            try:
+                if os.path.isfile(os.path.join(d, "wgpu_native.dll")):
+                    os.remove(os.path.join(d, "wgpu_native.dll"))
+            except OSError:
+                pass
     if launcher:   # (a folder built before the launcher: its libraries left the folder for bin\; hookshot is the launcher now)
         stale = [] if LINUX else sorted(f for f in os.listdir(out) if f.endswith(".dll") and f.startswith(("av", "sw")))
         for n in BESIDE[1:] + stale + ["hookshot.map", "hookshot-game.exe"]:
@@ -1855,31 +3477,77 @@ def main(a=None):
         except OSError:
             print("the old %s could not be removed (is the game open?): delete it by hand" % BESIDE[0], flush=True)
     place_ngx_runtime(out)
+    # (hookshot) which of the mods' ExeFS patch files this game was built with (host/mods.c: the Mods tab says which wait for a build)
+    patch_list = os.path.join(out, "exefs_patches.txt")
+    if os.path.exists(os.path.join(work, "exefs_patches.txt")):
+        shutil.copyfile(os.path.join(work, "exefs_patches.txt"), patch_list)
+    elif os.path.exists(patch_list):
+        os.remove(patch_list)
     if fsr_wanted(a, out) and getattr(a, "fetch_fsr_runtime", False):
         place_fsr_runtime(out)
+    if getattr(a, "fetch_xess_runtime", False):
+        place_xess_runtime(out)
+    PHASES.part("swap and runtimes")
     # every shader of the game, for its first start to translate (gpu/vk/vk_shader.cpp seed_open). Without it the game still runs, compiling them
     # as it meets them: not worth stopping a finished build for
-    if run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
+    # (made again only when the game's shader files, the census or the list itself changed: 4 s and 514 MB written at every update)
+    if shader_list_current(work, romfs, os.path.join(out, "hookshot_shaders.bin")):
+        print("the shader list is the one the last build made from the same files: not made again", flush=True)
+    elif run(shader_census_cmd(romfs, os.path.join(out, "hookshot_shaders.bin")), check=False, output=sys.stderr):
         print("the shader list was not made: the game will compile its shaders as it plays", flush=True)
+    else:
+        note_shader_list(work, romfs, os.path.join(out, "hookshot_shaders.bin"))
+    # (hookshot) Some dumps hold textures whose first kilobytes are zeros; the game cannot decode them and never finishes loading
+    # the models that need one: the fairy fountains' floor and walls were not drawn, and as an adult the model was loaded again
+    # and again for good; a damaged piece of an area's baked lighting leaves what it lights black. tools/dump_repair.py finds
+    # every damaged texture and writes a small mod that stands in for those that have an intact relative, from the player's own
+    # files; it was a step for the player to run by hand (README), now every build does it. Not worth stopping a build for
+    repair = os.path.join(ROOT, "tools", "dump_repair.py")
+    if os.path.isfile(repair) and run(PY + [repair, romfs, os.path.join(out, "mods", "00-dump-repair")], check=False,
+                                      output=sys.stderr):
+        print("the dump's damaged textures were not checked: the game runs without the stand-ins", flush=True)
+    PHASES.part("shader list")
+    # (hookshot) the text that names the console, reworded for a PC in every language (host/texts.c serves them; a mod's own wins)
+    texts = os.path.join(out, "texts")
+    if run(PY + [os.path.join(HERE, "text_assets.py"), "--romfs", romfs, "--out", texts], check=False, output=sys.stderr):
+        print("the texts were not reworded for a PC: the game shows its own", flush=True)
+        shutil.rmtree(texts, ignore_errors=True)
     # (hookshot) the button prompts of other controllers (host/prompts.c): the game's icon font redrawn per controller, with fontTools.
     # Without it the game shows its own icons
     prompts = os.path.join(out, "prompts")
-    shutil.rmtree(prompts, ignore_errors=True)
     if importlib.util.find_spec("fontTools") is None:
+        shutil.rmtree(prompts, ignore_errors=True)
         print("the button prompts of other controllers were not made (no fontTools): the game shows its own", flush=True)
-    elif run(PY + [os.path.join(HERE, "prompt_assets.py"), "--romfs", romfs, "--out", prompts], check=False, output=sys.stderr):
+    # (kept when nothing they are made from changed, in a packaged builder too: the stamp has the builder's release, so the
+    # first build after a builder update draws them again)
+    elif run(PY + [os.path.join(HERE, "prompt_assets.py"), "--romfs", romfs, "--out", prompts, "--incremental"],
+             check=False, output=sys.stderr):
         print("the button prompts of other controllers were not made: the game shows its own", flush=True)
         shutil.rmtree(prompts, ignore_errors=True)
+    PHASES.part("button prompts")
     icon = os.path.join(ROOT, "assets", "hookshot.png")
-    if LINUX and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c)
+    if LINUX and not game_title.write_png(out, os.path.join(out, "hookshot.png")) and os.path.exists(icon):   # (the window's icon: host/posix/display_sdl.c; the game's own when its .nup had one)
         copy_writable(icon, os.path.join(out, "hookshot.png"))   # (a second build overwrites the first's)
+    # (hookshot) the Travel places' positions, arrival events and story marks (gpu/vk/oot_tp_places_data.h), from the
+    # player's own maps (nx2/teleport_places.py, zstandard alone). Without them the places arrive with the plain event, no pictures
+    if run(PY + [os.path.join(HERE, "teleport_places.py"), "--romfs", romfs, "--out", out], check=False, output=sys.stderr):
+        print("the Travel places' data was not made: they arrive with the plain event and take no pictures", flush=True)
     seed_pipelines(out)
     ship_state_list(out)
+    # (hookshot) the item wheel's icons, names and sounds (gpu/vk/vk_wheel.cpp, host/oot_wheel.c, host/nn_audio.c): the game's own,
+    # from the RomFS, at every build (nx2/wheel_assets.py). Without them the wheel shows the items' names in English, silently
+    wheel = os.path.join(out, "wheel")
+    for script, opt, name, without in (("wheel_assets.py", "--icons", "icons.bin", "it shows the items' names"),
+                                       ("wheel_names.py", "--out", "names.bin", "it names the items in English"),
+                                       ("wheel_sounds.py", "--out", "sounds.bin", "it is silent")):
+        if run(PY + [os.path.join(HERE, script), "--romfs", romfs, opt, os.path.join(wheel, name)], check=False, output=sys.stderr):
+            print("the item wheel's %s was not made: %s" % (name, without), flush=True)
     language = os.path.join(out, "language.txt")   # (the same text as host/nn_applet.c writes)
     with open(language, "w", encoding="utf-8", newline="\n") as f:
         f.write("# The game's language. Change the line below to one of the codes listed here, save, and start the game again.\n\n%s\n\n" % a.language)
         f.writelines("# %-8s %s\n" % l for l in LANGUAGES)
-    # (what the game's update offer reads, host/hos_update.c: which release these tools are, and where the builder that made the folder is)
+    # (what the folder's launcher reads, builder/setup/portable_home.h and builder/linux/hookshot-folder: which release these tools
+    # are, and where the builder that made the folder is)
     tag = ""
     for version_name in ("version.txt", "VERSION"):   # (VERSION: the AppImage, which has no version.txt)
         version = os.path.join(ROOT, version_name)
@@ -1889,13 +3557,15 @@ def main(a=None):
             if tag:
                 break
     if tag:
+        write_game_home(out, portable_home)
         with open(os.path.join(out, "hookshot_version.txt"), "w", encoding="utf-8", newline="\n") as f:
             f.write("version=%s\n" % tag)
-            if os.environ.get("HOOKSHOT_BUILDER_EXE"):
+            if portable_home is not None:
+                f.write("builder_local=1\n")
+            elif os.environ.get("HOOKSHOT_BUILDER_EXE"):
                 f.write("builder=%s\n" % os.environ["HOOKSHOT_BUILDER_EXE"])
-                # (the Python builder: builder is its pythonw.exe, and these the arguments before --update, host/hos_update.c)
-                if os.environ.get("HOOKSHOT_BUILDER_ARGS"):
-                    f.write("builder_args=%s\n" % os.environ["HOOKSHOT_BUILDER_ARGS"])
+    write_build_record(out, work, tag, fsr_wanted(a, out))
+    PHASES.part("pipeline lists, icon and stamps")
     # (the game's code as read: written again by every build, so not left behind in the work folder. The translated code (sa\gen)
     # and the compiled objects stay: the next build skips the lift when nothing it reads changed (#428) and compiles only what
     # changed; the builder says how much stays and lets it go. Kept in a development checkout)
@@ -1906,24 +3576,43 @@ def main(a=None):
         # again, an hour and more on many PCs (issue 1287, "updates rebuild everything"), where the update changes a few. The next
         # update translates again (minutes) and compiles only what changed. The builder's Free up space lets them go too.
         # HOOKSHOT_KEEP_BUILD_FILES=1 keeps everything, as before)
+        # The rest of the lift (~130 MB: its headers, runtime tables and image) stays too, with build.py's list of the lifted files'
+        # object keys: an update with the same tools then skips the lift (keep_translation, kept_before)
         if os.environ.get("HOOKSHOT_KEEP_BUILD_FILES", "0") in ("", "0"):
             kept = prune_object_cache(work)
-            for sub in ("sa", "probe"):
+            lift_kept = keep_translation(work, key)
+            for sub in ("probe",) if lift_kept is not None else ("sa", "probe"):
                 shutil.rmtree(os.path.join(work, sub), ignore_errors=True)
-            print("the build files in %s were deleted but this build's compiled objects (%d MB), so that an update compiles only what "
-                  "changed (HOOKSHOT_KEEP_BUILD_FILES=1 keeps all)" % (work, kept >> 20), flush=True)
+            print("the build files in %s were deleted but this build's compiled objects (%d MB)%s, so that an update compiles only "
+                  "what changed (HOOKSHOT_KEEP_BUILD_FILES=1 keeps all)" % (
+                      work, kept >> 20, "" if lift_kept is None else " and the translation's other files (%d MB)" % (lift_kept >> 20)),
+                  flush=True)
+    PHASES.part("build files deleted")
+    # (HOOKSHOT_OBJ_STORE: the store's own clean-up, after the folder's; nx2/object_store.py prune)
+    removed, freed = _object_store.prune()
+    if removed:
+        print("object store: %d objects no work folder used lately let go (%d MB)" % (removed, freed >> 20), flush=True)
+    PHASES.part("object store")
     total_seconds = time.time() - STARTED
+    PHASES.enter(None)
     previous = record_times(work, run_files, compile_seconds, total_seconds, modules=plan[1],
-                            kind="update" if a.update else "build")
+                            kind="update" if a.update else "build", phases=PHASES.seconds)
+    print("\n".join(PHASES.table()), flush=True)
     print("the build took %s, compiled in %s%s" % (clock(total_seconds), clock(compile_seconds),
                                                     "" if previous is None else " (the last one %s)" % clock(previous)), flush=True)
+    executable = os.path.join(game_dir, BESIDE[0] if launcher else GAME_EXE)   # (recompzel: GAME_EXE)
+    if os.path.isfile(executable):
+        print("executable size: %d bytes" % os.path.getsize(executable), flush=True)
     say("times", "%.0f" % total_seconds, "%.0f" % compile_seconds, "-1" if previous is None else "%.0f" % previous)
     # (after the times: they stay comparable from build to build, without a GPU's minutes that can be switched off)
+    if getattr(a, "compile_shaders", None):   # (the choice kept in the folder: the game's own preparations at a start follow it)
+        write_compile_level(out, a.compile_shaders)
+    level = compile_level(a, out)
     skipped = prepare_skipped(a)
     if skipped:
         not_prepared(skipped)
     else:
-        prepare_shaders([os.path.join(game_dir, BESIDE[0] if launcher else GAME_EXE), "--prepare-shaders"], out)
+        prepare_shaders([os.path.join(game_dir, BESIDE[0] if launcher else GAME_EXE), "--prepare-shaders", "--compile-shaders", level], out)
     say("done", out)
 
 

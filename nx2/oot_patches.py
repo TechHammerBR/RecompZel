@@ -16,9 +16,35 @@ Each is a runtime switch where it can be, so the game's own path stays reachable
   before any recompute. So the fixed path kept the dynamic path's last scale (0.75 docked: 1536x864 at every setting). Flag 1 now
   also asks for the recompute, and on the fixed path the flags +0xe20 bits 3/4 (a hardcoded 0.75 / 0.5 in place of the scale)
   are not looked at.
+- Camera speed (the Insert menu's "Camera speed", the supported build only): the player camera's update (f_80644c80) turns the
+  camera each frame by the speeds the right stick's turn functions return in s0; hos_camera_scale multiplies them at each of
+  their returns, 1.0 as shipped. Even the fastest of the game's own camera speeds turned slowly for players.
+- The OptimizeChangeBank thread's allocations tried again when their heap is full (host/oot_heap_retry.c): f_804566e0's two
+  calls of f_80522050, its GPU memory (GPU_ALLOC_SITES), and its two tryAllocs of CPU buffers (HEAP_ALLOC_SITES). They went on
+  with a null pointer and crashed writing through it (issue 1697). The supported build only.
+- The Voice Language option kept after a restart (host/oot_voice.c): the voice resource's update (f_80a9ca30) asks
+  GameDataMgr whether the option was written (f_80a9d1c0) and applies it only then; option.sav's value replaces the
+  option without a write, so a saved choice was never applied. The call goes through hos_oot_voice_option,
+  which also says yes when the option's value is not the one of the update before. The supported build only.
+- The texture data heap's compaction asked for once in a while (host/oot_tex_compact.h): the manager's per-frame step
+  (f_80797240) asks the Compaction thread for a round whenever none runs (its flag bit 1, always set), and each texture a
+  round moved is made again; hos_oot_tex_compact_due says whether it may ask now (HOS_TEX_COMPACT_MS: once a second as
+  shipped, 0 at every frame, the game's own). The round itself is untouched.
+- Ocarina note controls: the note-wait action's start (f_828a9190) and tick (f_828a9280) report the wait to the host (hos_oc_wait, hos_oc_beat), which swaps the five notes for its own controls (host/nn_hid.c); a tick whose gates refuse reports no wait, so a dialogue keeps its buttons.
+- The neighbouring map the OptimizeChangeBank thread preloads, kept while the game's choice only flickers
+  (host/oot_ocb_hold.h): the preload manager's update (f_832b9880) picks one of the map's neighbours each frame and a
+  change cancels the one loading or loaded; a choice flickering between two (or in and out of a radius) reloaded them over
+  and over with Link on one spot. Its choice goes through hos_oot_ocb_pick, which takes another neighbour only once it
+  stays the choice HOS_OCB_HOLD_MS (0: the game's own at every frame). The supported build only.
+- The game's job barriers waiting for their work (host/oot_barrier.h): three parallel-for jobs (f_800998a0, f_800738e0,
+  f_8007e200) sleep 20 us and look again while the masks they poll are not full; the sleep is hos_oot_barrier_wait, which
+  ends when a polled word moves, and each OR into such a word wakes the waiters (hos_oot_barrier_wake). On by default;
+  HOS_OOT_BARRIER_WAIT=0, the sleeps as lifted.
 """
+import collections
 import glob
 import os
+import re
 import sys
 import whole_write   # (rewrites written beside and moved over: issue 1197)
 
@@ -46,6 +72,15 @@ TEXT_DECL = "extern volatile float hos_text_scale;\nextern void hos_oot_text_pan
 LIFE_BUILD_ID = "e0f3ccfaf50065ae4ea01eb5aeb13b1a45da3348"
 LIFE_HEAD = "void f_804bd8c0(Ctx *__restrict A64_NOESC c) {\n"
 MOVE_HEAD = "void f_82c415e0(Ctx *__restrict A64_NOESC c) {\n"
+# The new-game opening (host/hos_main.c hos_oot_opening), this build's functions only. The request is still sent.
+# The two movies are not started, and the opening's skip query is answered yes.
+OPENING_REQUEST_HEAD = "void f_80d9a820(Ctx *__restrict A64_NOESC c) {\n"
+OPENING_TIMELINE_HEAD = "void f_83b5bfb0(Ctx *__restrict A64_NOESC c) {\n"
+OPENING_QUERY_HEAD = "void f_80de6cb0(Ctx *__restrict A64_NOESC c) {\n"
+OPENING_REQUEST = "    hos_oot_opening(c, 0);   /* (nx2/oot_patches.py: skip the new-game opening) */\n"
+OPENING_TIMELINE = "    if (hos_oot_opening(c, 1)) return;   /* (nx2/oot_patches.py: the opening's movies) */\n"
+OPENING_QUERY = "    if (hos_oot_opening(c, 2)) return;   /* (nx2/oot_patches.py: the opening's skip edge) */\n"
+OPENING_DECL = "extern int hos_oot_opening(Ctx *c, int mode);\n"
 MOVE_ANCHOR = ("if (((c->x[8] >> 1) & 1)) { goto L_82c41748; }\n")
 MOVE_MATRIX = "L_82c41778:;\n"
 WARP_HEAD = "void f_806d2530(Ctx *__restrict A64_NOESC c) {\n"
@@ -66,14 +101,20 @@ def patch_life(source):
     end = source.find("\n}", start)
     if end < 0 or source[start:end].count(LIFE_CAS) != 2:
         return None
-    # x19 is the actor. Confirm its type and life pointer before protecting this write.
-    guard = ("    if ((uint32_t)c->x[12] < (uint32_t)c->x[11] && hos_oot_hearts_enabled() &&\n"
+    if "hos_oot_damage(" in source[start:end]:
+        return source
+    # x19 is the actor. Confirm its type and life pointer before scaling this write.
+    guard = ("    if ((uint32_t)c->x[12] < (uint32_t)c->x[11] &&\n"
              "        hos_oot_is_player(c, c->x[19]) &&\n"
              "        c->x[13] == recomp_load64(c,c->x[19] + 7184) + 8)\n"
-             "        c->x[12] = c->x[11];\n")
-    body = source[start:end].replace(LIFE_CAS, guard + LIFE_CAS)
+             "        c->x[12] = hos_oot_damage((uint32_t)c->x[11], (uint32_t)c->x[12], {hit});\n")
+    # The first CAS is damage: x9 still holds the full hit, before life was clamped.
+    # The second is healing: x9 has another meaning there; keep its guarded delta.
+    sites = source[start:end].split(LIFE_CAS)
+    body = (sites[0] + guard.replace("{hit}", "(uint32_t)c->x[9]") + LIFE_CAS + sites[1] +
+            guard.replace("{hit}", "(uint32_t)c->x[11] - (uint32_t)c->x[12]") + LIFE_CAS + sites[2])
     return (source[:start] + body + source[end:]).replace(
-        '#include "a64.h"\n', '#include "a64.h"\nextern int hos_oot_hearts_enabled(void);\n'
+        '#include "a64.h"\n', '#include "a64.h"\nextern uint32_t hos_oot_damage(uint32_t old, uint32_t next, uint32_t hit);\n'
         'extern int hos_oot_is_player(Ctx *c, uint64_t actor);\n', 1)
 
 
@@ -171,6 +212,27 @@ def patch_cct_speed(source):
 CAM_HEAD = "void f_80644c80(Ctx *__restrict A64_NOESC c) {\n"
 
 
+def patch_opening(source):
+    """The supported build's three functions (a request, the timeline start, the skip query). None when this file has
+    none of them. A file patched before is left as it is."""
+    heads = ((OPENING_REQUEST_HEAD, OPENING_REQUEST), (OPENING_TIMELINE_HEAD, OPENING_TIMELINE),
+             (OPENING_QUERY_HEAD, OPENING_QUERY))
+    found = 0
+    for head, line in heads:
+        start = source.find(head)
+        if start < 0:
+            continue
+        found += 1
+        if line not in source:
+            at = start + len(head)
+            source = source[:at] + line + source[at:]
+    if not found:
+        return None
+    if OPENING_DECL not in source:
+        source = source.replace('#include "a64.h"\n', '#include "a64.h"\n' + OPENING_DECL, 1)
+    return source
+
+
 def patch_mouse_camera(source):
     start = source.find(CAM_HEAD)
     if start < 0:
@@ -241,6 +303,134 @@ def patch_menu_tick(source):
     hook = "    hos_oot_menu_tick(c, c->x[0]);   /* (nx2/oot_patches.py: the menus' mouse) */\n"
     return (source[:at] + hook + source[at:]).replace(
         '#include "a64.h"\n', '#include "a64.h"\nextern void hos_oot_menu_tick(Ctx *c, uint64_t screen);\n', 1)
+
+
+def patch_wheel_tick(source):
+    """(hookshot) f_802f1380, the same menu screen's update, also calls hos_wheel_menu_tick with the screen: the item row shown
+    as the item wheel (host/oot_wheel.c), which does nothing with the Gameplay tab's Item wheel row off. None without the
+    function; the source as it is when patched before"""
+    start = source.find(MENU_TICK_HEAD)
+    if start < 0:
+        return None
+    if "hos_wheel_menu_tick(c," in source:   # (made before: a lift patched again)
+        return source
+    at = start + len(MENU_TICK_HEAD)
+    hook = "    hos_wheel_menu_tick(c, c->x[0]);   /* (nx2/oot_patches.py: the item wheel) */\n"
+    return (source[:at] + hook + source[at:]).replace(
+        '#include "a64.h"\n', '#include "a64.h"\nextern int hos_wheel_menu_tick(Ctx *c, uint64_t screen);\n', 1)
+
+
+TEXT_DRAW_HEAD = "void f_8152b670(Ctx *__restrict A64_NOESC c) {\n"
+TEXT_LAYOUT_HEAD = "void f_8152aec0(Ctx *__restrict A64_NOESC c) {\n"
+GLYPH_HEAD = "void f_81680c60(Ctx *__restrict A64_NOESC c) {\n"
+
+
+def _hook_head(source, head, call, decl):
+    """call put first in the function that starts with head, once, and decl declared; None without the function"""
+    start = source.find(head)
+    if start < 0:
+        return None
+    if call.split("(")[0] + "(" in source:   # (made before: a lift patched again)
+        return source
+    at = start + len(head)
+    return (source[:at] + call + source[at:]).replace('#include "a64.h"\n', '#include "a64.h"\n' + decl, 1)
+
+
+def patch_text_draw(source):
+    """f_8152b670, a text box's draw (x0 the box: each time the game shows it), calls hos_prompts_text_draw first with the box: the
+    button prompts changed while the game runs, the box's codes for them rewritten and the box marked to be laid out again
+    (host/prompts.c)"""
+    return _hook_head(source, TEXT_DRAW_HEAD,
+                      "    hos_prompts_text_draw(c->x[0]);   /* (nx2/oot_patches.py: the button prompts changed) */\n",
+                      "extern void hos_prompts_text_draw(uint64_t box);\n")
+
+
+def patch_text_layout(source):
+    """f_8152aec0, a text box's layout (x0 the box: it lays its text out again when its status says so, at +8: bit 0x20000),
+    calls hos_prompts_text_layout first with the box: the button prompts changed while the game runs, the box's codes for them
+    rewritten and the box laid out again (host/prompts.c)"""
+    return _hook_head(source, TEXT_LAYOUT_HEAD,
+                      "    hos_prompts_text_layout(c->x[0]);   /* (nx2/oot_patches.py: the button prompts changed) */\n",
+                      "extern void hos_prompts_text_layout(uint64_t box);\n")
+
+
+TEXT_PICTURE_CALL = "c->x[30] = 0x80e6e0a0ULL; f_80e6e0e0(c);"
+TEXT_PICTURE_NEW = ("c->x[30] = 0x80e6e0a0ULL; hos_text_picture_thread(c);   /* (nx2/oot_patches.py: one picture of a box "
+                    "at a time) */")
+
+
+def patch_text_picture(source):
+    """f_80e6dfe0, UpdateTextBoxTextureThread's job (each box whose picture that thread makes: +380 bit 2), calls the box's
+    picture (f_80e6e0e0) through hos_text_picture_thread, which holds the lock host/prompts.c's shown_picture takes for its own
+    call of it: the two never make one box's picture at the same time. The draw's own call (f_8152b670, boxes whose picture it
+    makes itself) is left as it is. None without the call"""
+    if TEXT_PICTURE_NEW in source:   # (made before: a lift patched again)
+        return source
+    if source.count(TEXT_PICTURE_CALL) != 1:
+        return None
+    return source.replace(TEXT_PICTURE_CALL, TEXT_PICTURE_NEW).replace(
+        '#include "a64.h"\n', '#include "a64.h"\nextern void hos_text_picture_thread(Ctx *c);\n', 1)
+
+
+def patch_glyph(source):
+    """f_81680c60, FreeType's ft_smooth_render (x1 the glyph slot), calls hos_prompts_glyph first with the slot: where the game
+    keeps the button prompts' font, for a change while it runs (host/prompts.c)"""
+    return _hook_head(source, GLYPH_HEAD,
+                      "    hos_prompts_glyph(c->x[1]);   /* (nx2/oot_patches.py: where the button prompts' font is) */\n",
+                      "extern void hos_prompts_glyph(uint64_t slot);\n")
+
+
+# (hookshot, 2026-11-15) The game's zstd sequence loop (f_801102e0, ZSTD_decompressSequences_body of its
+# zstd 1.4) natively: most of the loading threads' time arriving in Hyrule Castle (host/zstd_native.c says what was measured:
+# 720 MB/s against 340 lifted). At the head of the lifted function, inside it (split_hot cuts the file at function heads: the
+# call travels with the function): the host runs the loop and the function returns, or (HOS_ZSTD_NATIVE=0) the lifted body
+# runs as before. The stream hook below (HOS_NATIVE_ZSTD=1, the host's libzstd for the whole stream) never reaches it
+ZSTD_SEQ_HEAD = "void f_801102e0(Ctx *__restrict A64_NOESC c) {\n"
+ZSTD_SEQ_CALL = ("    { extern int hos_zstd_seq(Ctx *, void (*)(Ctx *));   /* (nx2/oot_patches.py: host/zstd_native.c) */\n"
+                 "      if (hos_zstd_seq(c, f_801102e0)) return; }\n")
+
+
+def patch_zstd_seq(s):
+    """The native zstd sequence loop's call at the head of f_801102e0 (the supported build's: its address is that build's)"""
+    if ZSTD_SEQ_HEAD not in s or ZSTD_SEQ_CALL in s:
+        return None
+    return s.replace(ZSTD_SEQ_HEAD, ZSTD_SEQ_HEAD + ZSTD_SEQ_CALL, 1)
+
+
+ZSTD_HEAD = "void f_80115c80(Ctx *__restrict A64_NOESC c) {\n"
+ZSTD_CALL = "    if (hos_zstd_stream(c)) return;   /* (nx2/oot_patches.py: HOS_NATIVE_ZSTD, the host's libzstd) */\n"
+
+
+def patch_zstd_stream(source):
+    """f_80115c80, the game's zstd stream decode of one compressed chunk (x0 the stream object, x1 and x2 the chunk, x3 the
+    DDict or 0; its job loop f_80115bf0 calls it for each chunk read), returns at once when hos_zstd_stream did the call:
+    with HOS_NATIVE_ZSTD on, the host's libzstd decodes the stream (host/hos_zstd.c); off, the function runs as lifted"""
+    start = source.find(ZSTD_HEAD)
+    if start < 0:
+        return None
+    if ZSTD_CALL in source:   # (made before: a lift patched again)
+        return source
+    at = start + len(ZSTD_HEAD)
+    return (source[:at] + ZSTD_CALL + source[at:]).replace('#include "a64.h"\n', '#include "a64.h"\nint hos_zstd_stream(Ctx *c);\n', 1)
+
+
+ZSTD_FRAMES_HEAD = "void f_8010b380(Ctx *__restrict A64_NOESC c) {\n"
+ZSTD_FRAMES_CALL = ("    if (hos_zstd_frames(c)) return;   /* (nx2/oot_patches.py: HOS_NATIVE_ZSTD_FRAMES, the host's libzstd) */\n")
+
+
+def patch_zstd_frames(source):
+    """f_8010b380, zstd's decompressMultiFrame in the game (x0 the context, x1 and x2 the output and its room, x3 and x4 the
+    frames, x5 and x6 a raw dictionary, x7 the DDict or 0; the resource loaders' whole-buffer decode), returns at once when
+    hos_zstd_frames did the call: with HOS_NATIVE_ZSTD_FRAMES on, the host's libzstd decodes the frames (host/hos_zstd.c);
+    off, the function runs as lifted"""
+    start = source.find(ZSTD_FRAMES_HEAD)
+    if start < 0:
+        return None
+    if ZSTD_FRAMES_CALL in source:   # (made before: a lift patched again)
+        return source
+    at = start + len(ZSTD_FRAMES_HEAD)
+    return (source[:at] + ZSTD_FRAMES_CALL + source[at:]).replace('#include "a64.h"\n',
+                                                                  '#include "a64.h"\nextern int hos_zstd_frames(Ctx *c);\n', 1)
 
 
 TEXT_HEAD = "void f_80b1e140(Ctx *__restrict A64_NOESC c) {"
@@ -343,6 +533,82 @@ def patch_movie_frames(s):
     return s if MOVIE_DECL in s else s.replace('#include "a64.h"\n', '#include "a64.h"\n' + MOVIE_DECL, 1)
 
 
+# A looping animation one frame long (the frozen Zoras under the ice in adult Zora's Domain: start 0, end 1) is one pose. At the
+# console's 60 fps the clock's step is 1 and each update lands on the same phase. Under a Frame rate cap above 60 the step is the
+# frame's own time (0.36 at 165 fps), the phase moved by it each frame, and each frame drew another phase: the pose twitched (issue
+# 988). The time a skeleton is drawn at comes from two places, and both are patched to hos_loop_step / hos_loop_pose (host/loop_step.h):
+# - f_802cfca0 advances the clock of each animation entry ([x20]: flags +0, time +4, speed +12, start +16, end +20) and copies it
+#   to the skeleton's time. Its two advances multiply the step (vreg 8) by the definition's speed first: a loop of one frame or less
+#   takes the step as whole frames, carried per entry; longer loops keep the fractional step.
+# - f_80944aa0 writes the time the skeletons are drawn at (x22: the value +0, the range it is kept in +4, +8) from a clock of its
+#   own that also moved by the fractional step: a range of one frame or less is drawn at its start, the phase of a clock that
+#   moves in whole frames.
+# A cap of 60 (hos_frame_seconds_bits 0) leaves both as the game has them.
+LOOP_HEAD = "void f_802cfca0(Ctx *__restrict A64_NOESC c) {\n"
+LOOP_MUL = ("    {uint64_t _a=0,_b=0,_z,_v;memcpy(&_a,c->vreg[8],4);memcpy(&_b,c->vreg[%d],4);_z=(_a^_b)&0x80000000ULL;\n")
+LOOP_SITES = (
+    ("if (((c->x[9] >> 3) & 1)) { goto L_802d077c; }\n", 1),
+    ("if (((c->x[9] >> 3) & 1)) { goto L_802d07f4; }\n", 0),
+)
+LOOP_MARK = "/* (nx2/oot_patches.py: a loop of one frame by whole frames) */"
+LOOP_DECL = "extern uint32_t hos_loop_step(uint64_t at, uint32_t step_bits, uint32_t start_bits, uint32_t end_bits);\n"
+
+
+def _loop_new(mul):
+    return mul.replace("memcpy(&_a,c->vreg[8],4);",
+                       "memcpy(&_a,c->vreg[8],4); _a=hos_loop_step(c->x[20], (uint32_t)_a, (uint32_t)recomp_load32(c,c->x[20] + 16), "
+                       "(uint32_t)recomp_load32(c,c->x[20] + 20));   " + LOOP_MARK + "\n    ", 1)
+
+
+def patch_loop_steps(s):
+    """(s, the sites patched here): f_802cfca0's two clock advances take hos_loop_step's step; a file without the function, one
+    patched before, or one whose code differs is left as it is"""
+    head = s.find(LOOP_HEAD)
+    if head < 0:
+        return s, 0
+    end = s.find("\nvoid f_", head + len(LOOP_HEAD))
+    body = s[head:end if end >= 0 else len(s)]
+    done = 0
+    for before, reg in LOOP_SITES:
+        old = before + LOOP_MUL % reg
+        new = before + _loop_new(LOOP_MUL % reg)
+        if new in body or body.count(old) != 1:
+            continue
+        at = head + body.index(old)
+        s = s[:at] + new + s[at + len(old):]
+        end = s.find("\nvoid f_", head + len(LOOP_HEAD))
+        body = s[head:end if end >= 0 else len(s)]
+        done += 1
+    if done and LOOP_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + LOOP_DECL, 1)
+    return s, done
+
+
+POSE_HEAD = "void f_80944aa0(Ctx *__restrict A64_NOESC c) {\n"
+POSE_OLD = "    { { uint64_t _v=0; memcpy(&_v,&c->vreg[0][0],4); recomp_store32(c,(c->x[22]+0ULL),_v); } }\n"
+POSE_NEW = ("    { { uint64_t _v=0; memcpy(&_v,&c->vreg[0][0],4); _v=hos_loop_pose((uint32_t)_v, (uint32_t)recomp_load32(c,c->x[22] + 4), "
+            "(uint32_t)recomp_load32(c,c->x[22] + 8));   /* (nx2/oot_patches.py: a loop of one frame by its start) */ "
+            "recomp_store32(c,(c->x[22]+0ULL),_v); } }\n")
+POSE_DECL = "extern uint32_t hos_loop_pose(uint32_t time_bits, uint32_t start_bits, uint32_t end_bits);\n"
+
+
+def patch_loop_pose(s):
+    """(s, 1 if patched): the one store f_80944aa0 makes of a skeleton's time (the call that wraps it into its range, then the
+    store); a file without the function, one patched before, or one whose code differs is left as it is"""
+    head = s.find(POSE_HEAD)
+    if head < 0:
+        return s, 0
+    end = s.find("\nvoid f_", head + len(POSE_HEAD))
+    body = s[head:end if end >= 0 else len(s)]
+    if POSE_NEW in body or body.count(POSE_OLD) != 1:
+        return s, 0
+    at = head + body.index(POSE_OLD)
+    s = s[:at] + POSE_NEW + s[at + len(POSE_OLD):]
+    if POSE_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + POSE_DECL, 1)
+    return s, 1
+
+
 # Counters that add the frame step, or the step times a whole number, cut to whole frames (host/frame_whole.h). At 60 fps the step
 # is 1; under a Frame rate cap above 60 it is the frame's own time, under 1 (0.42 at 144 fps), and the cut is 0 every frame:
 # - f_80a87e50, the pick-up indicator above Link's head (a rupee, a Deku Stick): the count it shows (+864) moves toward the
@@ -351,76 +617,838 @@ def patch_movie_frames(s):
 # - f_800672e0, the water renderer: its ripple simulation runs (int)step times the water's substeps (+76 of the pass) each frame.
 #   Cut to 0, the rings Link and the actors make in water stood still above 60 fps. Found by atk3001 for Lichii (zortos293/
 #   Lichii#1152), as ported to Fritchii (Frizti/Fritchii d389685a4, 063dbb741): its remainder is kept per water object (x21).
-# - f_803edf70, the time of day (after upstream Hookshot f0c40fc96, #2093, as HeyListen took it): each frame it adds (int)(2 * step)
-#   game seconds (+60) to the seconds of the day. Cut, it added 1 a frame below 120 fps (the day slower) and 0 above 120, where
-#   the clock stood still and the sun swung back and forth over the frozen hour. The function cuts into x8 once more, in the
-#   branch that sets the time from another source: that one stays the game's (the anchor is the cut stored to +60).
-# - f_80652cb0, the Deku Tree's floor web (after upstream db0dd7140, #2929): it cuts the elapsed time over 1/60 to whole
-#   simulation steps, then clamps them to 0..3. Cut to 0, the web did not react when Link jumped on it above 60 fps.
-# - f_832b32b0, the Scarecrow's Song playback, f_832b6840, its eight-note recording (mode 10), and f_832b2690, its completion
-#   (after upstream Hookshot 2d8044fb, Longshot 08771847, HeyListen ddef6139): the elapsed frames (+0x265fc) advance the saved
-#   note delays and are saved as the notes' lengths. Cut to 0 above 60 fps, playback waited on its first note and a recording
-#   lost its rhythm. The cuts are unsigned; f_832b6840 has another unsigned cut (mode 13) left as it is: its anchor is the
-#   cut followed by the addition to x10. A song whose rhythm was lost is not restored: record it again.
+#   Whole frames carried, a frame ran all its substeps or none (0 or 4 at 108 fps), and the rings stood still for a frame and
+#   then jumped (issue 1199): the substeps are carried instead (WHOLE_TIMES), 2 or 3 every frame.
+# - f_803edf70, the time of day: each frame it adds (int)(2 * step) game seconds (+60) to the seconds of the day (+40, a day of
+#   86400, then the day count +44). Cut, it added 1 a frame below 120 fps (the day slower: 83% at 100) and 0 above 120, where
+#   the clock stood still and the sun swung back and forth over the frozen hour.
+# - f_832b32b0, Scarecrow's Song playback: elapsed frames (+0x265fc) advance the saved note delays. Cut to 0, the song
+#   waits on the same note until a slow frame lets the counter move (issue 2668).
+# - f_832b6840, the eight-note recording (mode 10): the same elapsed counter is reset between notes and gaps, then saved
+#   as their lengths. Cut to 0, their timing is lost even though the eight pitches are recorded. The mode-13 cut is separate.
+# - f_832b2690, recording completion: after the eighth note starts, it times that note and writes its final delay into
+#   the same recording. Its unsigned cut must carry too, or the saved eighth note has zero length and is not played.
+# - f_80652cb0, the floor web (the Great Deku Tree's): it runs (int)step simulation steps a frame, clamped to 0..3.
+#   Cut to 0, the web stayed rigid when Link landed on it above 60 fps, though it still held him
+#   (https://github.com/NotRexed/Hookshot/issues/2667). Its remainder is kept per web (+2296), before the clamp.
 # hos_frame_whole carries the fractions per counter while the frames' own time is the step, so each moves at the game's rate;
-# otherwise it cuts as the game does. A site is added here once it is seen to misbehave in game. (A site's function, the code
-# to replace (the first of the candidates the function has once), and the counter's address for its remainder.)
-CUT = "    c->x[%d]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,%d,3,c->fpcr,&c->fpsr);\n"
-STORE = "    recomp_store32(c,%s,c->x[%d]);\n"
-ADD = ("    { uint64_t _a=c->x[%d],_b=((uint64_t)(uint32_t)(((uint32_t)(c->x[8])) << 0)),_r=_a+_b; _r&=0xFFFFFFFFULL; "
-       "c->x[8]=_r; }\n")
-
-
-def _site(addr, reg, key, signed=True, add=None):
-    cut = CUT % (reg, 1 if signed else 0)
-    olds = (cut + ADD % add,) if add is not None else (cut, cut + STORE % (key, reg))
-    return ("void f_%s(Ctx *__restrict A64_NOESC c) {\n" % addr, olds, key)
-
-
+# otherwise it cuts as the game does. A site is added here once it is seen to misbehave in game. (A site's function, its code to
+# replace, and the counter's address for its remainder.) A site of WHOLE_TIMES multiplies the whole frames by a whole number of
+# substeps (the register it loaded them into): hos_frame_whole_times hands out the whole substeps and the register becomes 1.
 WHOLE_SITES = (
-    _site("80a87e50", 12, "c->x[19] + 864"),
-    _site("800672e0", 9, "c->x[21]"),
-    _site("803edf70", 8, "c->x[19] + 60"),
-    _site("80652cb0", 22, "c->x[19] + 2296"),
-    _site("832b32b0", 8, "c->x[19] + 0x265fc", signed=False),
-    _site("832b6840", 8, "c->x[9]", signed=False, add=10),
-    _site("832b2690", 8, "c->x[19] + 0x265fc", signed=False),
+    # (the cut alone, the function's one: the multiply before it is a64_fpx_hot_mul32_fma32 in a lift where the function is
+    # among A64_HOT_FUNCS)
+    ("void f_80a87e50(Ctx *__restrict A64_NOESC c) {@",
+     "    c->x[12]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);@",
+     "c->x[19] + 864"),
+    # (the substeps' load and the cut, the function's one: x8 * x9 substeps follow)
+    ("void f_800672e0(Ctx *__restrict A64_NOESC c) {@",
+     "    c->x[8]=recomp_load32(c,c->x[19] + 76);@"
+     "    c->x[9]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);@",
+     "c->x[21]"),
+    # (the cut with the store after it: the function cuts into x8 the same way once more, in the branch that sets
+    #  the time from another source)
+    ("void f_803edf70(Ctx *__restrict A64_NOESC c) {@",
+     "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);@"
+     "    recomp_store32(c,c->x[19] + 60,c->x[8]);@",
+     "c->x[19] + 60"),
+    ("void f_832b32b0(Ctx *__restrict A64_NOESC c) {@",
+     "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,0,3,c->fpcr,&c->fpsr);@",
+     "c->x[19] + 0x265fc"),
+    # (the unsigned cut with the x10 addition: the other recording mode uses the same cut followed by an x12 addition)
+    ("void f_832b6840(Ctx *__restrict A64_NOESC c) {@",
+     "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,0,3,c->fpcr,&c->fpsr);@"
+     "    { uint64_t _a=c->x[10],_b=((uint64_t)(uint32_t)(((uint32_t)(c->x[8])) << 0)),_r=_a+_b; _r&=0xFFFFFFFFULL; c->x[8]=_r; }@",
+     "c->x[9]"),
+    ("void f_832b2690(Ctx *__restrict A64_NOESC c) {@",
+     "    c->x[8]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,0,3,c->fpcr,&c->fpsr);@",
+     "c->x[19] + 0x265fc"),
+    # (the floor web's simulation steps: keep each object's fraction before the existing 0..3 clamp, issues 2667/2271)
+    ("void f_80652cb0(Ctx *__restrict A64_NOESC c) {@",
+     "    c->x[22]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);@",
+     "c->x[19] + 2296"),
 )
+WHOLE_SITES = tuple((h.replace("@", "\n"), o.replace("@", "\n"), k) for h, o, k in WHOLE_SITES)
 WHOLE_MARK = "/* (the step's whole frames: nx2/oot_patches.py) */"
 WHOLE_DECL = "extern uint32_t hos_frame_whole(uint64_t at, uint32_t amount_bits);\n"
+WHOLE_TIMES_DECL = "extern uint32_t hos_frame_whole_times(uint64_t at, uint32_t amount_bits, uint32_t times);\n"
+WHOLE_TIMES = {"void f_800672e0(Ctx *__restrict A64_NOESC c) {\n": "c->x[8]"}   # (the water's substeps, issue 1199)
 
 
-def whole_new(old, key):
-    """old with its cut to whole frames (the one recomp_fp_to_int) made hos_frame_whole's for the counter at key"""
+def whole_new(old, key, times=None):
+    """old with its cut to whole frames (the one recomp_fp_to_int) made hos_frame_whole's for the counter at key; with times
+    (the register of the substeps it multiplies by), hos_frame_whole_times's whole substeps, and the register 1"""
     lines = old.split("\n")
     for i, line in enumerate(lines):
         if "recomp_fp_to_int(c->vreg[0][0]" in line:
             reg = line.split("=", 1)[0]
-            lines[i] = "%s=hos_frame_whole(%s, (uint32_t)c->vreg[0][0]);   %s" % (reg, key, WHOLE_MARK)
+            if times:
+                lines[i] = "%s=hos_frame_whole_times(%s, (uint32_t)c->vreg[0][0], (uint32_t)%s); %s=1;   %s" % (
+                    reg, key, times.strip(), times.strip(), WHOLE_MARK)
+            else:
+                lines[i] = "%s=hos_frame_whole(%s, (uint32_t)c->vreg[0][0]);   %s" % (reg, key, WHOLE_MARK)
     return "\n".join(lines)
 
 
 def patch_whole_frames(s):
     """The counters of WHOLE_SITES take hos_frame_whole's whole frames: (s, the sites patched here). A file without the function,
-    one patched before, or one whose code differs (another game version) is left as it is."""
+    one patched before, or one whose code differs (another game version) is left as it is. A site of WHOLE_TIMES that an earlier
+    build patched with the whole frames alone (a work folder keeps its lift) takes the substeps now."""
     done = 0
-    for head_text, olds, key in WHOLE_SITES:
+    times_done = 0
+    for head_text, old, key in WHOLE_SITES:
         head = s.find(head_text)
         if head < 0:
             continue
         end = s.find("\n}\n", head)
         body = s[head:end if end >= 0 else len(s)]
-        if WHOLE_MARK in body:   # (patched before)
+        times = WHOLE_TIMES.get(head_text)
+        new = whole_new(old, key, times)
+        if new in body:
             continue
-        old = next((o for o in olds if body.count(o) == 1), None)
-        if old is None:
+        earlier = whole_new(old, key) if times else None
+        if body.count(old) == 1:
+            replaced = old
+        elif earlier and body.count(earlier) == 1:
+            replaced = earlier
+        else:
             continue
-        new = whole_new(old, key)
-        at = head + body.index(old)
-        s = s[:at] + new + s[at + len(old):]
+        at = head + body.index(replaced)
+        s = s[:at] + new + s[at + len(replaced):]
         done += 1
+        times_done += bool(times)
     if done and WHOLE_DECL not in s:
         s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + WHOLE_DECL, 1)
+    if times_done and WHOLE_TIMES_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + WHOLE_TIMES_DECL, 1)
+    return s, done
+
+
+# Above a Frame rate cap of 60, three places that need whole 60 fps frames (host/oot_high_fps.h has why and the logic; at a cap of
+# 60 the host hands back what the game computed):
+# - the sound manager's job, f_80435300 (phase in w2; phase 0 loads the game step, [[slot]]+0x10, and hands it to the sound
+#   engine): its head asks hos_oot_sound_gate whether to run now (60 Hz above 60 fps, the other phases following phase 0), and
+#   the step it loads goes through hos_oot_sound_step (a whole one while the gate holds the job). After zortos293/Lichii PR #1289
+#   (auz466), which does the same as a code patch for the emulator.
+# - the music manager's update, f_83373400 (game::Bgm, run by that job, so at 60 Hz too): its own loads of the time object's step
+#   (+16) and seconds (+24) go through hos_oot_sound_step and hos_oot_sound_seconds, so while the gate holds the job it counts a
+#   whole step, not the frame's part of one (handed the part, its clock ran at 60 / fps of the real one). Its head takes the
+#   change flags the gate held back (hos_oot_bgm_begin) and its four reads of the battle manager's change flags ([x26]+2200)
+#   get them with the byte (hos_oot_bgm_flags): flags set for one frame the gate held are not lost (the battle music after a fight).
+# - the physics solver's step count, set each update from the frame step in f_838ceb80 and f_838cfc10 (the same code in both):
+#   hos_oot_solver_steps rounds it up instead of down, at least 1, so Link stays on moving platforms (issue 1798).
+SOUND_HEAD = "void f_80435300(Ctx *__restrict A64_NOESC c) {\n"
+SOUND_SLOT = "g_module_base + 0x80435000ULL + (int64_t)75927552"   # (the page of the step's pointer, whose +2192 holds it)
+SOUND_OLD = ("    c->x[8]=" + SOUND_SLOT + ";\n"
+             "    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[19] = _r; }\n"
+             "    c->x[8]=recomp_load64(c,c->x[8] + 2192);\n"
+             "    c->x[8]=recomp_load64(c,c->x[8] + 0);\n"
+             "    { { uint64_t _v=recomp_load32(c,(c->x[8]+16ULL)); a64_vset64(c->vreg[0],_v); } }\n")
+SOUND_NEW = SOUND_OLD.replace("uint64_t _v=recomp_load32(c,(c->x[8]+16ULL));",
+                              "uint64_t _v=hos_oot_sound_step((uint32_t)recomp_load32(c,(c->x[8]+16ULL)));")
+SOUND_GATE = ("    if (!hos_oot_sound_gate(c, (uint32_t)c->x[2], " + SOUND_SLOT + " + 2192)) return;"
+              "   /* (nx2/oot_patches.py: the sound job at 60 Hz above 60 fps) */\n")
+SOUND_DECL = "extern int hos_oot_sound_gate(Ctx *c, uint32_t phase, uint64_t slot);\nextern uint32_t hos_oot_sound_step(uint32_t step_bits);\n"
+BGM_HEAD = "void f_83373400(Ctx *__restrict A64_NOESC c) {\n"
+BGM_OLD = ("    { { uint64_t _v=recomp_load32(c,(c->x[8]+16ULL)); a64_vset64(c->vreg[8],_v); } }\n"
+           "    { { uint64_t _v=recomp_load32(c,(c->x[8]+24ULL)); a64_vset64(c->vreg[9],_v); } }\n")
+BGM_NEW = ("    { { uint64_t _v=hos_oot_sound_step((uint32_t)recomp_load32(c,(c->x[8]+16ULL))); a64_vset64(c->vreg[8],_v); } }"
+           "   /* (nx2/oot_patches.py: the music manager's whole step above 60 fps) */\n"
+           "    { { uint64_t _v=hos_oot_sound_seconds((uint32_t)recomp_load32(c,(c->x[8]+24ULL)), "
+           "(uint32_t)recomp_load32(c,(c->x[8]+16ULL))); a64_vset64(c->vreg[9],_v); } }\n")
+BGM_DECL = "extern uint32_t hos_oot_sound_step(uint32_t step_bits);\nextern uint32_t hos_oot_sound_seconds(uint32_t seconds_bits, uint32_t step_bits);\n"
+BGM_FLAGS_OLD = "    c->x[8]=recomp_load8(c,c->x[26] + 2200);\n"   # (the update's four reads of the change flags)
+BGM_FLAGS_NEW = ("    c->x[8]=hos_oot_bgm_flags(c->x[26] + 2200, recomp_load8(c,c->x[26] + 2200));"
+                 "   /* (nx2/oot_patches.py: with the flags of frames the gate held) */\n")
+BGM_FLAGS_HEAD = "    hos_oot_bgm_begin();   /* (nx2/oot_patches.py: the change flags held back since the last run) */\n"
+BGM_FLAGS_DECL = "extern void hos_oot_bgm_begin(void);\nextern uint64_t hos_oot_bgm_flags(uint64_t at, uint64_t flags);\n"
+SOLVER_HEADS = ("void f_838ceb80(Ctx *__restrict A64_NOESC c) {\n", "void f_838cfc10(Ctx *__restrict A64_NOESC c) {\n")
+# (the cut of frame step * steps a frame + 0.001, then its store into the solver: vreg 0 the float cut, vreg 1 the steps a frame)
+SOLVER_OLD = ("    c->x[1]=recomp_fp_to_int(c->vreg[0][0]&UINT64_C(0xffffffff),32,32,1,3,c->fpcr,&c->fpsr);\n"
+              "    recomp_store32(c,c->x[0] + 712,c->x[1]);\n")
+SOLVER_NEW = SOLVER_OLD.replace(
+    "    recomp_store32(", "    c->x[1]=hos_oot_solver_steps((uint32_t)c->x[1], (uint32_t)c->vreg[0][0], (uint32_t)c->vreg[1][0]);"
+    "   /* (nx2/oot_patches.py: solver steps rounded up above 60 fps) */\n    recomp_store32(", 1)
+SOLVER_DECL = "extern uint32_t hos_oot_solver_steps(uint32_t game, uint32_t scaled_bits, uint32_t per_frame_bits);\n"
+# A horse's jump state machine, f_82c59eb0 (s10 its step): while the horse gets ready to jump it sets the blend frames into its
+# JumpReady animation each frame, and with a step under 1 (slow motion at 60 fps) it takes them from last frame's plus the step.
+# Above 60 fps every step is under 1, the blend frames grew each frame, and Epona galloped through fences while her body went
+# over them. Before the branch on its "step < 1" test (fcmp s10, 1.0; b.pl past the slow-motion branch), hos_oot_horse_whole_step
+# sends a step that is the whole frame's (the time object's step, [[slot]]+0x10) past it too (host/oot_high_fps.h).
+HORSE_HEAD = "void f_82c59eb0(Ctx *__restrict A64_NOESC c) {\n"
+HORSE_TEST = "    a64_vset64(c->vreg[9],0x3f800000ULL);\n    { if (!a64_fcmp32(c,c->vreg[10],c->vreg[9])) "   # (its line goes on)
+HORSE_BRANCH = "if (!c->n) { goto L_82c5ae48; }\n"
+HORSE_SKIP = ("    if (hos_oot_horse_whole_step((uint32_t)c->vreg[10][0], " + SOUND_SLOT + " + 2192)) { goto L_82c5ae48; }"
+              "   /* (nx2/oot_patches.py: a horse's jump blend above 60 fps) */\n")
+HORSE_DECL = "extern int hos_oot_horse_whole_step(uint32_t step_bits, uint64_t slot);\n"
+# The resource lookup by handle, f_80cb38d0 (Rekarina's resguard set, GPL-3.0, read for what the game does): a type-0 handle's
+# id indexes the resource manager's table ([[main+0x4e22540]+0x120], its count at +0x840, its entries at +0x848). A negative
+# id, one past the table, or an empty entry went on to L_80cb3940, which reads the entry's +0x150 with a null entry: the guest
+# address 0x150. On PC an entry was sometimes still empty when a scene looked it up (walking or turning the camera in the
+# forest, at any frame rate, rarely). The three take the function's own path for an invalid handle (L_80cb3a18): the output
+# gets null, which its callers test
+RES_HEAD = "void f_80cb38d0(Ctx *__restrict A64_NOESC c) {\n"
+RES_GUARD = "   /* (nx2/oot_patches.py: an invalid resource handle takes the null path) */"
+# (the three as the lift writes them: with the function's registers as locals (nx2/guest_locals.py), or in the context)
+RES_FORMS = (("if (((x8_ >> 31) & 1)) { goto L_80cb3940; }",            # (a negative id)
+              "if (!((fn_ == fv_) && !fz_)) { goto L_80cb3940; }",     # (one past the table)
+              "if (x19_ == 0) { goto L_80cb3940; }"),                    # (an empty entry)
+             ("if (((c->x[8] >> 31) & 1)) { goto L_80cb3940; }",
+              "if (!((c->n == c->v) && !c->z)) { goto L_80cb3940; }",
+              "if (c->x[19] == 0) { goto L_80cb3940; }"))
+RES_SITES = RES_FORMS[0]
+# Three characters' update modules (f_80159dc0, f_8015d490, f_838baa40) carry a character that stands on a moving floor by the
+# floor's velocity, but first test the physics time object's 1/dt (its +40) against 100, and above it (a frame under 10 ms: at
+# 60 fps, time slowed below 0.6) carry it by a tenth of it. Above 100 fps every frame is under 10 ms, so Link and the enemies
+# slid to the back of the Shadow Temple's barge. Each module's branch to the tenth (its own label) asks
+# hos_oot_floor_carry_slow too: above a 60 fps cap, on a frame under a 60 fps one, it is 1/dt times the frame's step (the time
+# object's, [[slot]]+0x10) over 100, the game's test as it would be at 60 fps (host/oot_high_fps.h).
+FLOOR_SITES = (("void f_80159dc0(Ctx *__restrict A64_NOESC c) {\n", "L_8015a39c"),
+               ("void f_8015d490(Ctx *__restrict A64_NOESC c) {\n", "L_8015dad4"),
+               ("void f_838baa40(Ctx *__restrict A64_NOESC c) {\n", "L_838baf24"))
+FLOOR_TEST = ("    { { uint64_t _v=recomp_load32(c,(c->x[8]+40ULL)); a64_vset64(c->vreg[0],_v); } }\n"
+              "    c->x[8] = 0x42c80000ULL;\n"
+              "    c->x[8] &= 0xFFFFFFFFULL;\n"
+              "    { a64_vset64(c->vreg[1],0); memcpy(&c->vreg[1][0],&c->x[8],4); }\n")
+FLOOR_FCMP = "    { if (!a64_fcmp32(c,c->vreg[0],c->vreg[1])) "   # (its line goes on, then the branch)
+FLOOR_BRANCH = "if ((c->n == c->v) && !c->z) { goto %s; }\n"
+FLOOR_NEW = ("if ((c->n == c->v) && !c->z && hos_oot_floor_carry_slow((uint32_t)c->vreg[0][0], " + SOUND_SLOT + " + 2192)) "
+             "{ goto %s; }   /* (nx2/oot_patches.py: a moving floor's carry above 60 fps) */\n")
+FLOOR_DECL = "extern int hos_oot_floor_carry_slow(uint32_t inv_dt_bits, uint64_t slot);\n"
+# A rigid body's update before the physics step, f_804f5030, on its path for a body driven to a target (x20 the controller, x23
+# the body): the game sets the target (+0x3c) to the body's position plus this frame's move and asks for (target - position) /
+# dt. Above 60 fps Havok's solve delivers only part of it (0.86 at 120 fps), the next target starts from where the body ended
+# up, and Link's pull-up onto a ledge fell short: he slid back on the lip (issue 1494). Before the target is read,
+# hos_oot_drive_target adds last update's shortfall to Link's (host/oot_high_fps.h). The path is in the function twice.
+DRIVE_HEAD = "void f_804f5030(Ctx *__restrict A64_NOESC c) {\n"
+# (two copies of that path, the body loaded into x23 or x24: the same type test, reached from different places)
+DRIVE_REGS = (23, 24)
+DRIVE_READ = ("    c->x[%d]=recomp_load64(c,c->x[20] + 240);\n"
+              "    { uint64_t _b=c->x[20]; int64_t _o=60; { uint64_t _p0,_p1; recomp_ldp32(c,(_b+_o),&_p0,&_p1); "
+              "a64_vset64(c->vreg[2],_p0); a64_vset64(c->vreg[1],_p1); }}\n"
+              "    { { uint64_t _v=recomp_load32(c,(c->x[20]+68ULL)); a64_vset64(c->vreg[0],_v); } }\n")
+DRIVE_CALL = ("    hos_oot_drive_target(c->x[20], c->x[%d], " + SOUND_SLOT + " + 2192);"
+              "   /* (nx2/oot_patches.py: Link's driven body follows its target above 60 fps) */\n")
+DRIVE_DECL = "extern void hos_oot_drive_target(uint64_t controller, uint64_t body, uint64_t slot);\n"
+# A jump's takeoff speed (f_80b97d10: sqrt(2 g h) - g dt / 2 along the character's up, written to the vector its caller gave in x2,
+# kept in x19): on a backflip Link's body gets it for one physics update, so above 60 fps his hop was lower (one shorter step of
+# it) and a backflip down a slope took off twice. After its last store, hos_oot_jump_speed(the vector) keeps the speed for the
+# takeoff's velocity (TAKEOFF_VELOCITY_* below; host/oot_high_fps.h oot_takeoff_rest_speed). x19 is c->x[19] where the lift
+# keeps the function as the edits expect, x19_ in a lift with register locals.
+TAKEOFF_HEAD = "void f_80b97d10(Ctx *__restrict A64_NOESC c) {\n"
+TAKEOFF_STORE = "    {{ {{ uint64_t _v=0; memcpy(&_v,&c->vreg[2][0],4); recomp_store32(c,({x}+8ULL),_v); }} }}\n"
+TAKEOFF_X19 = ("c->x[19]", "x19_")
+TAKEOFF_CALL = "    hos_oot_jump_speed({x});   /* (nx2/oot_patches.py: a jump's takeoff above 60 fps) */\n"
+TAKEOFF_DECL = "extern void hos_oot_jump_speed(uint64_t vec);\n"
+# The takeoff's velocity: f_804f5030 hands Havok a body's velocity with the world's set-velocity call (its vtable +0x190, at
+# 0x804f6694: x1 the body's id, x2 the linear velocity it reads, x19 the body's object), Link's takeoff speed on the takeoff's
+# update. hos_oot_takeoff_velocity(the object, the velocity, the game's time object's slot) before the call gives a body the rest
+# of a 60 fps takeoff step's rise on the next update when the game asks no vertical speed there (a backflip), above a 60 cap.
+# f_804f5030 is kept as the edits expect (DRIVE_HEAD), so the call is written one way.
+TAKEOFF_VELOCITY_SITE = "{ uint64_t _t = c->x[8]; c->x[30] = 0x804f6698ULL; A64_ICALL(c, _t); }\n"
+TAKEOFF_VELOCITY_CALL = ("    hos_oot_takeoff_velocity(c->x[19], c->x[2], " + SOUND_SLOT + " + 2192);"
+                         "   /* (nx2/oot_patches.py: a jump's takeoff above 60 fps) */\n")
+TAKEOFF_VELOCITY_DECL = "extern void hos_oot_takeoff_velocity(uint64_t object, uint64_t velocity, uint64_t slot);\n"
+
+# Below 60 fps, Havok cloth (Link's cap, romfs Phive/Cloth): the simulate operator's per-frame setup, f_81b3aa48, loads its step
+# context's time (x22 + 8) and stores it with a substep's (+44, +48 of its frame data). The time is a 60th whatever the frame, so the
+# cloth runs slow (0.3 of the clock at 18 fps: Link's cap swings out and settles slowly). hos_oot_cloth_seconds multiplies it by the
+# game's frame step while that is over 1: the float f_83b6ea90 writes at 0x84d61fc8 (host/oot_high_fps.h).
+CLOTH_HEAD = "void f_81b3aa48(Ctx *__restrict A64_NOESC c) {\n"
+CLOTH_OLD = "    { { uint64_t _v=recomp_load64(c,(c->x[22]+8ULL)); a64_vset64(c->vreg[0],_v); } }\n"
+CLOTH_NEW = ("    { { uint64_t _v=recomp_load64(c,(c->x[22]+8ULL)); _v=(_v&0xffffffff00000000ULL)|hos_oot_cloth_seconds((uint32_t)_v, "
+             "(uint32_t)recomp_load32(c,g_module_base + 0x84d61fc8ULL)); a64_vset64(c->vreg[0],_v); } }"
+             "   /* (nx2/oot_patches.py: the cloth's time below 60 fps) */\n")
+CLOTH_DECL = "extern uint32_t hos_oot_cloth_seconds(uint32_t seconds_bits, uint32_t step_bits);\n"
+
+# Above 60 fps (HOS_FPS_CLOTH_60=1), the cloth's solve job, f_81b47080 (run by the job runner f_8016b620, once a frame for each
+# cloth near the camera), at most 60 times a second: hos_oot_cloth_solve says, from the game clock, whether this frame solves;
+# a held frame returns at once with the job's own result (0), before its first line saves anything (host/oot_high_fps.h).
+CLOTH_SOLVE_HEAD = "void f_81b47080(Ctx *__restrict A64_NOESC c) {\n"
+CLOTH_SOLVE_OLD = ("    { uint64_t _b=c->x[31]; int64_t _o=-128; { uint64_t _v=0; memcpy(&_v,&c->vreg[10][0],8); "
+                   "recomp_store64(c,(_b+_o),_v); } c->x[31]=_b+_o; }\n")
+CLOTH_SOLVE_NEW = ("    if (!hos_oot_cloth_solve((uint32_t)recomp_load32(c,g_module_base + 0x84d61fc8ULL))) { c->x[0] = 0; return; }"
+                   "   /* (nx2/oot_patches.py: the cloth's solves above 60 fps) */\n")
+CLOTH_SOLVE_DECL = "extern int hos_oot_cloth_solve(uint32_t step_bits);\n"
+
+
+def _function(s, head_text):
+    """(start, end) of the function whose head is head_text, or None"""
+    head = s.find(head_text)
+    if head < 0:
+        return None
+    end = s.find("\nvoid f_", head + len(head_text))
+    return head, end if end >= 0 else len(s)
+
+
+def patch_sound_job(s):
+    """The sound job's gate and step: (s, 1) when the job is in s with them (made now or before), (s, 0) when it is not here or
+    its code differs (another game version: left as it is)"""
+    at = _function(s, SOUND_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(SOUND_NEW) == 1 and body.count(SOUND_GATE) == 1:
+        return s, 1
+    if body.count(SOUND_OLD) != 1 or SOUND_GATE in body:
+        return s, 0
+    body = body.replace(SOUND_OLD, SOUND_NEW, 1)
+    body = SOUND_HEAD + SOUND_GATE + body[len(SOUND_HEAD):]
+    s = s[:head] + body + s[end:]
+    if SOUND_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SOUND_DECL, 1)
+    return s, 1
+
+
+def patch_bgm_time(s):
+    """The music manager's step and seconds through the host: (s, 1) when its update is in s with them (made now or before),
+    (s, 0) when it is not here or its code differs (another game version: left as it is)"""
+    at = _function(s, BGM_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(BGM_NEW) == 1:
+        return s, 1
+    if body.count(BGM_OLD) != 1:
+        return s, 0
+    s = s[:head] + body.replace(BGM_OLD, BGM_NEW, 1) + s[end:]
+    if BGM_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + BGM_DECL, 1)
+    return s, 1
+
+
+# The texture data heap's compaction, asked for once in a while (host/oot_tex_compact.h has why). f_80797240 is the texture data
+# manager's per-frame step: with no round asked for (+776) and its flag bit 1 set (+960, set once at its setup) it asks for one
+# (+776 = 1), and with one asked for it sends the Compaction thread its message. The second test also asks the host.
+TEXC_HEAD = "void f_80797240(Ctx *__restrict A64_NOESC c) {\n"
+TEXC_OLD = ("    c->x[8]=recomp_load8(c,c->x[19] + 960);\n"
+            "if (!((c->x[8] >> 1) & 1)) { goto L_80797288; }\n")
+TEXC_NEW = ("    c->x[8]=recomp_load8(c,c->x[19] + 960);\n"
+            "if (!((c->x[8] >> 1) & 1) || !hos_oot_tex_compact_due()) { goto L_80797288; }"
+            "   /* (nx2/oot_patches.py: the texture heap's compaction once in a while) */\n")
+TEXC_DECL = "extern int hos_oot_tex_compact_due(void);\n"
+
+
+def patch_tex_compact(s):
+    """The texture data manager's request for a compaction round through the host: (s, 1) when its step is in s with it (made
+    now or before), (s, 0) when it is not here or its code differs (another game version: left as it is)"""
+    at = _function(s, TEXC_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(TEXC_NEW) == 1:
+        return s, 1
+    if body.count(TEXC_OLD) != 1:
+        return s, 0
+    s = s[:head] + body.replace(TEXC_OLD, TEXC_NEW, 1) + s[end:]
+    if TEXC_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TEXC_DECL, 1)
+    return s, 1
+
+
+# The neighbouring map the OptimizeChangeBank thread preloads, kept while the game's choice only flickers (host/oot_ocb_hold.h
+# has why). f_832b9880 is the preload manager's update: at 0x832b9dc8 the unit it chose is in w21 (bit 31: none) and the
+# manager in x19; from there it asks for that unit and lets the others go. The choice goes through the host first. The
+# supported build's lift only (patch_file): the host reads the manager as that build lays it out, and checks the layout
+# (and the build) again in the game before each read; a mismatch there gives the game's own choice.
+OCBH_HEAD = "void f_832b9880(Ctx *__restrict A64_NOESC c) {\n"
+OCBH_LABEL = "L_832b9dc8:;\n"
+OCBH_RE = re.compile(r"L_832b9dc8:;\nif \(\(\((x21_|c->x\[21\]) >> 31\) & 1\)\) \{ goto L_832b9e0c; \}\n")
+OCBH_MARK = "/* (nx2/oot_patches.py: HOS_OCB_HOLD_MS, the preloaded neighbour kept while the choice flickers) */"
+OCBH_DECL = "extern uint64_t hos_oot_ocb_pick(Ctx *c, uint64_t mgr, uint64_t chosen);\n"
+
+
+def patch_ocb_hold(s):
+    """The preload manager's choice of a neighbouring map through the host: (s, 1) when its update is in s with it (made now
+    or before), (s, 0) when it is not here or its code differs (another game version: left as it is)"""
+    at = _function(s, OCBH_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(OCBH_MARK) == 1:
+        return s, 1
+    found = OCBH_RE.findall(body)
+    if len(found) != 1 or OCBH_MARK in body:
+        return s, 0
+    w21 = found[0]
+    x19 = "c->x[19]"
+    if w21 == "x21_":
+        # (the registers as locals: the manager is x19's local, which the function keeps up to date and c->x[19] need not be.
+        # A function without that local on its first line is not the code this patch knows: left as it is, and the report's
+        # warning says so)
+        if not re.search(r"\bx19_ = c->x\[19\]", body[:body.find("\n", len(OCBH_HEAD)) + 1]):
+            return s, 0
+        x19 = "x19_"
+    call = "    %s = hos_oot_ocb_pick(c, %s, %s);   %s\n" % (w21, x19, w21, OCBH_MARK)
+    body = OCBH_RE.sub(lambda m: OCBH_LABEL + call + m.group(0)[len(OCBH_LABEL):], body, count=1)
+    s = s[:head] + body + s[end:]
+    if OCBH_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + OCBH_DECL, 1)
+    return s, 1
+
+
+def patch_bgm_flags(s):
+    """The music manager's change flags with the ones the gate held back: (s, 1) when its update is in s with them (made now
+    or before), (s, 0) when it is not here or its code differs (another game version: left as it is)"""
+    at = _function(s, BGM_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(BGM_FLAGS_NEW) == 4 and body.count(BGM_FLAGS_HEAD) == 1:
+        return s, 1
+    if body.count(BGM_FLAGS_OLD) != 4 or BGM_FLAGS_HEAD in body:
+        return s, 0
+    body = BGM_HEAD + BGM_FLAGS_HEAD + body[len(BGM_HEAD):].replace(BGM_FLAGS_OLD, BGM_FLAGS_NEW)
+    s = s[:head] + body + s[end:]
+    if BGM_FLAGS_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + BGM_FLAGS_DECL, 1)
+    return s, 1
+
+
+# The game's job barriers waiting for their masks instead of sleeping 20 us (host/oot_barrier.h has the protocol and why;
+# HOS_OOT_BARRIER_WAIT, on by default). Three parallel-for jobs are run by several threads over one job block P: every pass
+# over the job's items takes an item by an atomic OR into a claim mask in P and, the item done, ORs it into a done mask; a
+# thread with nothing to take sleeps (SleepThread of the tick frequency / 50000: 20 us) and goes back to its loop, until the
+# masks it polls are full. With the switch on the sleep is hos_oot_barrier_wait(P, the polled words' offsets, the values
+# the loop's pass saw, the full mask), and each OR into a polled word is followed by hos_oot_barrier_wake(P) (P: the OR's
+# own address less the word's offset); off (=0), the sleep runs as lifted and the wakes do nothing. What was matched, read
+# from the lift of the supported build with every path followed back from each sleep:
+#   f_800998a0 (P in x24 at each sleep, reloaded from its frame slot x29-96 only; the full mask stored at x29-100 once):
+#     - sleep LR 0x8009a478, back to the outer loop's head 0x80099a00: polls the claim masks P+0x1f4 (after the yield at
+#       0x8009a420) and P+0x1fc (at 0x8009a6f0) against x22, both read after the passes: the hook reads them at the call;
+#     - sleep LR 0x8009b234, back to 0x8009a768: polls P+0x200 through its value at that loop's head (x25, or its copy at
+#       sp+104 put back after the pass), against x22;
+#     - sleep LR 0x8009aff0, back to 0x8009aa1c: polls P+0x208 through its value at that loop's head (x19, or its copy at
+#       sp+72), against the full mask read again from x29-100;
+#     - the ORs into P+0x1f4, P+0x1fc, P+0x200 (the pass that ends at the yield at 0x8009a420) and P+0x208 (the pass that
+#       ends at 0x8009aa00): the only writes of those words in the function.
+#   f_800738e0 (P in x19, the entry's x0: no other write of x19 reaches the sleep): sleep LR 0x800747ac, back to
+#     0x80073e38, polls P+0x210 and P+0x218 through their values at that loop's head (x25, x28) against the full mask at
+#     sp+16 (stored once); the ORs into them are in the two passes before the loop.
+#   f_8007e200 (P in x26, put back from x23 after each item): sleep LR 0x8007e90c, back to 0x8007e6c0, polls P+0x220
+#     through its value at that loop's head (x21) against ~x28 (x28: the inverted full mask, stored at sp+68 at entry); the
+#     OR into it is in the pass before the loop, which can reach the sleep without a yield: so the wakes are at the ORs.
+# A function is hooked only where every one of its places and marks is there once (another game version: left as it is,
+# and the report warns), and then at all its places: a sleep never waits for a wake that is not there. The three keep their
+# registers in the context (their addresses are named here: mentioned_addresses), so the text met is the lift's own.
+def _barrier_or(base, off, addr, value, between=""):
+    """(the lifted OR into P+off, its address made from register base into register addr; the same with the wake after it)"""
+    head = "    { uint64_t _a=c->x[%d], _b=%dULL; uint64_t _r=_a+_b; c->x[%d]=_r; }\n%s" % (base, off, addr, between)
+    rmw = ("{ uint64_t _a = c->x[%d]; uint32_t *_p = (uint32_t *)A64_PTR(_a); uint32_t _o = __atomic_fetch_or(_p, (uint32_t)c->x[%d], "
+           "__ATOMIC_SEQ_CST); A64_MARK(_a, 4); c->x[8] = (uint64_t)_o;" % (addr, value))
+    return (head + rmw + " }\n",
+            head + rmw + " if (hos_oot_barrier_on()) hos_oot_barrier_wake(_a - %dULL); }   /* (nx2/oot_patches.py: "
+                         "HOS_OOT_BARRIER_WAIT) */\n" % off)
+
+
+def _barrier_sleep(lr, then, wait):
+    """(the sleep at its return address and the lines after it; the same with the wait in front of it)"""
+    return ("c->x[30] = 0x%xULL; f_85106220(c);\n%s" % (lr, then),
+            "c->x[30] = 0x%xULL; if (!hos_oot_barrier_on() || !hos_oot_barrier_wait(%s)) f_85106220(c);"
+            "   /* (nx2/oot_patches.py: HOS_OOT_BARRIER_WAIT) */\n%s" % (lr, wait, then))
+
+
+BARRIER_SITES = (   # (the function's head, the marks its code must have, its places: (lifted text, the text in its place))
+    ("void f_800998a0(Ctx *__restrict A64_NOESC c) {\n",
+     ("    c->x[8]=recomp_load32(c,c->x[24] + 500);\n    recomp_barrier();\n"
+      "    { uint64_t _b=c->x[29]; int64_t _o=-100; c->x[22]=recomp_load32(c,(_b+_o)); }\n",
+      "L_8009a6f0:;\n    c->x[8]=recomp_load32(c,c->x[24] + 508);\n",
+      "L_8009a768:;\n    c->x[25]=recomp_load32(c,c->x[24] + 512);\n", "recomp_store32_sp(c,c->x[31] + 104,c->x[25]);",
+      "c->x[25]=recomp_load32(c,c->x[31] + 104);",
+      "L_8009aa1c:;\n    c->x[19]=recomp_load32(c,c->x[24] + 520);\n", "recomp_store32_sp(c,c->x[31] + 72,c->x[19]);",
+      "c->x[19]=recomp_load32(c,c->x[31] + 72);",
+      "c->x[30] = 0x8009afa4ULL; f_85106210(c);\n    { uint64_t _b=c->x[29]; int64_t _o=-100; c->x[8]=recomp_load32(c,(_b+_o)); }\n"),
+     (_barrier_sleep(0x8009a478, "{ A64_POLL(c); goto L_80099a00; }\n",
+                     "c->x[24], 500, (uint32_t)recomp_load32(c,c->x[24] + 500), 508, (uint32_t)recomp_load32(c,c->x[24] + 508), "
+                     "(uint32_t)c->x[22]"),
+      _barrier_sleep(0x8009b234, "    c->x[11] = 0x1ULL;\n    c->x[11] &= 0xFFFFFFFFULL;\n{ A64_POLL(c); goto L_8009a768; }\n",
+                     "c->x[24], 512, (uint32_t)c->x[25], 512, (uint32_t)c->x[25], (uint32_t)c->x[22]"),
+      _barrier_sleep(0x8009aff0, "{ A64_POLL(c); goto L_8009aa1c; }\n",
+                     "c->x[24], 520, (uint32_t)c->x[19], 520, (uint32_t)c->x[19], (uint32_t)recomp_load32(c,c->x[29] - 100)"),
+      _barrier_or(24, 500, 8, 23), _barrier_or(24, 508, 8, 23), _barrier_or(24, 512, 8, 23),
+      _barrier_or(24, 520, 8, 9, "    c->x[11] = 0x1ULL;\n    c->x[11] &= 0xFFFFFFFFULL;\n    c->x[9]=recomp_load32(c,c->x[31] + 112);\n"))),
+    ("void f_800738e0(Ctx *__restrict A64_NOESC c) {\n",
+     ("    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[19] = _r; }\n",
+      "L_80073e38:;\n    c->x[25]=recomp_load32(c,c->x[19] + 528);\n    recomp_barrier();\n    c->x[28]=recomp_load32(c,c->x[19] + 536);\n",
+      "recomp_store32_sp(c,c->x[31] + 16,c->x[8]);", "c->x[9]=recomp_load32(c,c->x[31] + 16);"),
+     (_barrier_sleep(0x800747ac, "{ A64_POLL(c); goto L_80073e38; }\n",
+                     "c->x[19], 528, (uint32_t)c->x[25], 536, (uint32_t)c->x[28], (uint32_t)recomp_load32(c,c->x[31] + 16)"),
+      _barrier_or(19, 528, 27, 26, "c->x[30] = 0x80073958ULL; f_80279140(c);\n    recomp_barrier();\n"),
+      _barrier_or(19, 536, 8, 9, "    { c->x[9]=(uint64_t)(uint32_t)((uint32_t)c->x[3]<<(c->x[21]&31)); }\n    recomp_barrier();\n"))),
+    ("void f_8007e200(Ctx *__restrict A64_NOESC c) {\n",
+     ("recomp_store32_sp(c,c->x[31] + 68,c->x[9]);",
+      "L_8007e6c0:;\n    c->x[21]=recomp_load32(c,c->x[26] + 544);\n",
+      "    c->x[28]=recomp_load32(c,c->x[31] + 68);\n",
+      "{ uint64_t _r = (c->x[21] ^ ((uint64_t)(uint32_t)(((uint32_t)(c->x[28])) << 0))); _r &= 0xFFFFFFFFULL; c->x[8] = _r; }"),
+     (_barrier_sleep(0x8007e90c, "{ A64_POLL(c); goto L_8007e6c0; }\n",
+                     "c->x[26], 544, (uint32_t)c->x[21], 544, (uint32_t)c->x[21], ~(uint32_t)c->x[28]"),
+      _barrier_or(26, 544, 8, 9, "    { c->x[9]=(uint64_t)(uint32_t)((uint32_t)c->x[23]<<(c->x[21]&31)); }\n    recomp_barrier();\n"))),
+)
+BARRIER_DECL = ("extern int hos_oot_barrier_on(void);\n"
+                "extern int hos_oot_barrier_wait(uint64_t p, uint32_t off1, uint32_t seen1, uint32_t off2, uint32_t seen2, "
+                "uint32_t full);\n"
+                "extern void hos_oot_barrier_wake(uint64_t p);\n")
+# (the texts above are the lift's own, as the patches meet them: before a64_lift.mark_groups, the lift's last step, and with
+# the loops' polls in. Two other forms of a text are let through, each kept as it was found:
+#   - a group's shared page mark (a64_lift.MG_MARK) on a line of its own after any line end inside it. mark_groups puts one
+#     before a line that ends a run of stores, as the atomic OR, a call or recomp_barrier() do, so a run of the patches by
+#     hand over a finished lift (python -I nx2/oot_patches.py) can find one there;
+#   - a loop's back-edge `goto L_x;` without its `{ A64_POLL(c); ... }`: nx2/poll.py adds the polls around the function's
+#     emit, after nx2/guest_locals.py has asked touches() about its text)
+_BARRIER_MARKS = r"((?:    A64_MARK\(\(c->x\[\d+\] \+ \(uint64_t\)\(int64_t\)\(-?\d+\)\), \d+\);\n)*)"
+_BARRIER_POLLED = re.compile(r"\{ A64_POLL\(c\); (goto L_[0-9a-f]{8};) \}")
+
+
+class _BarrierText:
+    """A text of BARRIER_SITES as a pattern: its fixed pieces with a slot between two of them after each line end inside it
+    (group marks) and at each polled back-edge (the goto with or without its poll)"""
+
+    def __init__(self, text):
+        self.pieces, self.slots = [""], []
+        parts = _BARRIER_POLLED.split(text)   # (each polled goto at an odd index)
+        for k, part in enumerate(parts):
+            if k % 2:
+                goto = re.escape(part)
+                self.slots.append(r"(\{ A64_POLL\(c\); %s \}|%s)" % (goto, goto))
+                self.pieces.append("")
+                continue
+            lines = part.split("\n")
+            for i, line in enumerate(lines):
+                if i:
+                    self.pieces[-1] += "\n"
+                    if line or i < len(lines) - 1 or k < len(parts) - 1:   # (none after the text's own last line end)
+                        self.slots.append(_BARRIER_MARKS)
+                        self.pieces.append("")
+                self.pieces[-1] += line
+        self.re = re.compile("".join(re.escape(p) + s for p, s in zip(self.pieces, self.slots + [""])))
+
+    def count(self, body):
+        return sum(1 for _ in self.re.finditer(body))
+
+    def put(self, body, old):
+        """body with the first place old finds made this text, what old's slots found kept in this text's slots (body as it
+        is where old finds none, as str.replace)"""
+        m = old.re.search(body)
+        if m is None:
+            return body
+        return body[:m.start()] + "".join(p + f for p, f in zip(self.pieces, m.groups() + ("",))) + body[m.end():]
+
+
+def _barrier_forms():
+    forms = []
+    for head_text, marks, places in BARRIER_SITES:
+        made = [(_BarrierText(old), _BarrierText(new)) for old, new in places]
+        if any(old.slots != new.slots for old, new in made):   # (a place and its text in its place, slot for slot)
+            raise ValueError("oot_patches: a barrier place and its hooked text differ in their lines or loops")
+        forms.append((head_text, [_BarrierText(m) for m in marks], made))
+    return tuple(forms)
+
+
+BARRIER_FORMS = _barrier_forms()
+
+
+def patch_barrier_wait(s):
+    """The job barriers' sleeps and ORs through the host: (s, how many of BARRIER_SITES' functions are in s with all their
+    places hooked, made now or before). A function whose code differs (another game version) is left as it is"""
+    done = 0
+    for head_text, marks, places in BARRIER_FORMS:
+        at = _function(s, head_text)
+        if at is None:
+            continue
+        head, end = at
+        body = s[head:end]
+        if all(new.count(body) == 1 and not old.count(body) for old, new in places):
+            done += 1
+            continue
+        if not all(m.count(body) == 1 for m in marks) or not all(old.count(body) == 1 for old, _ in places):
+            continue
+        for old, new in places:
+            body = new.put(body, old)
+        s = s[:head] + body + s[end:]
+        done += 1
+    if done and BARRIER_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + BARRIER_DECL, 1)
+    return s, done
+
+
+def patch_solver_steps(s):
+    """The solver step count's two places: (s, how many of them are in s with the hook, made now or before)"""
+    done = 0
+    for head_text in SOLVER_HEADS:
+        at = _function(s, head_text)
+        if at is None:
+            continue
+        head, end = at
+        body = s[head:end]
+        if body.count(SOLVER_NEW) == 1:
+            done += 1
+        elif body.count(SOLVER_OLD) == 1:
+            s = s[:head] + body.replace(SOLVER_OLD, SOLVER_NEW, 1) + s[end:]
+            done += 1
+    if done and SOLVER_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SOLVER_DECL, 1)
+    return s, done
+
+
+def patch_horse_jump(s):
+    """A horse's jump state machine's step test with the whole-frame one before it: (s, 1) when it is in s with it (made now or
+    before), (s, 0) when it is not here or its code differs (another game version: left as it is)"""
+    at = _function(s, HORSE_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(HORSE_SKIP + HORSE_BRANCH) == 1:
+        return s, 1
+    if body.count(HORSE_TEST) != 1 or HORSE_SKIP in body:
+        return s, 0
+    line_end = body.find("\n", body.index(HORSE_TEST) + len(HORSE_TEST))
+    if line_end < 0 or not body.startswith(HORSE_BRANCH, line_end + 1):
+        return s, 0
+    body = body[:line_end + 1] + HORSE_SKIP + body[line_end + 1:]
+    s = s[:head] + body + s[end:]
+    if HORSE_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + HORSE_DECL, 1)
+    return s, 1
+
+
+def patch_res_guard(s):
+    """The resource lookup's three invalid-handle branches to its null path: (s, 1) when it is in s with them (made now or
+    before), (s, 0) when it is not here or its code differs (another game version: left as it is). Either form of the lift"""
+    at = _function(s, RES_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    for sites in RES_FORMS:
+        news = [old.replace("L_80cb3940", "L_80cb3a18") + RES_GUARD for old in sites]
+        if all(body.count(n) == 1 for n in news):
+            return s, 1
+        if any(body.count(old + "\n") != 1 for old in sites):
+            continue
+        for old, new in zip(sites, news):
+            body = body.replace(old + "\n", new + "\n", 1)
+        return s[:head] + body + s[end:], 1
+    return s, 0
+
+
+def _drive_forms(reg):
+    """(hookshot) The read and the call for a body register, in each form the lift writes them: x20 and the body register in
+    the context (c->x[N]) or as locals (xN_), as the function's register allocation has them"""
+    read, call = DRIVE_READ % reg, DRIVE_CALL % reg
+    forms = []
+    for ctl in ("c->x[20]", "x20_"):
+        for bod in ("c->x[%d]" % reg, "x%d_" % reg):
+            forms.append((read.replace("c->x[%d]" % reg, bod).replace("c->x[20]", ctl),
+                          call.replace("c->x[%d]" % reg, bod).replace("c->x[20]", ctl)))
+    return forms
+
+
+def patch_drive_target(s):
+    """Link's driven body's target through the host before f_804f5030 reads it, at both copies of the path: (s, how many of them
+    are in s with it, made now or before); a copy whose body load and target reads are not found once, as written, is left"""
+    at = _function(s, DRIVE_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    done = 0
+    for reg in DRIVE_REGS:
+        for read, call in _drive_forms(reg):
+            load = read.index("    { uint64_t _b")
+            if body.count(read[:load] + call + read[load:]) == 1:
+                done += 1
+                break
+            if body.count(read) != 1:
+                continue
+            i = body.index(read) + load
+            body = body[:i] + call + body[i:]
+            done += 1
+            break
+    s = s[:head] + body + s[end:]
+    if done and DRIVE_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + DRIVE_DECL, 1)
+    return s, done
+
+
+def patch_jump_speed(s):
+    """A jump's takeoff speed to the host after f_80b97d10's last store: (s, 1) when f_80b97d10 is in s with it (made now or
+    before), (s, 0) when it is not here or its store of the vector's last part is not found once, as written"""
+    at = _function(s, TAKEOFF_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    for x in TAKEOFF_X19:
+        store = TAKEOFF_STORE.format(x=x)
+        made = store + TAKEOFF_CALL.format(x=x)
+        if body.count(made) == 1:
+            return s, 1
+        if body.count(store) != 1:
+            continue
+        s = s[:head] + body.replace(store, made, 1) + s[end:]
+        if TAKEOFF_DECL not in s:
+            s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TAKEOFF_DECL, 1)
+        return s, 1
+    return s, 0
+
+
+def patch_takeoff_velocity(s):
+    """A body's velocity through the host before f_804f5030's set-velocity call: (s, 1) when f_804f5030 is in s with it (made now
+    or before), (s, 0) when it is not here or the call is not found once, as written"""
+    at = _function(s, DRIVE_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(TAKEOFF_VELOCITY_CALL + TAKEOFF_VELOCITY_SITE) == 1:
+        return s, 1
+    if body.count(TAKEOFF_VELOCITY_SITE) != 1 or TAKEOFF_VELOCITY_CALL in body:
+        return s, 0
+    s = s[:head] + body.replace(TAKEOFF_VELOCITY_SITE, TAKEOFF_VELOCITY_CALL + TAKEOFF_VELOCITY_SITE, 1) + s[end:]
+    if TAKEOFF_VELOCITY_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TAKEOFF_VELOCITY_DECL, 1)
+    return s, 1
+
+
+def patch_floor_carry(s):
+    """The floor carry's slow-time test through the host in the three modules: (s, how many of them are in s with it, made
+    now or before); a module whose test and branch are not found once, as written, is left as it is"""
+    done = 0
+    for head_text, label in FLOOR_SITES:
+        at = _function(s, head_text)
+        if at is None:
+            continue
+        head, end = at
+        body = s[head:end]
+        old, new = FLOOR_BRANCH % label, FLOOR_NEW % label
+        if body.count(new) == 1 and old not in body:
+            done += 1
+            continue
+        if body.count(FLOOR_TEST) != 1 or body.count(old) != 1:
+            continue
+        fcmp = body.index(FLOOR_TEST) + len(FLOOR_TEST)
+        line_end = body.find("\n", fcmp)
+        if not body.startswith(FLOOR_FCMP, fcmp) or line_end < 0 or not body.startswith(old, line_end + 1):
+            continue
+        body = body[:line_end + 1] + new + body[line_end + 1 + len(old):]
+        s = s[:head] + body + s[end:]
+        done += 1
+    if done and FLOOR_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + FLOOR_DECL, 1)
+    return s, done
+
+
+def patch_cloth_time(s):
+    """The cloth setup's time through the host: (s, 1) when f_81b3aa48 is in s with it (made now or before), (s, 0) when it is
+    not here or its code differs (another game version: left as it is)"""
+    at = _function(s, CLOTH_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(CLOTH_NEW) == 1:
+        return s, 1
+    if body.count(CLOTH_OLD) != 1:
+        return s, 0
+    s = s[:head] + body.replace(CLOTH_OLD, CLOTH_NEW, 1) + s[end:]
+    if CLOTH_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + CLOTH_DECL, 1)
+    return s, 1
+
+
+def patch_cloth_solve(s):
+    """The cloth's solve job gated through the host: (s, 1) when f_81b47080 is in s with it (made now or before), (s, 0) when it
+    is not here or its first line differs (another game version: left as it is)"""
+    at = _function(s, CLOTH_SOLVE_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(CLOTH_SOLVE_NEW) == 1:
+        return s, 1
+    if body.count(CLOTH_SOLVE_OLD) != 1:
+        return s, 0
+    first = body.index(CLOTH_SOLVE_OLD)
+    if body[:first].count("\n") > 2:   # (the first store is the job's own first line, after the head and a hint)
+        return s, 0
+    s = s[:head] + body[:first] + CLOTH_SOLVE_NEW + body[first:] + s[end:]
+    if CLOTH_SOLVE_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + CLOTH_SOLVE_DECL, 1)
+    return s, 1
+
+
+# f_8263e8e0, the steering update: after applying a turn it clamps the saved rate (+36) to the turn's magnitude times
+# the step. The turn was already scaled by the step, so a rate-limited update keeps rate * step squared: above 60 fps
+# Gohma can keep circling the ceiling without reaching her next point. Convert the turn back to a rate for
+# both bounds when 0 < step < 1. At a step of 1 or more, and for invalid steps, keep the game's arithmetic unchanged.
+TURN_RATE_HEAD = "void f_8263e8e0(Ctx *__restrict A64_NOESC c) {\n"
+TURN_RATE_OLD = """    {uint64_t _a=0,_b=0,_z,_v;memcpy(&_a,c->vreg[0],4);memcpy(&_b,c->vreg[1],4);_z=(_a^_b)&0x80000000ULL;
+    _v=a64_fpx_mul32_fma32(c,_a,_b,_z);
+    a64_vset64(c->vreg[1],_v);}
+    {uint64_t _a=0,_b=0,_z,_v;memcpy(&_a,c->vreg[0],4);memcpy(&_b,c->vreg[8],4);_z=(_a^_b)&0x80000000ULL;
+    _v=a64_fpx_mul32_fma32(c,_a,_b,_z);
+    a64_vset64(c->vreg[0],_v);}
+"""
+# v8 holds the positive step throughout both instructions. Its binary32 bits test the interval without a host FP
+# comparison (or changing the guest's flags); division still uses the guest FP helper, as the original multiply does.
+TURN_RATE_NEW = TURN_RATE_OLD.replace(
+    "    _v=a64_fpx_mul32_fma32(c,_a,_b,_z);",
+    "    if ((uint32_t)c->vreg[8][0] > 0 && (uint32_t)c->vreg[8][0] < 0x3f800000u)\n"
+    "        _v=a64_fpx_div32_div32(c,_a,_b);\n"
+    "    else _v=a64_fpx_mul32_fma32(c,_a,_b,_z);")
+
+
+def patch_turn_rate(s):
+    """The saved steering rate's two bounds: (s, 1) when both are patched, now or before; a changed anchor is left alone."""
+    at = _function(s, TURN_RATE_HEAD)
+    if at is None:
+        return s, 0
+    head, end = at
+    body = s[head:end]
+    if body.count(TURN_RATE_NEW) == 1:
+        return s, 1
+    if body.count(TURN_RATE_OLD) != 1:
+        return s, 0
+    return s[:head] + body.replace(TURN_RATE_OLD, TURN_RATE_NEW, 1) + s[end:], 1
+
+
+# A song's playback after the ocarina (the ocarina's state machine f_8019bad0 runs f_832b2af0 in state 5, the song just played,
+# and f_832b2dc0 in state 6, its other melody playback): each update while the melody plays it calls f_832b7b50, whether the
+# note flag the sound engine sets for one of its runs at each of the melody's notes is set, and goes on to the next note when
+# it is. Above 60 fps the sound job runs at 60 Hz and the playback went on two or three notes at each (host/oot_high_fps.h has
+# why and the rule). After each call its result goes through hos_oot_song_cue; the call carries its return address, so it is
+# once in its function.
+SONG_CUE_SITES = (("void f_832b2af0(Ctx *__restrict A64_NOESC c) {\n", "c->x[30] = 0x832b2c84ULL; f_832b7b50(c);\n"),
+                  ("void f_832b2dc0(Ctx *__restrict A64_NOESC c) {\n", "c->x[30] = 0x832b2ed4ULL; f_832b7b50(c);\n"))
+SONG_CUE_NEW = ("    c->x[0] = hos_oot_song_cue(%d, c->x[0]);"
+                "   /* (nx2/oot_patches.py: the note flag once a note above 60 fps) */\n")
+SONG_CUE_DECL = "extern uint64_t hos_oot_song_cue(uint32_t site, uint64_t game);\n"
+
+
+def patch_song_cue(s):
+    """The song playbacks' note flag through the host: (s, how many of the two calls are in s with it, made now or before);
+    a call not found once in its function is left alone"""
+    done = 0
+    for site, (head_text, call) in enumerate(SONG_CUE_SITES):
+        at = _function(s, head_text)
+        if at is None:
+            continue
+        head, end = at
+        body = s[head:end]
+        new = call + SONG_CUE_NEW % site
+        if body.count(new) == 1:
+            done += 1
+        elif body.count(call) == 1:
+            s = s[:head] + body.replace(call, new, 1) + s[end:]
+            done += 1
+    if done and SONG_CUE_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SONG_CUE_DECL, 1)
     return s, done
 
 
@@ -433,7 +1461,7 @@ def patch_text_speed(s):
         return None
     end = s.find("\nvoid f_", head + len(TEXT_HEAD))
     body = s[head:end if end >= 0 else len(s)]
-    for old in (TEXT_OLD_POLLED, TEXT_OLD):   # (with the interrupt poll before the block's backward goto, or without: --no-polls)
+    for old in (TEXT_OLD_POLLED, TEXT_OLD):   # (with the interrupt poll before the block's backward goto, or without: a lift run by hand with nx2/lift.py --no-polls)
         if old + TEXT_ADD in body:   # (applied already: a second run)
             return s
         if body.count(old) == 1:
@@ -447,112 +1475,594 @@ def patch_text_speed(s):
     return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + TEXT_DECL, 1)
 
 
-def apply(gen, *, protect_hearts=False, required=False):
-    """required: the lift of the supported build (LIFE_BUILD_ID), whole: a missing output-size edit stops it (apply_output_size).
-    The other patches only warn when their place is not found once."""
-    import oot_native_resolution   # (HOS_SCENE_NATIVE=1: the scene's base scale 1.0; off by default since #849's output resolution)
-    oot_native_resolution.apply(gen)
-    done = {"dynamic resolution branch": 0, "text speed block": 0, "fixed path's scale": 0, "movie's frame count": 0}
+# Camera speed (host/nn_vi.c hos_camera_scale: the Insert menu's Camera speed, 1.0 as shipped). The player camera's update
+# (f_80644c80) multiplies the right stick into the turn of each frame by a speed each of these returns in s0:
+# - f_80643f10: the yaw's, the entry of the game's own camera speed option (options +0x254) in its speed table, times a factor;
+# - f_80643b60: the pitch's, the same option's entry in the other table;
+# - f_82ea21f0, f_82ea2220: the same two at level 2, the path taken while the stick's actor has the flag at +0x218.
+# None of them calls another, so each turn is scaled once. Only the supported build's functions have these names (apply).
+CAMERA_SPEED_HEADS = tuple("void f_%x(Ctx *__restrict A64_NOESC c) {" % a for a in (0x80643f10, 0x80643b60, 0x82ea21f0, 0x82ea2220))
+CAMERA_SPEED_DECL = "extern volatile float hos_camera_scale;\n"
+CAMERA_SPEED_RETURN = ("{ if (hos_camera_scale != 1.0f) { float _t; uint32_t _u; memcpy(&_t,c->vreg[0],4); _t *= hos_camera_scale; "
+                       "memcpy(&_u,&_t,4); a64_vset64(c->vreg[0],_u); } return; }   /* (nx2/oot_patches.py: camera speed) */")
+
+
+def patch_camera_speed(s):
+    """Each return of the camera's turn-speed functions scales s0 by hos_camera_scale: (s, the functions of s that do, made now
+    or by an earlier run). A function without a return is left as it is."""
+    found = 0
+    for head_text in CAMERA_SPEED_HEADS:
+        head = s.find(head_text)
+        if head < 0:
+            continue
+        end = s.find("\nvoid f_", head + len(head_text))
+        end = end if end >= 0 else len(s)
+        body = s[head:end]
+        if CAMERA_SPEED_RETURN not in body:   # (not made before: a lift patched again keeps its scale once)
+            body, n = re.subn(r"\breturn;", lambda _: CAMERA_SPEED_RETURN, body)
+            if not n:
+                continue
+            s = s[:head] + body + s[end:]
+        found += 1
+    if found and CAMERA_SPEED_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + CAMERA_SPEED_DECL, 1)
+    return s, found
+
+
+# Scene format (host/nn_vi.c hos_scene_rgba16f: the Insert menu's HDR set to Native with the PsychoV35 tone mapper). f_80672260 picks the format of the scene
+# buffer the game tone maps into (main+0x652340: RGBA16F, 44, under two of its flags, else R11G11B10F, 26) and makes the buffer
+# again when the one it has differs (+440). R11G11B10F has no sign and 6 bits of mantissa, so the native HDR banded; with the
+# switch on both choices are RGBA16F (RenoDX's zelda-oot-oz patch of main+0x65234C, github.com/clshortfuse/renodx, MIT).
+SCENE_FORMAT_HEAD = "void f_80672260(Ctx *__restrict A64_NOESC c) {\n"
+SCENE_FORMAT_OLD = "    c->x[10] = 0x2cULL;\n    c->x[10] &= 0xFFFFFFFFULL;\n"
+SCENE_FORMAT_PICK = "    c->x[9] = 0x1aULL;\n    c->x[9] &= 0xFFFFFFFFULL;\n    { uint64_t _r = (!c->z) ? c->x[10] : c->x[9];"
+SCENE_FORMAT_NEW = ("    c->x[9] = hos_scene_rgba16f ? 0x2cULL : 0x1aULL;\n    c->x[9] &= 0xFFFFFFFFULL;\n"
+                    "    { uint64_t _r = (!c->z) ? c->x[10] : c->x[9];")
+SCENE_FORMAT_DECL = "extern volatile int hos_scene_rgba16f;\n"
+
+
+def patch_scene_format(s):
+    """The scene buffer's format by hos_scene_rgba16f in f_80672260; None when the file has no such function, s unchanged when the
+    function is there but its code differs (another game version)."""
+    head = s.find(SCENE_FORMAT_HEAD)
+    if head < 0:
+        return None
+    end = s.find("\nvoid f_", head + len(SCENE_FORMAT_HEAD))
+    end = end if end >= 0 else len(s)
+    body = s[head:end]
+    if SCENE_FORMAT_NEW in body:   # (applied already: a second run)
+        return s
+    if body.count(SCENE_FORMAT_OLD) != 1 or body.count(SCENE_FORMAT_PICK) != 1 or \
+            body.index(SCENE_FORMAT_OLD) > body.index(SCENE_FORMAT_PICK):
+        return s
+    s = s[:head] + body.replace(SCENE_FORMAT_PICK, SCENE_FORMAT_NEW, 1) + s[end:]
+    return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + SCENE_FORMAT_DECL, 1)
+
+
+# (from TomShafford/Hookshot 55d68e8cd6 and 65c1998222) f_804566e0's two calls of f_80522050, the GPU memory a model's material
+# block is made with, made through host/oot_heap_retry.c hos_oot_gpu_alloc, which calls the game's own and tries a full heap's
+# failure again in the heap's parents. f_80522050's other callers stay as they are.
+GPU_ALLOC_SITES = (0x80456f1c, 0x80457098)   # (the calls' return addresses)
+GPU_ALLOC_OLD = "c->x[30] = %#xULL; f_80522050(c);"
+GPU_ALLOC_NEW = "c->x[30] = %#xULL; hos_oot_gpu_alloc(c, f_80522050);   /* (nx2/oot_patches.py: host/oot_heap_retry.c) */"
+GPU_ALLOC_DECL = "void hos_oot_gpu_alloc(Ctx *A64_NOESC c, A64Fn game);\n"
+# f_804566e0's tryAllocs of the CPU buffers at its MatBlock's +200 (its bump allocator's memory) and +168, each sized for the
+# model (x0 the heap, x1 the size, x2 the alignment): a null result tried in the heap's parents (hos_oot_heap_retry)
+HEAP_ALLOC_SITES = (0x80456910, 0x80456da4)
+HEAP_ALLOC_OLD = "{ uint64_t _t = c->x[8]; c->x[30] = %#xULL; A64_ICALL(c, _t); }\n"
+HEAP_ALLOC_NEW = ("{ const uint64_t _hh = c->x[0], _hn = c->x[1], _ha = c->x[2];   /* (nx2/oot_patches.py: host/oot_heap_retry.c) */\n"
+                  "  if (hos_oot_heap_refuse()) c->x[0] = 0;\n"
+                  "  else { uint64_t _t = c->x[8]; c->x[30] = %#xULL; A64_ICALL(c, _t); }\n"
+                  "  if (!c->x[0]) hos_oot_heap_retry(c, _hh, _hn, _ha, %#xULL); }\n")
+HEAP_ALLOC_DECL = "int hos_oot_heap_refuse(void);\nvoid hos_oot_heap_retry(Ctx *c, uint64_t heap, uint64_t size, uint64_t align, uint64_t lr);\n"
+
+
+def patch_heap_retry(s):
+    """The four places above in one file's text: (text, [GPU sites, CPU sites] made now or found made). apply() wants
+    [2, 2] over the whole lift and warns otherwise"""
+    found = [0, 0]
+    decls = []
+    for kind, sites, old, new, decl in ((0, GPU_ALLOC_SITES, GPU_ALLOC_OLD, GPU_ALLOC_NEW, GPU_ALLOC_DECL),
+                                        (1, HEAP_ALLOC_SITES, HEAP_ALLOC_OLD, HEAP_ALLOC_NEW, HEAP_ALLOC_DECL)):
+        for lr in sites:
+            o, n = old % lr, (new % lr if kind == 0 else new % (lr, lr))
+            if n in s:
+                found[kind] += 1
+            elif s.count(o) == 1 and s.count('#include "a64.h"\n') == 1:
+                s = s.replace(o, n, 1)
+                found[kind] += 1
+                if decl not in decls:
+                    decls.append(decl)
+    for decl in decls:
+        if decl not in s:
+            s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + decl, 1)
+    return s, found
+
+
+# The voice resource's update (f_80a9ca30) asks GameDataMgr whether OptionData.VoiceLanguage was written (f_80a9d1c0, its one
+# call there, by its return address) and reads and applies the option only then. Made through host/oot_voice.c
+# hos_oot_voice_option, which calls the game's own and also answers yes when the option's value changed without a write
+# (option.sav read after the start). f_80a9d1c0's other callers stay as they are.
+VOICE_OPTION_OLD = "c->x[30] = 0x80a9ca9cULL; f_80a9d1c0(c);"
+VOICE_OPTION_NEW = "c->x[30] = 0x80a9ca9cULL; hos_oot_voice_option(c, f_80a9d1c0);   /* (nx2/oot_patches.py: host/oot_voice.c) */"
+VOICE_OPTION_DECL = "void hos_oot_voice_option(Ctx *A64_NOESC c, A64Fn game);\n"
+
+
+def patch_voice_option(s):
+    """The voice resource's question in one file's text: (text, 1 when made now or found made, else 0)"""
+    if VOICE_OPTION_NEW in s:
+        return s, 1
+    if s.count(VOICE_OPTION_OLD) != 1 or s.count('#include "a64.h"\n') != 1:
+        return s, 0
+    s = s.replace(VOICE_OPTION_OLD, VOICE_OPTION_NEW, 1)
+    return s.replace('#include "a64.h"\n', '#include "a64.h"\n' + VOICE_OPTION_DECL, 1), 1
+
+
+# (the wait action's start and tick, code_033.c; the anchors carry call-return PC literals, so each is once in its function)
+OC_DECL = ("extern volatile int hos_oc_wait;\nextern volatile int hos_oc_last_kind;\n"
+           "extern volatile unsigned hos_oc_beat;\n"
+           "#define HOS_OC_BUTTONS(k) ((k) == 1 || (k) == 2 || (k) == 3 || (k) == 7 || (k) == 10 || (k) == 11)\n")
+OC_ENTRY_HEAD = "void f_828a9190(Ctx *__restrict A64_NOESC c) {"
+OC_ENTRY_OLD = ("    c->x[1]=recomp_load32(c,c->x[19] + 32);\n"
+                "    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[20] = _r; }\n"
+                "c->x[30] = 0x828a91e4ULL; f_832b35d0(c);")
+OC_ENTRY_NEW = ("    c->x[1]=recomp_load32(c,c->x[19] + 32);\n"
+                "    hos_oc_last_kind = (int)c->x[1], hos_oc_wait = HOS_OC_BUTTONS(c->x[1]) ? 1 : 2, hos_oc_beat++;"
+                "   /* (nx2/oot_patches.py: the note wait began; 1 and 3 are the field ocarina, 2 a song lesson, "
+                "7 the Lost Woods skull kids' songs, 10 the scarecrow's recording, 11 the scarecrow's recall of it, "
+                "13 a dialogue's, which stays the game's) */\n"
+                "    { uint64_t _r = ((uint64_t)0 | ((c->x[0]) << 0)); c->x[20] = _r; }\n"
+                "c->x[30] = 0x828a91e4ULL; f_832b35d0(c);")
+OC_TICK_HEAD = "void f_828a9280(Ctx *__restrict A64_NOESC c) {"
+OC_TICK_OLD = ("    c->x[8]=recomp_load8(c,c->x[0] + 24);\n"
+               "if (!((c->x[8] >> 1) & 1)) { goto L_828a92e4; }")
+OC_TICK_NEW = ("    c->x[8]=recomp_load8(c,c->x[0] + 24);\n"
+               "if (!((c->x[8] >> 1) & 1)) { hos_oc_wait = 0; goto L_828a92e4; }"
+               "   /* (nx2/oot_patches.py: this action stopped running: no wait) */\n"
+               "    hos_oc_wait = HOS_OC_BUTTONS(hos_oc_last_kind) ? 1 : 2, hos_oc_beat++;"
+               "   /* (nx2/oot_patches.py: re-armed every running tick: the input resets between note windows end "
+               "one wait without ending the action; the beat tells the host the wait is alive) */")
+# (the tick's own gates sit after the re-arm: while any of them refuses, the game is not asking for notes, say a
+# dialogue took the buttons; the host must hear that, or its pad swap eats the buttons the dialogue wants)
+OC_TICK_GATES = (
+    ("if (!c->z) { goto L_828a92e4; }",
+     "if (!c->z) { hos_oc_wait = 0; goto L_828a92e4; }"
+     "   /* (nx2/oot_patches.py: the action's mode check refused: no wait) */"),
+    ("c->x[30] = 0x828a92e0ULL; f_806aac40(c);\n"
+     "if (c->x[0] != 0) { goto L_828a92f8; }",
+     "c->x[30] = 0x828a92e0ULL; f_806aac40(c);\n"
+     "if (c->x[0] != 0) { goto L_828a92f8; }\n"
+     "hos_oc_wait = 0;   /* (nx2/oot_patches.py: the input context is gone: no wait) */"),
+    ("c->x[30] = 0x828a9318ULL; f_82856760(c);\n"
+     "if (c->x[0] == 0) { { A64_POLL(c); goto L_828a92e4; } }",
+     "c->x[30] = 0x828a9318ULL; f_82856760(c);\n"
+     "if (c->x[0] == 0) { { A64_POLL(c); hos_oc_wait = 0; goto L_828a92e4; } }"
+     "   /* (nx2/oot_patches.py: the wait's owner refused: no wait, and the pads are the game's again) */"),
+)
+OC_DONE_OLD = "recomp_store32(c,c->x[19] + 24,c->x[9]);"
+OC_DONE_NEW = (OC_DONE_OLD + "\n    hos_oc_wait = 0;"
+               "   /* (nx2/oot_patches.py: the wait action finished) */")
+OC_RESET_OLD = "c->x[30] = 0x828a93e4ULL; f_832b35d0(c);"
+OC_RESET_NEW = (OC_RESET_OLD + "\n    hos_oc_wait = 0;"
+                "   /* (nx2/oot_patches.py: the input reset: this window's wait is over) */")
+
+
+def patch_ocarina_wait(s):
+    """The wait action reports itself to the host; None when the lift has no such functions, s unchanged when an anchor drifted or it is applied already (never a half-patch)."""
+    splices, hits = [], 0
+    for head, pairs in ((OC_ENTRY_HEAD, [(OC_ENTRY_OLD, OC_ENTRY_NEW)]),
+                        (OC_TICK_HEAD, [(OC_TICK_OLD, OC_TICK_NEW)] + [p for p in OC_TICK_GATES] +
+                                       [(OC_DONE_OLD, OC_DONE_NEW), (OC_RESET_OLD, OC_RESET_NEW)])):
+        at = s.find(head)
+        if at < 0:
+            return None
+        end = s.find("\nvoid f_", at + len(head))
+        body = s[at:end if end >= 0 else len(s)]
+        out = body
+        for old, new in pairs:
+            if new in out:
+                continue
+            if out.count(old) != 1:
+                return s
+            out = out.replace(old, new, 1)
+        if out != body:
+            splices.append((at, end, out))
+            hits = 1
+    if not hits:
+        return s
+    for at, end, out in reversed(splices):   # (later functions first: earlier splices keep the earlier offsets valid)
+        s = s[:at] + out + (s[end:] if end >= 0 else "")
+    if OC_DECL not in s:
+        s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + OC_DECL, 1)
+    return s
+
+
+def patch_file(s, name, protect_hearts=False):
+    """One lifted file's patches (apply(), and nx2/chunks.py edit_c, a process per file): (its text, the places counted in it, the
+    lines to print). The counts add up over the files; report() decides from the sums"""
+    counts = collections.Counter()
+    lines = []
+    out = s
+    d = patch_dynres(out)
+    if d is not None:
+        out = d
+        counts["dynamic resolution branch"] += 1
+        lines.append("oot_patches: dynamic resolution switch in " + name)
+    t = patch_text_speed(out)
+    if t is not None and t != out:
+        out = t
+        counts["text speed block"] += 1
+        lines.append("oot_patches: text speed scale and text size in " + name)
+    focus = patch_menu_focus(out) if protect_hearts else None
+    if focus is not None:
+        out = focus
+        counts["menu focus hook"] += 1
+        lines.append("oot_patches: the menus' focus hook in " + name)
+    tick = patch_menu_tick(out) if protect_hearts else None
+    if tick is not None:
+        out = tick
+        counts["menu tick hook"] += 1
+        lines.append("oot_patches: the menus' update hook in " + name)
+    wheel = patch_wheel_tick(out) if protect_hearts else None
+    if wheel is not None:
+        out = wheel
+        counts["item wheel hook"] += 1
+        lines.append("oot_patches: the item wheel's menu hook in " + name)
+    draw = patch_text_draw(out) if protect_hearts else None
+    if draw is not None:
+        out = draw
+        counts["text draw hook"] += 1
+        lines.append("oot_patches: the text boxes' draw hook in " + name)
+    glyph = patch_glyph(out) if protect_hearts else None
+    if glyph is not None:
+        out = glyph
+        counts["glyph hook"] += 1
+        lines.append("oot_patches: the glyphs' hook in " + name)
+    picture = patch_text_picture(out) if protect_hearts else None
+    if picture is not None:
+        out = picture
+        counts["text picture lock"] += 1
+        lines.append("oot_patches: the text boxes' texture thread's picture through the host in " + name)
+    zs = patch_zstd_stream(out) if protect_hearts else None
+    if zs is not None:
+        if zs != out:
+            lines.append("oot_patches: the zstd stream decode's host hook in " + name)
+        out = zs
+        counts["zstd stream hook"] += 1
+    zf = patch_zstd_frames(out) if protect_hearts else None
+    if zf is not None:
+        if zf != out:
+            lines.append("oot_patches: the zstd whole-buffer decode's host hook in " + name)
+        out = zf
+        counts["zstd frames hook"] += 1
+    seq = patch_zstd_seq(out) if protect_hearts else None
+    if seq is not None:
+        out = seq
+        counts["zstd sequence loop"] += 1
+        lines.append("oot_patches: the native zstd sequence loop in " + name)
+    names = patch_names(out) if protect_hearts else None   # (host/names_native.c: f_805aeea0's name searches natively)
+    if names is not None:
+        out = names
+        counts["name searches"] += 1
+        lines.append("oot_patches: the native name searches in " + name)
+    layout = patch_text_layout(out) if protect_hearts else None
+    if layout is not None:
+        out = layout
+        counts["text layout hook"] += 1
+        lines.append("oot_patches: the text boxes' layout hook in " + name)
+    movie = patch_movie_frames(out)
+    if movie is not None:
+        if MOVIE_NEW in movie:   # (made now, or by an earlier run over this file)
+            counts["movie's frame count"] += 1
+        if movie != out:
+            lines.append("oot_patches: the movie's frame count by the frames' time in " + name)
+        out = movie
+    out, loops = patch_loop_steps(out)
+    if loops:
+        lines.append("oot_patches: %d animation clock(s) with whole frames for a loop of one frame in %s" % (loops, name))
+    out, poses = patch_loop_pose(out)
+    if poses:
+        lines.append("oot_patches: the drawn time of a loop of one frame by its start in " + name)
+    ocw = patch_ocarina_wait(out)
+    if ocw is not None:
+        if OC_ENTRY_NEW in ocw:   # (made now, or by an earlier run over this file)
+            counts["ocarina note wait"] += 1
+        if ocw != out:
+            lines.append("oot_patches: the ocarina note wait in " + name)
+        out = ocw
+    out, n = fixed_scale(out)
+    if n:
+        counts["fixed path's scale"] += 1
+        lines.append("oot_patches: the fixed path's scale in " + name)
+    life = patch_life(out) if protect_hearts else None
+    if life is not None:
+        out = life
+        counts["player heart protection"] += 1
+        lines.append("oot_patches: player heart protection in " + name)
+    move = patch_movement(out) if protect_hearts else None
+    if move is not None:
+        out = move
+        counts["player flight"] += 1
+        lines.append("oot_patches: player flight in " + name)
+    rotation = patch_flight_rotation(out) if protect_hearts else None
+    if rotation is not None:
+        out = rotation
+        counts["player flight rotation"] += 1
+        lines.append("oot_patches: player flight rotation in " + name)
+    mouse = patch_mouse_camera(out) if protect_hearts else None
+    if mouse is not None:
+        out = mouse
+        counts["mouse camera"] += 1
+        lines.append("oot_patches: native mouse camera in " + name)
+    center = patch_camera_centering(out) if protect_hearts else None
+    if center is not None:
+        out = center
+        counts["disable camera centering"] += 1
+        lines.append("oot_patches: disable camera centering switch in " + name)
+    if protect_hearts and "if (hos_oot_trace_save(c)) return;" not in out:
+        signature = "void f_80bc72d0(Ctx *__restrict A64_NOESC c) {\n"
+        if signature in out:
+            out = out.replace(signature, signature + "    if (hos_oot_trace_save(c)) return;\n", 1)
+            out = out.replace('#include "a64.h"\n', '#include "a64.h"\nextern int hos_oot_trace_save(Ctx *c);\n', 1)
+            lines.append("oot_patches: save request trace in " + name)
+    opening = patch_opening(out) if protect_hearts else None
+    if opening is not None:
+        n = opening.count(OPENING_REQUEST) + opening.count(OPENING_TIMELINE) + opening.count(OPENING_QUERY)
+        counts["opening skip"] += n
+        if opening != out:
+            lines.append("oot_patches: the opening skip at %d function(s) in %s" % (n, name))
+        out = opening
+    speed = patch_cct_speed(out) if protect_hearts else None
+    if speed is not None:
+        if speed[0] != out:
+            lines.append("oot_patches: movement speed in " + name)
+        out = speed[0]
+        counts["speed hooks"] += speed[1]
+    view = patch_view(out) if protect_hearts else None
+    if view is not None:
+        out = view
+        counts["free camera"] += 1
+        lines.append("oot_patches: free camera in " + name)
+    scene = patch_scene_format(out) if protect_hearts else None
+    if scene is not None and SCENE_FORMAT_NEW in scene:
+        counts["scene format"] += 1
+        if scene != out:
+            lines.append("oot_patches: the scene buffer's format for native HDR in " + name)
+        out = scene
+    if protect_hearts:   # (found by name alone: in another build these addresses are other functions)
+        made, n = patch_camera_speed(out)
+        counts["camera speed"] += n
+        if made != out:
+            out = made
+            lines.append("oot_patches: camera speed at %d function(s) in %s" % (n, name))
+    out, sites = patch_frame_seconds(out)
+    counts["step sites"] += out.count(STEP_MARK)   # (made now, or by an earlier run over this file)
+    if sites:
+        lines.append("oot_patches: the frame's time at %d step divide(s) in %s" % (sites, name))
+    heap, found = patch_heap_retry(out) if protect_hearts else (out, [0, 0])
+    counts["heap GPU sites"] += found[0]
+    counts["heap CPU sites"] += found[1]
+    if heap != out:
+        lines.append("oot_patches: heap-full retries of the OptimizeChangeBank allocations in " + name)
+    out = heap
+    voice, found = patch_voice_option(out) if protect_hearts else (out, 0)
+    counts["voice option check"] += found
+    if voice != out:
+        lines.append("oot_patches: the Voice Language option followed after option.sav is read in " + name)
+    out = voice
+    out, whole = patch_whole_frames(out)
+    counts["whole sites"] += out.count(WHOLE_MARK)   # (made now, or by an earlier run over this file)
+    if whole:
+        lines.append("oot_patches: %d frame counter(s) with the step's whole frames in %s" % (whole, name))
+    sound, found = patch_sound_job(out)
+    counts["sound jobs"] += found
+    if sound != out:
+        lines.append("oot_patches: the sound job at 60 Hz above 60 fps in " + name)
+    out = sound
+    bgm, found = patch_bgm_time(out)
+    counts["music manager time"] += found
+    if bgm != out:
+        lines.append("oot_patches: the music manager's whole step above 60 fps in " + name)
+    out = bgm
+    texc, found = patch_tex_compact(out)
+    counts["texture compaction"] += found
+    if texc != out:
+        lines.append("oot_patches: the texture heap's compaction asked for through the host in " + name)
+    out = texc
+    # (the supported build's only: the host reads the manager as that build lays it out, host/oot_ocb_hold.h)
+    ocbh, found = patch_ocb_hold(out) if protect_hearts else (out, 0)
+    counts["preload choice"] += found
+    if ocbh != out:
+        lines.append("oot_patches: the preload manager's choice of a neighbouring map through the host in " + name)
+    out = ocbh
+    flags, found = patch_bgm_flags(out)
+    counts["music manager flags"] += found
+    if flags != out:
+        lines.append("oot_patches: the music manager's change flags kept above 60 fps in " + name)
+    out = flags
+    barrier, found = patch_barrier_wait(out)
+    counts["job barrier waits"] += found
+    if barrier != out:
+        lines.append("oot_patches: the job barriers' sleeps and mask ORs through the host in " + name)
+    out = barrier
+    solver, found = patch_solver_steps(out)
+    counts["solver sites"] += found
+    if solver != out:
+        lines.append("oot_patches: the solver steps rounded up above 60 fps in " + name)
+    out = solver
+    cloth, found = patch_cloth_time(out)
+    counts["cloth time"] += found
+    if cloth != out:
+        lines.append("oot_patches: the cloth's time below 60 fps in " + name)
+    out = cloth
+    solve, found = patch_cloth_solve(out)
+    counts["cloth solve"] += found
+    if solve != out:
+        lines.append("oot_patches: the cloth's solves above 60 fps in " + name)
+    out = solve
+    turn, found = patch_turn_rate(out)
+    counts["saved turn rate"] += found
+    if turn != out:
+        lines.append("oot_patches: the saved steering rate above 60 fps in " + name)
+    out = turn
+    horse, found = patch_horse_jump(out)
+    counts["horse jump step"] += found
+    if horse != out:
+        lines.append("oot_patches: a horse's jump blend above 60 fps in " + name)
+    out = horse
+    floor, found = patch_floor_carry(out)
+    counts["floor carry"] += found
+    if floor != out:
+        lines.append("oot_patches: a moving floor's carry above 60 fps in " + name)
+    out = floor
+    res, found = patch_res_guard(out)
+    counts["resource guard"] += found
+    if res != out:
+        lines.append("oot_patches: the resource lookup's invalid handles take its null path in " + name)
+    out = res
+    drive, found = patch_drive_target(out)
+    counts["driven target"] += found
+    if drive != out:
+        lines.append("oot_patches: Link's driven body's target above 60 fps in " + name)
+    out = drive
+    jump, found = patch_jump_speed(out)
+    counts["jump takeoff"] += found
+    if jump != out:
+        lines.append("oot_patches: a jump's takeoff speed above 60 fps in " + name)
+    out = jump
+    velocity, found = patch_takeoff_velocity(out)
+    counts["takeoff velocity"] += found
+    if velocity != out:
+        lines.append("oot_patches: a jump's takeoff velocity above 60 fps in " + name)
+    out = velocity
+    cue, found = patch_song_cue(out)
+    counts["song note flag"] += found
+    if cue != out:
+        lines.append("oot_patches: the song playbacks' note flag once a note above 60 fps in " + name)
+    out = cue
+    return out, counts, lines
+
+
+# (hookshot, 15/11) The two name searches of f_805aeea0 (the lookup in the game's sorted containers) natively: host/names_native.c
+# says what was measured. At each loop's head the host runs the iterations it can and the loop goes on or out; at each exit,
+# the check of HOS_NAMES_NATIVE=2. Inside the function only (split_hot cuts the file at function heads, and a label of the
+# same address could be another function's)
+NAMES_HEAD = "void f_805aeea0(Ctx *__restrict A64_NOESC c) {\n"
+NAMES_EDITS = [
+    ("L_805afbd4:;\n", "    { extern int hos_names_lower(Ctx *); if (hos_names_lower(c)) goto L_805afe30; }   /* (nx2/oot_patches.py: "
+                       "host/names_native.c) */\n"),
+    ("L_805afe30:;\n", "    { extern volatile int hos_names_checking; extern void hos_names_exit(Ctx *, int); "
+                       "if (hos_names_checking) hos_names_exit(c, 0); }\n"),
+    ("L_805b1d8c:;\n", "    { extern int hos_names_upper(Ctx *, int); if (hos_names_upper(c, 1)) goto L_805b0200; }\n"),
+    ("L_805b1d98:;\n", "    { extern int hos_names_upper(Ctx *, int); if (hos_names_upper(c, 0)) goto L_805b0200; }\n"),
+    ("L_805b0200:;\n", "    { extern volatile int hos_names_checking; extern void hos_names_exit(Ctx *, int); "
+                       "if (hos_names_checking) hos_names_exit(c, 1); }\n"),
+]
+
+
+def patch_names(s):
+    """The native name searches' calls in f_805aeea0 (the supported build's: these addresses are that build's). None when the
+    function is not in this file or is patched already; a SystemExit when one of its places is not there once"""
+    at = s.find(NAMES_HEAD)
+    if at < 0:
+        return None
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # (python -I leaves the script folder off)
+    import lifted_c
+    m = lifted_c.HEAD.search(s, at + len(NAMES_HEAD))
+    end = m.start() if m else len(s)
+    body = s[at:end]
+    if NAMES_EDITS[0][1] in body:
+        return None
+    for anchor, call in NAMES_EDITS:
+        if body.count(anchor) != 1:
+            raise SystemExit("oot_patches: f_805aeea0's %r found %d times" % (anchor.strip(), body.count(anchor)))
+        body = body.replace(anchor, anchor + call, 1)
+    return s[:at] + body + s[end:]
+
+
+def report(paths, counts, protect_hearts=False):
+    """The warnings from the files' counts (each file's patch_file counts, in the order of paths), and the step divides' rule:
+    both or neither, so a file of paths that has the hook is put back"""
+    done = {"dynamic resolution branch": 0, "text speed block": 0, "fixed path's scale": 0, "movie's frame count": 0,
+            "ocarina note wait": 0, "saved turn rate": 0}
     if protect_hearts:   # (the supported build's: these places are its functions)
         done["menu focus hook"] = 0
         done["menu tick hook"] = 0
+        done["item wheel hook"] = 0
+        done["text draw hook"] = 0
+        done["glyph hook"] = 0
+        done["text layout hook"] = 0
+        done["text picture lock"] = 0
         done["player heart protection"] = 0
         done["player flight"] = 0
         done["player flight rotation"] = 0
         done["free camera"] = 0
         done["mouse camera"] = 0
         done["disable camera centering"] = 0
-    speed_hooks = 0   # (SPEED_PLACES', in one file or several)
-    step_sites, step_files = 0, []   # (the divides with the hook, and the files that have it)
-    whole_sites = 0   # (the counters of WHOLE_SITES with the whole frames: patch_whole_frames)
-    for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
-        with open(path, encoding="utf-8", newline="") as f:
-            s = f.read()
-        out = s
-        d = patch_dynres(out)
-        if d is not None:
-            out = d
-            done["dynamic resolution branch"] += 1
-            print("oot_patches: dynamic resolution switch in", os.path.basename(path))
-        t = patch_text_speed(out)
-        if t is not None and t != out:
-            out = t
-            done["text speed block"] += 1
-            print("oot_patches: text speed scale and text size in", os.path.basename(path))
-        focus = patch_menu_focus(out) if protect_hearts else None
-        if focus is not None:
-            out = focus
-            done["menu focus hook"] += 1
-            print("oot_patches: the menus' focus hook in", os.path.basename(path))
-        tick = patch_menu_tick(out) if protect_hearts else None
-        if tick is not None:
-            out = tick
-            done["menu tick hook"] += 1
-            print("oot_patches: the menus' update hook in", os.path.basename(path))
-        movie = patch_movie_frames(out)
-        if movie is not None:
-            if MOVIE_NEW in movie:   # (made now, or by an earlier run over this file)
-                done["movie's frame count"] += 1
-            if movie != out:
-                print("oot_patches: the movie's frame count by the frames' time in", os.path.basename(path))
-            out = movie
-        out, n = fixed_scale(out)
-        if n:
-            done["fixed path's scale"] += 1
-            print("oot_patches: the fixed path's scale in", os.path.basename(path))
-        life = patch_life(out) if protect_hearts else None
-        if life is not None:
-            out = life
-            done["player heart protection"] += 1
-            print("oot_patches: player heart protection in", os.path.basename(path))
-        move = patch_movement(out) if protect_hearts else None
-        if move is not None:
-            out = move
-            done["player flight"] += 1
-            print("oot_patches: player flight in", os.path.basename(path))
-        rotation = patch_flight_rotation(out) if protect_hearts else None
-        if rotation is not None:
-            out = rotation
-            done["player flight rotation"] += 1
-            print("oot_patches: player flight rotation in", os.path.basename(path))
-        mouse = patch_mouse_camera(out) if protect_hearts else None
-        if mouse is not None:
-            out = mouse
-            done["mouse camera"] += 1
-            print("oot_patches: native mouse camera in", os.path.basename(path))
-        center = patch_camera_centering(out) if protect_hearts else None
-        if center is not None:
-            out = center
-            done["disable camera centering"] += 1
-            print("oot_patches: disable camera centering switch in", os.path.basename(path))
-        speed = patch_cct_speed(out) if protect_hearts else None
-        if speed is not None:
-            if speed[0] != out:
-                print("oot_patches: movement speed in", os.path.basename(path))
-            out = speed[0]
-            speed_hooks += speed[1]
-        view = patch_view(out) if protect_hearts else None
-        if view is not None:
-            out = view
-            done["free camera"] += 1
-            print("oot_patches: free camera in", os.path.basename(path))
-        out, sites = patch_frame_seconds(out)
-        if STEP_MARK in out:   # (made now, or by an earlier run over this file)
-            step_sites += out.count(STEP_MARK)
-            step_files.append(path)
-        if sites:
-            print("oot_patches: the frame's time at %d step divide(s) in %s" % (sites, os.path.basename(path)))
-        out, whole = patch_whole_frames(out)
-        whole_sites += out.count(WHOLE_MARK)   # (made now, or by an earlier run over this file)
-        if whole:
-            print("oot_patches: %d frame counter(s) with the step's whole frames in %s" % (whole, os.path.basename(path)))
-        if out != s:
-            whole_write.write_whole(path, out, newline="")
+        done["scene format"] = 0
+        done["zstd stream hook"] = 0
+        done["zstd frames hook"] = 0
+        done["name searches"] = 0
+        done["voice option check"] = 0
+    total = collections.Counter()
+    for c in counts:
+        total.update(c)
+    for what in done:
+        done[what] = total[what]
+    speed_hooks = total["speed hooks"]   # (SPEED_PLACES', in one file or several)
+    camera_speed = total["camera speed"]   # (the turn-speed functions that scale by hos_camera_scale: patch_camera_speed)
+    heap_sites = [total["heap GPU sites"], total["heap CPU sites"]]   # (patch_heap_retry, the supported build only)
+    if protect_hearts and heap_sites != [len(GPU_ALLOC_SITES), len(HEAP_ALLOC_SITES)]:   # (the supported build's functions)
+        print("oot_patches: WARNING: the OptimizeChangeBank allocations were found %s times, not once each: a full heap is "
+              "not tried again" % heap_sites)
+    step_sites = total["step sites"]   # (the divides with the hook)
+    step_files = [p for p, c in zip(paths, counts) if c["step sites"]]   # (the files that have it)
+    whole_sites = total["whole sites"]   # (the counters of WHOLE_SITES with the whole frames: patch_whole_frames)
+    if total["sound jobs"] != 1:   # (without it, above 60 fps sounds and then the music can stop after a few loading zones)
+        print("oot_patches: WARNING: the sound job was found %d times, not once" % total["sound jobs"])
+    if total["music manager time"] != 1:   # (without it, above 60 fps the music manager's timers run at 60 / fps of real time)
+        print("oot_patches: WARNING: the music manager's time was found %d times, not once" % total["music manager time"])
+    if total["texture compaction"] != 1:   # (without it HOS_TEX_COMPACT_MS does nothing: the game compacts at every frame)
+        print("oot_patches: WARNING: the texture heap's compaction request was found %d times, not once" % total["texture compaction"])
+    if protect_hearts and total["preload choice"] != 1:   # (without it HOS_OCB_HOLD_MS does nothing: the neighbours reload)
+        print("oot_patches: WARNING: the preload manager's choice was found %d times, not once" % total["preload choice"])
+    if total["music manager flags"] != 1:   # (without it, above 60 fps the battle music can play on after a fight)
+        print("oot_patches: WARNING: the music manager's change flags were found %d times, not once" % total["music manager flags"])
+    if total["job barrier waits"] != len(BARRIER_SITES):   # (without them the job barriers sleep 20 us there, as before)
+        print("oot_patches: WARNING: the job barriers were found in %d of %d functions"
+              % (total["job barrier waits"], len(BARRIER_SITES)))
+    if total["solver sites"] != len(SOLVER_HEADS):   # (without them, above 60 fps moving platforms can drop Link)
+        print("oot_patches: WARNING: the solver step count was found at %d of %d places" % (total["solver sites"], len(SOLVER_HEADS)))
+    if total["horse jump step"] != 1:   # (without it, above 60 fps Epona gallops through the fences she jumps)
+        print("oot_patches: WARNING: the horse's jump step test was found %d times, not once" % total["horse jump step"])
+    if total["floor carry"] != len(FLOOR_SITES):   # (without them, above 100 fps a moving floor leaves Link and enemies behind)
+        print("oot_patches: WARNING: a moving floor's carry was found at %d of %d places" % (total["floor carry"], len(FLOOR_SITES)))
+    if total["resource guard"] != 1:   # (without it, a scene that looks up a resource not loaded yet can read guest address 0x150)
+        print("oot_patches: WARNING: the resource lookup's invalid-handle branches were found %d times, not once"
+              % total["resource guard"])
+    if total["driven target"] != len(DRIVE_REGS):   # (without them, above 60 fps Link's pull-up onto a ledge falls short)
+        print("oot_patches: WARNING: the driven body's target was found at %d of %d places" % (total["driven target"], len(DRIVE_REGS)))
+    if total["jump takeoff"] != 1:   # (without it, above 60 fps Link's jumps hop lower and a backflip down a slope takes off twice)
+        print("oot_patches: WARNING: a jump's takeoff speed was found %d times, not once" % total["jump takeoff"])
+    if total["takeoff velocity"] != 1:   # (without it the takeoff speed is kept and not used: the hop is the game's)
+        print("oot_patches: WARNING: the set-velocity call for a jump's takeoff was found %d times, not once" % total["takeoff velocity"])
+    if total["cloth time"] != 1:   # (without it, below 60 fps Link's cap and the other cloth run slow: they swing out and settle slowly)
+        print("oot_patches: WARNING: the cloth's time was found %d times, not once" % total["cloth time"])
+    if total["cloth solve"] != 1:   # (without it, above 60 fps with HOS_FPS_CLOTH_60=1 the cloth is still solved every frame)
+        print("oot_patches: WARNING: the cloth's solve job was found %d times, not once" % total["cloth solve"])
+    if total["song note flag"] != len(SONG_CUE_SITES):   # (without them, above 60 fps a song's notes come in twos and threes)
+        print("oot_patches: WARNING: the song playbacks' note flag was found at %d of %d places" % (total["song note flag"],
+                                                                                                 len(SONG_CUE_SITES)))
     for what, n in done.items():
         if n != 1:
             print("oot_patches: WARNING: the %s was found %d times" % (what, n))
     if protect_hearts and speed_hooks != len(SPEED_PLACES):
         print("oot_patches: WARNING: the movement speed's places were found %d times, not %d" % (speed_hooks, len(SPEED_PLACES)))
+    if protect_hearts and total["opening skip"] != 3:
+        print("oot_patches: WARNING: the opening skip was found at %d of 3 functions" % total["opening skip"])
+    if protect_hearts and camera_speed != len(CAMERA_SPEED_HEADS):
+        print("oot_patches: WARNING: the camera's turn speed was found in %d of %d functions (the Camera speed row turns only "
+              "those)" % (camera_speed, len(CAMERA_SPEED_HEADS)))
     if step_sites != len(STEP_SITES):
         # (both or neither: with one divide timed and the other stepping 1/60 s the two clocks of the game would run apart. Without
         # the hook the host keeps the rate up to the cap, as before: host/nn_vi.c, hos_step_probe)
@@ -564,8 +2074,59 @@ def apply(gen, *, protect_hearts=False, required=False):
               "keeps the game's own step)" % (step_sites, len(STEP_SITES)))
     elif whole_sites != len(WHOLE_SITES):   # (the frames' own time without them: the pick-up indicator stays above 60 fps)
         print("oot_patches: WARNING: %d of %d frame counters found for the step's whole frames (above 60 fps a counter can stop: "
-              "the pick-up indicator)" % (whole_sites, len(WHOLE_SITES)))
+              "the pick-up indicator, the water ripples, the time of day, Scarecrow's Song, the floor web)" % (whole_sites, len(WHOLE_SITES)))
+
+
+def apply(gen, *, protect_hearts=False, required=False):
+    """required: the lift of the supported build (LIFE_BUILD_ID), whole: a missing output-size edit stops it (apply_output_size).
+    The other patches only warn when their place is not found once. (nx2/chunks.py edit_c makes the same edits, a process per
+    file)"""
+    paths = sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c")))
+    counts = []
+    for path in paths:
+        with open(path, encoding="utf-8", newline="") as f:
+            s = f.read()
+        out, c, lines = patch_file(s, os.path.basename(path), protect_hearts)
+        counts.append(c)
+        if lines:
+            print("\n".join(lines))
+        if out != s:
+            whole_write.write_whole(path, out, newline="")
+    report(paths, counts, protect_hearts)
+    if protect_hearts:
+        apply_pause_menu(gen)
     apply_output_size(gen, required=required)
+
+
+def pause_menu_count(path):
+    """(apply_pause_menu, one file: a process of its own under nx2/chunks.py edit_c) how many times each of the pause menu's
+    edits is in it"""
+    import oot_pause_menu
+    with open(path, encoding="utf-8", newline="") as f:
+        return oot_pause_menu.count([f.read()])
+
+
+def apply_pause_menu(gen, each=None):
+    """The pause menu's "Recomp Options" button (nx2/oot_pause_menu.py): all its edits, or none. each(fn, paths): fn over the
+    files, in order (nx2/chunks.py edit_c: its processes); here one after another without it"""
+    import oot_pause_menu
+    paths = sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c")))
+    counts = each(pause_menu_count, paths) if each else [pause_menu_count(p) for p in paths]
+    found, holders = [0] * len(oot_pause_menu.EDITS), []
+    for path, n in zip(paths, counts):
+        if any(n):
+            holders.append(path)
+            found = [a + b for a, b in zip(found, n)]
+    if found != [1] * len(found):
+        print("oot_patches: WARNING: the pause menu's places were found %s times: its Recomp options button is left out" % found)
+        return
+    for path in holders:
+        with open(path, encoding="utf-8", newline="") as f:
+            s = f.read()
+        out = oot_pause_menu.edit(s)
+        if out != s:
+            whole_write.write_whole(path, out, newline="")
+            print("oot_patches: the pause menu's Recomp options button in", os.path.basename(path))
 
 
 # Output size (host/nn_applet.c hos_output_size: the Insert menu's Output resolution, 2560 x 1440 as shipped):
@@ -628,6 +2189,60 @@ OUT_EDITS = [
 ]
 
 
+def output_size_file(s, name):
+    """One lifted file's output-size edits: (its text, each place's count in it, the lines to print). apply_output_size(), and
+    nx2/chunks.py edit_c, a process per file"""
+    found = [0] * len(OUT_EDITS)
+    hit = False
+    for i, (old, new) in enumerate(OUT_EDITS):
+        # (every place: each made one, and each old text outside a made one; a new text can hold its old one. A file with
+        # both is counted for both, and its old ones are left: a second made place or a stray raw one is not once)
+        made = s.count(new)
+        raw = (s.replace(new, "\0") if made else s).count(old)
+        found[i] += made + raw
+        if raw and not made:
+            s = s.replace(old, new)
+            hit = True
+    if hit:
+        if OUT_DECL not in s:
+            s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + OUT_DECL, 1)
+        return s, found, ["oot_patches: output size in " + name]
+    return s, found, []
+
+
+def touches(text):
+    """(nx2/guest_locals.py) Whether the edits here would change this text: one lifted function, written with its registers and
+    flags in the context, which is the text the patches find their places in and the context the host code they call
+    reads. Such a function is left that way by the lift; the rest get locals. Asked of every function as it is
+    written (about 40 microseconds each: a second of a lift), so no list of patched functions is kept by hand"""
+    text = '#include "a64.h"' + "\n" + text   # (as a file of its own: some edits want the line their declaration goes under)
+    return patch_file(text, "", True)[0] != text or output_size_file(text, "")[0] != text
+
+
+# (a function by its own head, a label, a hex address; not a function merely called: "f_80522050(c)" names the callee,
+# and the call's place is its return address, which is named too)
+_ADDRESS = re.compile(r"(?:void f_|L_|0x)(8[0-9a-fA-F]{7})(?![0-9a-fA-F])")
+
+
+def mentioned_addresses():
+    """(nx2/guest_locals.py) Every guest code address this file names: a function's head (void f_8...), a label (L_8...), a hex
+    address (a call's return address 0x8...ULL, the tables of sites, an entry given as a number). An edit here pins its place by such an address, so a function that
+    holds one is a function an edit may change, whatever else that edit wants to see before it acts (the line its
+    declaration goes under, its other functions): the lift leaves each such function as the edits expect it. An address
+    named for another reason costs one function its locals"""
+    with open(os.path.abspath(__file__[:-1] if __file__.endswith(".pyc") else __file__), encoding="utf-8") as f:
+        return {int(a, 16) for a in _ADDRESS.findall(f.read())}
+
+
+def check_output_size(found, required=False):
+    """found: each place's count over all the files"""
+    if found != [1] * len(OUT_EDITS):
+        if required:
+            raise SystemExit("oot_patches: the output size places were found %s times, not once each (OUT_EDITS %s): the "
+                             "lifted C no longer has the text they match" % (found, [i for i, n in enumerate(found) if n != 1]))
+        print("oot_patches: WARNING: the output size places were found %s times" % found)
+
+
 def apply_output_size(gen, required=False):
     """required (the supported build's whole lift): each edit must be made, or found made, exactly once, else SystemExit: without
     one the Insert menu's Output resolution is ignored, or a 4K output runs out of the render targets' pool. Elsewhere (another
@@ -636,26 +2251,12 @@ def apply_output_size(gen, required=False):
     for path in sorted(glob.glob(os.path.join(glob.escape(gen), "code_*.c"))):
         with open(path, encoding="utf-8", newline="") as f:
             s = f.read()
-        hit = False
-        for i, (old, new) in enumerate(OUT_EDITS):
-            # (every place: each made one, and each old text outside a made one; a new text can hold its old one. A file with
-            # both is counted for both, and its old ones are left: a second made place or a stray raw one is not once)
-            made = s.count(new)
-            raw = (s.replace(new, "\0") if made else s).count(old)
-            found[i] += made + raw
-            if raw and not made:
-                s = s.replace(old, new)
-                hit = True
-        if hit:
-            if OUT_DECL not in s:
-                s = s.replace('#include "a64.h"\n', '#include "a64.h"\n' + OUT_DECL, 1)
-            whole_write.write_whole(path, s, newline="")
-            print("oot_patches: output size in", os.path.basename(path))
-    if found != [1] * len(OUT_EDITS):
-        if required:
-            raise SystemExit("oot_patches: the output size places were found %s times, not once each (OUT_EDITS %s): the "
-                             "lifted C no longer has the text they match" % (found, [i for i, n in enumerate(found) if n != 1]))
-        print("oot_patches: WARNING: the output size places were found %s times" % found)
+        out, here, lines = output_size_file(s, os.path.basename(path))
+        found = [a + b for a, b in zip(found, here)]
+        if out != s:
+            whole_write.write_whole(path, out, newline="")
+            print("\n".join(lines))
+    check_output_size(found, required)
 
 
 if __name__ == "__main__":

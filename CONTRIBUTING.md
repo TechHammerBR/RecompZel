@@ -15,9 +15,13 @@ never will. That includes:
 
 - the `.nup`, `romfs`, `exefs`, `.nso`, `.nca`, `.nsp`, `.xci` or `.nsz`/`.xcz` files, and any title keys;
 - `work/` and everything in it: the extracted dump, `image.bin`, the lifted C, test builds, runs and screenshots;
-- `hookshot.exe`, `hookshot_vk.dll`, `hookshot_programs.bin` (and its `hookshot_programs.idx`), `hookshot_pipelines.bin`,
-  `mkw_vk_pipelines.bin` and other build output;
-- saves (`user/`), `hookshot_options.ini`, `hookshot_env.txt` and `language.txt`.
+- `hookshot.exe`, `hookshot_vk.dll` and other build output, and the game folder's `cache/` (`hookshot_programs.bin` and
+  its `.idx`, `hookshot_pipelines.bin`, `hookshot_vk_pipelines.bin`);
+- saves (`user/`), `hookshot_options.ini`, `hookshot_env.txt` and `language.txt`. The one exception: scrubbed saves
+  under `assets/saves/` ([the rules](assets/saves/README.md)): one slot each (`progress.sav` and `caption.sav` only),
+  its picture made grey and its date reset by `scripts/oot_saves.py scrub`, passing `check-repo-saves`, made fresh
+  for the farm (never someone's own adventure), and added through a pull request two maintainers approve.
+  `account.sav`, `option.sav`, `hookshot_options.ini`, `hookshot_env.txt` and the rest of `user/` stay banned.
 
 Do not open an issue or a PR asking where to get the game, how to decrypt it, or for someone else's files. A
 screenshot, a video and `hookshot_log.txt` are fine and often necessary; the log holds no game data.
@@ -78,8 +82,7 @@ before it starts.
    | From `tools` | To | Variable |
    |---|---|---|
    | `tools\cpm` | anywhere | `RX_CPM` points at it (Vulkan headers and FFmpeg; without it, system headers or `HOOKSHOT_*_HEADERS`, the standalone build stops) |
-   | `tools\wgpu-native` | anywhere | `WGPU_NATIVE` points at it (the WebGPU fallback renderer; without it the game is built without one) |
-   | `tools\third_party` | `third_party\` | (its `.dll`, `.exe`, `.lib` and `.sha1` files, to the same places: `a64emit`, `lld-link`, `zbic` and SDL2) |
+   | `tools\third_party` | `third_party\` | (its `.dll`, `.exe`, `.lib` and `.sha1` files, to the same places: `a64emit`, `lld-link`, `zbic`, SDL2 and `renhdrum` (RenHDrum, some controllers' vibration)) |
    | `tools\work` | `work\` | (hot-function list, link order, profile and icon; without it the game builds but runs slower) |
 
 4. Run everything with `python -I` from the repository root.
@@ -94,6 +97,21 @@ scripts/linux/deps.sh       # LLVM, Python packages, FFmpeg with dav1d, SDL2, Vu
 scripts/linux/appimage.sh   # the AppImage, in build-linux/
 ```
 
+The scripts expect Ubuntu 22.04, the system CI builds the AppImage in: the AppImage carries that system's C library, so
+the game it builds runs on glibc 2.35 and newer. On another distribution, build it in a container with the same system
+(Docker or Podman, `DOCKER=podman`):
+
+```sh
+scripts/linux/docker.sh             # deps.sh, then appimage.sh, in scripts/linux/Dockerfile's Ubuntu 22.04
+scripts/linux/docker.sh shell       # a shell in that environment, with the checkout at /src
+```
+
+The AppImage lands in `build-linux/` as above. The container keeps its own `build-linux/docker-deps` and
+`build-linux/docker-vk-work`: parts built on the host link against its newer glibc and would not load on older systems.
+The Dockerfile's packages are the workflow's (`tests/test_linux_docker_packages.py` checks that they stay the same).
+Where SELinux is enforcing (Fedora, RHEL), the script runs the container with `--security-opt label=disable`: the
+checkout is not labelled for containers, and relabelling it with `:z` would change it on the host.
+
 The AppImage needs glibc 2.35 or newer and a Vulkan 1.3 driver with mesh shaders. `HOOKSHOT_JOBS` sets how many files
 compile at once. The README's [Linux section](readme.md#on-linux) has the details and the runtime paths.
 
@@ -105,16 +123,17 @@ builds with `scripts/ngx_sdk.py` (it prints NVIDIA's license notice and needs `-
 then build with `HOOKSHOT_NGX_SDK=<sdk folder>`:
 
 ```powershell
-python -I scripts/ngx_sdk.py --platform windows C:\path\ngx-sdk     # headers, nvsdk_ngx_s.lib, nvngx_dlss.dll
+python -I scripts/ngx_sdk.py --platform windows C:\path\ngx-sdk     # headers, nvsdk_ngx_s.lib, nvngx_dlss(g).dll
 $env:HOOKSHOT_NGX_SDK = "C:\path\ngx-sdk"
 python -I nx2/make_game.py --nup "C:\path\your-game.nup" --out "C:\Games\Hookshot-dlss"
 ```
 
 On Windows the llvm-mingw build links NVIDIA's static `nvsdk_ngx_s.lib` (built for Microsoft's static runtime) into
 `hookshot_vk.dll`, with `gpu/vk/vk_ngx_msvc_rt.cpp` and `host/mingw_msvc_shims.c` for what it needs of that runtime.
-`make_game.py` copies `nvngx_dlss.dll` into the game folder's `ngx` folder; never put NGX's core, `_nvngx.dll`, beside
-the game (it is the driver's). On Linux it is `--platform linux` (or `scripts/linux/ngx-sdk.sh`), with `libnvsdk_ngx.a`
-and `libnvidia-ngx-dlss.so`. A Windows game with DLSS can be built on Linux too, with `RX_TARGET=windows` as below.
+`make_game.py` copies `nvngx_dlss.dll` and DLSS Frame Generation's `nvngx_dlssg.dll` into the game folder's `ngx`
+folder; never put NGX's core, `_nvngx.dll`, beside the game (it is the driver's). On Linux it is `--platform linux` (or
+`scripts/linux/ngx-sdk.sh`), with `libnvsdk_ngx.a`, `libnvidia-ngx-dlss.so` and `libnvidia-ngx-dlssg.so`. A Windows
+game with DLSS can be built on Linux too, with `RX_TARGET=windows` as below.
 CI's `vulkan-dlss` workflow (`.github/workflows/vulkan-dlss.yml`) checks only that `hookshot_vk.dll` still links with the
 SDK. It runs by hand, and on a push or pull request only when a file DLSS's build depends on changes; it accepts NVIDIA's
 license for that run alone and uploads nothing.
@@ -131,6 +150,9 @@ workload, or build it from a developer prompt:
 ```powershell
 dotnet build builder/HookshotBuilder.sln
 ```
+
+For a Windows installation that keeps its own state on an external SSD, see
+[portable Builder setup and relocation](docs/windows-portable-builder.md).
 
 You only need Visual Studio for the builder itself. The game build uses llvm-mingw.
 
@@ -155,16 +177,19 @@ compilers that always run (up to 4 on Windows) still run under a smaller number.
 | `python -I nx2/lift.py --standalone --write` | Lift the game to C in `work/sa/gen`. |
 | `python -I nx2/build.py --standalone --jobs 4` | Compile `work/sa/build/hookshot.exe` and `hookshot_vk.dll`. |
 | `powershell -File scripts/run-vk.ps1 -Window -Seconds 120` | Run the standalone build with the Vulkan back end and take screenshots in `work/runs/<name>/shots`. |
-| `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_PROFILE`, `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
+| `python -I scripts/prof.py <stacks file>` | Read a profile sampled with `HOS_PROFILE_EVERY`, `HOS_SAMPLE` and `HOS_SAMPLE_FILE`. |
 
 Use a separate `--work` folder or `OOT_WORK` if you keep more than one dump around. The lifted C and every build are
 local artifacts; they are never committed.
+
+Not measuring speed? [A faster build for development](docs/development.md#a-faster-build-for-development) compiles the
+hot code at `-O1`, about a quarter less compile time. Never use it for fps, timings or a release.
 
 ## Testing
 
 ### Game-free checks
 
-These need no dump and are what CI runs, on every pull request and every push to `main`. One command runs them all:
+These need no dump and are what CI runs, on every pull request and every push to `main`. One command runs the source checks:
 
 ```powershell
 python -I -B tests/run_all.py
@@ -182,6 +207,11 @@ validator (`spirv-val`), the SPIR-V or Vulkan headers (`HOOKSHOT_SPIRV_HEADERS` 
 cache in `RX_CPM` or `build-linux/deps/cpm`), or the `zstandard` package. A check whose tool is missing is skipped and
 says so; CI passes `--strict`, which fails it instead. A check that cannot run in CI (a GPU, the game, a Visual Studio
 prompt), or runs on one OS only, says so in its own file with `RUN_ALL_SKIP`; `--no-skip` runs it anyway.
+
+CI also runs `tests/run_vulkan_fixtures.py` on Ubuntu 24.04 with Mesa's lavapipe software driver and the Khronos
+validation layer. It executes the authored write-back shader, copy-span and seven offscreen aspect/crop cases;
+missing devices, skipped cases and validation errors fail the job. This is CPU Vulkan execution, not hardware GPU
+coverage, a swapchain or a game run. The ordinary source checks keep their GPU opt-ins/skips for machines without Vulkan.
 
 ### Checks that need your dump or a run
 
@@ -226,6 +256,9 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
 
 - Match the file you are editing: there is no formatter configuration, so use the indentation, comment style and
   naming around you. Do not reformat unrelated code in the same change.
+- A function that keeps a rule written in the docs says where, in a comment just above it: `// doc: docs/<file>.md#<heading
+  anchor>` (`# doc:` in Python), with the rule's number or a few words after it. `tests/test_doc_anchors.py` fails on an
+  anchor whose file or heading is gone, so a renamed heading is fixed in the same change.
 - Keep OoT-specific code in new files where possible. `nx2/`, `host/` and `gpu/` are kept close to mkw-recomp so
   upstream fixes can be applied as a patch; keeping the paths and the shared files recognizable is what makes that
   work. Each sync names its new mkw-recomp base commit in the commit message.
@@ -254,13 +287,19 @@ the development guide's [reference](docs/development.md#switches-for-testing-and
 3. Write the title as a Conventional Commit (see [Pull request titles](#pull-request-titles) below). Start the body
    with why the PR is needed, in one or two plain sentences a player could follow: the bug, the missing feature or the
    cost it removes ("The menu's text is cut off at 4K", "First starts spend 20 s waiting on a few shaders"). Then say
-   what changed, how it was tested (GPU, driver, game area, fps before and after), and link the issue it fixes.
-4. Include screenshots when the change shows on screen: graphics, the menu, the start-up screen, an overlay, a
+   what changed and how it was tested (GPU, driver, game area, fps before and after).
+4. Link the issues the PR fixes, if there are any. Write `Fixes #123` in the body (one line per issue) so that merging
+   the PR closes the issue. If the PR only addresses part of an issue, or is related to one, write `Part of #123` or
+   `See #123` instead, so the issue stays open. Search the open issues before you open the PR: a report may already
+   describe the bug you fixed.
+5. Include screenshots when the change shows on screen: graphics, the menu, the start-up screen, an overlay, a
    message. Before and after for a fix, the new screen for a feature, and the sizes or settings it was checked at. A
    screenshot of the game is fine; the rule above is about game files, not pictures of the game.
-5. Run the relevant checks. CI must pass; a change that only works on your machine is not ready.
-6. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
-7. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
+6. Run the relevant checks. CI must pass; a change that only works on your machine is not ready. CI has no game, so
+   also run the change in the game and put what you measured in the description: before and after on the same
+   scene for a performance change, the bug gone for a fix. An untested change is opened as a draft.
+7. Rebase or merge `main` when it has moved, and resolve conflicts in your branch rather than in the review.
+8. Do not include build output, dumps, generated files or a `.gitignore` bypass. Check `git status`.
 
 ### Pull request titles
 

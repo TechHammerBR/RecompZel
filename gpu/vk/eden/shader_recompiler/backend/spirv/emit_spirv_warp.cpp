@@ -4,9 +4,11 @@
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/emit_spirv_instructions.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
+#include "shader_recompiler/backend/spirv/mma_software.h"
 
 namespace Shader::Backend::SPIRV {
 namespace {
@@ -135,79 +137,281 @@ Id BroadcastLane(EmitContext& ctx, Id value, u32 lane) {
     }
     return result;
 }
+
+// (hookshot, mma_layout.h mesh_fallback_shared_warp) The shared warp: a fallback stage's 32 lanes are its workgroup's invocations,
+// on however many hardware threads the driver runs them, and what a warp operation needs of the other lanes goes through words of
+// workgroup memory. The lanes that run a block are its region's: the whole warp at the top, and inside an if the lanes that took
+// it, which every lane of the region around it says (WarpOpenRegion) before any goes in. A site (a ballot, a vote, a shuffle) is
+// reached by all of its region's lanes, since the planner (EmitContext::DefineSharedWarp) takes no stage that leaves an if early
+// or has a site in a loop: each lane writes its part and its arrival, then waits for the arrivals it needs. A lane only waits
+// for lanes behind it in the program, which wait for none ahead of them, so the waits end.
+Id WarpWord(EmitContext& ctx, Id index) {
+    return ctx.OpAccessChain(ctx.warp_word_pointer, ctx.warp_words, index);
+}
+
+Id WarpWord(EmitContext& ctx, u32 index) {
+    return WarpWord(ctx, ctx.Const(index));
+}
+
+u32 WarpTake(EmitContext& ctx, u32 words) {
+    if (ctx.warp_word_next + words > ctx.warp_word_count) {
+        throw LogicError("Shared warp: {} words past the {} planned", ctx.warp_word_next + words, ctx.warp_word_count);
+    }
+    const u32 first{ctx.warp_word_next};
+    ctx.warp_word_next += words;
+    return first;
+}
+
+Id WarpScope(EmitContext& ctx) {
+    return ctx.Const(static_cast<u32>(spv::Scope::Workgroup));
+}
+
+void WarpOr(EmitContext& ctx, u32 word, Id bits) {
+    ctx.OpAtomicOr(ctx.U32[1], WarpWord(ctx, word), WarpScope(ctx), ctx.u32_zero_value, bits);
+}
+
+Id WarpRead(EmitContext& ctx, Id pointer) {
+    return ctx.OpAtomicLoad(ctx.U32[1], pointer, WarpScope(ctx), ctx.u32_zero_value);
+}
+
+void WarpWait(EmitContext& ctx, u32 word, Id lanes) {
+    ctx.OpFunctionCall(ctx.void_id, ctx.warp_wait, ctx.Const(word), lanes);
+}
+
+/// (RX_VK_MESH_SHARED_WARP_CHECK) one more answer compared, and one more difference where there is one: the counters past
+/// the fallback's records (emit_spirv.h WARP_COUNTER_*)
+void WarpCheck(EmitContext& ctx, Id differs) {
+    const Id device{ctx.Const(static_cast<u32>(spv::Scope::Device))};
+    ctx.OpAtomicIAdd(ctx.U32[1], ctx.MeshFallbackWarpCounter(WARP_COUNTER_COMPARED), device, ctx.u32_zero_value, ctx.Const(1U));
+    ctx.OpAtomicIAdd(ctx.U32[1], ctx.MeshFallbackWarpCounter(WARP_COUNTER_DIFFERENT), device, ctx.u32_zero_value,
+                     ctx.OpSelect(ctx.U32[1], differs, ctx.Const(1U), ctx.u32_zero_value));
+}
+
+/// The lanes of the block's region for which `pred` holds
+Id SharedBallot(EmitContext& ctx, Id pred) {
+    const u32 word{WarpTake(ctx, WARP_BALLOT_WORDS)};
+    if (pred.value == ctx.true_value.value) {
+        return ctx.warp_region;
+    }
+    WarpOr(ctx, word, ctx.OpSelect(ctx.U32[1], pred, ctx.warp_bit, ctx.u32_zero_value));
+    WarpOr(ctx, word + 1, ctx.warp_bit);
+    WarpWait(ctx, word + 1, ctx.warp_region);
+    return WarpRead(ctx, WarpWord(ctx, word));
+}
+
+/// `value` of lane `source` (0 where that lane is not in the block's region: the subgroup's shuffle leaves it undefined)
+Id SharedShuffle(EmitContext& ctx, Id value, Id source) {
+    const u32 word{WarpTake(ctx, WARP_SHUFFLE_WORDS)};
+    const Id lane{ctx.OpBitwiseAnd(ctx.U32[1], source, ctx.Const(31U))};
+    ctx.OpAtomicExchange(ctx.U32[1], WarpWord(ctx, ctx.OpIAdd(ctx.U32[1], ctx.warp_lane, ctx.Const(word))), WarpScope(ctx),
+                         ctx.u32_zero_value, value);
+    WarpOr(ctx, word + 32, ctx.warp_bit);
+    WarpWait(ctx, word + 32,
+             ctx.OpBitwiseAnd(ctx.U32[1], ctx.OpShiftLeftLogical(ctx.U32[1], ctx.Const(1U), lane), ctx.warp_region));
+    return WarpRead(ctx, WarpWord(ctx, ctx.OpIAdd(ctx.U32[1], lane, ctx.Const(word))));
+}
+
+/// `value` of the constant lane `lane`: one word, which only that lane writes
+Id SharedBroadcast(EmitContext& ctx, Id value, u32 lane) {
+    const u32 word{WarpTake(ctx, WARP_BROADCAST_WORDS)};
+    WarpOr(ctx, word,
+           ctx.OpSelect(ctx.U32[1], ctx.OpIEqual(ctx.U1, ctx.warp_lane, ctx.Const(lane)), value, ctx.u32_zero_value));
+    WarpOr(ctx, word + 1, ctx.warp_bit);
+    WarpWait(ctx, word + 1, ctx.OpBitwiseAnd(ctx.U32[1], ctx.Const(1U << lane), ctx.warp_region));
+    return WarpRead(ctx, WarpWord(ctx, word));
+}
+
+/// A lane mask of the shared warp, from the lane's bit: lower lanes, lower or equal, higher, higher or equal
+Id SharedLtMask(EmitContext& ctx) {
+    return ctx.OpISub(ctx.U32[1], ctx.warp_bit, ctx.Const(1U));
+}
+
+Id SharedLeMask(EmitContext& ctx) {
+    return ctx.OpBitwiseOr(ctx.U32[1], SharedLtMask(ctx), ctx.warp_bit);
+}
+
+/// (the check: where a shuffle's two answers must agree: its source in range and a lane of the region; the subgroup's answer
+/// for any other lane is undefined)
+Id ShuffleCounts(EmitContext& ctx, Id in_range, Id source) {
+    if (!ctx.warp_shared_check) {
+        return Id{};
+    }
+    const Id bit{ctx.OpShiftLeftLogical(ctx.U32[1], ctx.Const(1U), ctx.OpBitwiseAnd(ctx.U32[1], source, ctx.Const(31U)))};
+    return ctx.OpLogicalAnd(ctx.U1, in_range,
+                            ctx.OpINotEqual(ctx.U1, ctx.OpBitwiseAnd(ctx.U32[1], bit, ctx.warp_region), ctx.u32_zero_value));
+}
+
+/// What the stage uses: the shared answer, or with the check the subgroup's, the two compared (`counts`: where they must agree)
+template <typename Native>
+Id SharedOr(EmitContext& ctx, Id shared, Native&& native, Id counts = Id{}, bool boolean = false) {
+    if (!ctx.warp_shared_check) {
+        return shared;
+    }
+    const Id subgroup{native()};
+    Id differs{boolean ? ctx.OpLogicalNotEqual(ctx.U1, shared, subgroup) : ctx.OpINotEqual(ctx.U1, shared, subgroup)};
+    if (Sirit::ValidId(counts)) {
+        differs = ctx.OpLogicalAnd(ctx.U1, differs, counts);
+    }
+    WarpCheck(ctx, differs);
+    return subgroup;
+}
 } // Anonymous namespace
 
-Id EmitLaneId(EmitContext& ctx) {
-    const Id id{GetThreadId(ctx)};
-    if (!ctx.profile.warp_size_potentially_larger_than_guest) {
-        return id;
+void WarpOpenRegion(EmitContext& ctx, const IR::Block* body, Id cond) {
+    if (!ctx.warp_shared) {
+        return;
     }
-    return ctx.OpBitwiseAnd(ctx.U32[1], id, ctx.Const(31U));
+    const bool region{ctx.warp_region_ifs.contains(body)};
+    ctx.warp_region_opened.push_back(region);
+    if (!region) {
+        return;
+    }
+    // (every lane of the region around says whether it goes in, then that it has said so; the lanes that go in are known
+    // once all of them have)
+    const u32 word{WarpTake(ctx, WARP_REGION_WORDS)};
+    WarpOr(ctx, word, ctx.OpSelect(ctx.U32[1], cond, ctx.warp_bit, ctx.u32_zero_value));
+    WarpOr(ctx, word + 1, ctx.warp_bit);
+    WarpWait(ctx, word + 1, ctx.warp_region);
+    ctx.warp_regions.push_back(ctx.warp_region);
+    ctx.warp_region = WarpRead(ctx, WarpWord(ctx, word));
+}
+
+void WarpCloseRegion(EmitContext& ctx) {
+    if (!ctx.warp_shared || ctx.warp_region_opened.empty()) {
+        return;
+    }
+    const bool region{ctx.warp_region_opened.back()};
+    ctx.warp_region_opened.pop_back();
+    if (region) {
+        ctx.warp_region = ctx.warp_regions.back();
+        ctx.warp_regions.pop_back();
+    }
+}
+
+/// The shared warp's start, in the stage's entry block: the invocation's lane and bit, the whole warp as the region, and
+/// the words at zero (the caller's barrier follows: every lane has zeroed its words before any writes one)
+void WarpPrologue(EmitContext& ctx) {
+    if (!ctx.warp_shared) {
+        return;
+    }
+    ctx.warp_lane = ctx.OpCompositeExtract(ctx.U32[1], ctx.OpLoad(ctx.U32[3], ctx.local_invocation_id), 0U);
+    ctx.warp_bit = ctx.OpShiftLeftLogical(ctx.U32[1], ctx.Const(1U), ctx.warp_lane);
+    ctx.warp_region = ctx.Const(0xffffffffU);
+    for (u32 first = 0; first < ctx.warp_word_count; first += 32) {
+        const Id at{ctx.OpUMin(ctx.U32[1], ctx.OpIAdd(ctx.U32[1], ctx.warp_lane, ctx.Const(first)),
+                               ctx.Const(ctx.warp_word_count - 1))};
+        ctx.OpStore(WarpWord(ctx, at), ctx.u32_zero_value);
+    }
+}
+
+Id EmitLaneId(EmitContext& ctx) {
+    const auto subgroup = [&] {
+        const Id id{GetThreadId(ctx)};
+        if (!ctx.profile.warp_size_potentially_larger_than_guest) {
+            return id;
+        }
+        return ctx.OpBitwiseAnd(ctx.U32[1], id, ctx.Const(31U));
+    };
+    if (ctx.warp_shared) {
+        return SharedOr(ctx, ctx.warp_lane, subgroup);
+    }
+    return subgroup();
 }
 
 Id EmitVoteAll(EmitContext& ctx, Id pred) {
     if (!StageSupportsSubgroups(ctx)) {
         return pred;
     }
-    if (!ctx.profile.warp_size_potentially_larger_than_guest) {
-        return ctx.OpGroupNonUniformAll(ctx.U1, SubgroupScope(ctx), pred);
+    const auto subgroup = [&] {
+        if (!ctx.profile.warp_size_potentially_larger_than_guest) {
+            return ctx.OpGroupNonUniformAll(ctx.U1, SubgroupScope(ctx), pred);
+        }
+        const Id mask_ballot{
+            ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), ctx.true_value)};
+        const Id active_mask{WarpExtract(ctx, mask_ballot)};
+        const Id ballot{
+            WarpExtract(ctx, ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), pred))};
+        const Id lhs{ctx.OpBitwiseAnd(ctx.U32[1], ballot, active_mask)};
+        return ctx.OpIEqual(ctx.U1, lhs, active_mask);
+    };
+    if (ctx.warp_shared) {
+        return SharedOr(ctx, ctx.OpIEqual(ctx.U1, SharedBallot(ctx, pred), ctx.warp_region), subgroup, Id{}, true);
     }
-    const Id mask_ballot{
-        ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), ctx.true_value)};
-    const Id active_mask{WarpExtract(ctx, mask_ballot)};
-    const Id ballot{
-        WarpExtract(ctx, ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), pred))};
-    const Id lhs{ctx.OpBitwiseAnd(ctx.U32[1], ballot, active_mask)};
-    return ctx.OpIEqual(ctx.U1, lhs, active_mask);
+    return subgroup();
 }
 
 Id EmitVoteAny(EmitContext& ctx, Id pred) {
     if (!StageSupportsSubgroups(ctx)) {
         return pred;
     }
-    if (!ctx.profile.warp_size_potentially_larger_than_guest) {
-        return ctx.OpGroupNonUniformAny(ctx.U1, SubgroupScope(ctx), pred);
+    const auto subgroup = [&] {
+        if (!ctx.profile.warp_size_potentially_larger_than_guest) {
+            return ctx.OpGroupNonUniformAny(ctx.U1, SubgroupScope(ctx), pred);
+        }
+        const Id mask_ballot{
+            ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), ctx.true_value)};
+        const Id active_mask{WarpExtract(ctx, mask_ballot)};
+        const Id ballot{
+            WarpExtract(ctx, ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), pred))};
+        const Id lhs{ctx.OpBitwiseAnd(ctx.U32[1], ballot, active_mask)};
+        return ctx.OpINotEqual(ctx.U1, lhs, ctx.u32_zero_value);
+    };
+    if (ctx.warp_shared) {
+        return SharedOr(ctx, ctx.OpINotEqual(ctx.U1, SharedBallot(ctx, pred), ctx.u32_zero_value), subgroup, Id{}, true);
     }
-    const Id mask_ballot{
-        ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), ctx.true_value)};
-    const Id active_mask{WarpExtract(ctx, mask_ballot)};
-    const Id ballot{
-        WarpExtract(ctx, ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), pred))};
-    const Id lhs{ctx.OpBitwiseAnd(ctx.U32[1], ballot, active_mask)};
-    return ctx.OpINotEqual(ctx.U1, lhs, ctx.u32_zero_value);
+    return subgroup();
 }
 
 Id EmitVoteEqual(EmitContext& ctx, Id pred) {
     if (!StageSupportsSubgroups(ctx)) {
         return ctx.true_value;
     }
-    if (!ctx.profile.warp_size_potentially_larger_than_guest) {
-        return ctx.OpGroupNonUniformAllEqual(ctx.U1, SubgroupScope(ctx), pred);
+    const auto subgroup = [&] {
+        if (!ctx.profile.warp_size_potentially_larger_than_guest) {
+            return ctx.OpGroupNonUniformAllEqual(ctx.U1, SubgroupScope(ctx), pred);
+        }
+        const Id mask_ballot{
+            ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), ctx.true_value)};
+        const Id active_mask{WarpExtract(ctx, mask_ballot)};
+        const Id ballot{
+            WarpExtract(ctx, ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), pred))};
+        const Id lhs{ctx.OpBitwiseXor(ctx.U32[1], ballot, active_mask)};
+        return ctx.OpLogicalOr(ctx.U1, ctx.OpIEqual(ctx.U1, lhs, ctx.u32_zero_value),
+                               ctx.OpIEqual(ctx.U1, lhs, active_mask));
+    };
+    if (ctx.warp_shared) {
+        const Id ballot{SharedBallot(ctx, pred)};
+        return SharedOr(ctx,
+                        ctx.OpLogicalOr(ctx.U1, ctx.OpIEqual(ctx.U1, ballot, ctx.u32_zero_value),
+                                        ctx.OpIEqual(ctx.U1, ballot, ctx.warp_region)),
+                        subgroup, Id{}, true);
     }
-    const Id mask_ballot{
-        ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), ctx.true_value)};
-    const Id active_mask{WarpExtract(ctx, mask_ballot)};
-    const Id ballot{
-        WarpExtract(ctx, ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), pred))};
-    const Id lhs{ctx.OpBitwiseXor(ctx.U32[1], ballot, active_mask)};
-    return ctx.OpLogicalOr(ctx.U1, ctx.OpIEqual(ctx.U1, lhs, ctx.u32_zero_value),
-                           ctx.OpIEqual(ctx.U1, lhs, active_mask));
+    return subgroup();
 }
 
 Id EmitSubgroupBallot(EmitContext& ctx, Id pred) {
     if (!StageSupportsSubgroups(ctx)) {
         return ctx.OpSelect(ctx.U32[1], pred, ctx.Const(1u), ctx.u32_zero_value);
     }
-    const Id ballot{ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), pred)};
-    if (!ctx.profile.warp_size_potentially_larger_than_guest) {
-        return ctx.OpCompositeExtract(ctx.U32[1], ballot, 0U);
+    const auto subgroup = [&] {
+        const Id ballot{ctx.OpGroupNonUniformBallot(ctx.U32[4], SubgroupScope(ctx), pred)};
+        if (!ctx.profile.warp_size_potentially_larger_than_guest) {
+            return ctx.OpCompositeExtract(ctx.U32[1], ballot, 0U);
+        }
+        return WarpExtract(ctx, ballot);
+    };
+    if (ctx.warp_shared) {
+        return SharedOr(ctx, SharedBallot(ctx, pred), subgroup);
     }
-    return WarpExtract(ctx, ballot);
+    return subgroup();
 }
 
 Id EmitSubgroupEqMask(EmitContext& ctx) {
     if (!StageSupportsSubgroups(ctx)) {
         return ctx.Const(1u);
+    }
+    if (ctx.warp_shared) {
+        return SharedOr(ctx, ctx.warp_bit, [&] { return LoadMask(ctx, ctx.subgroup_mask_eq); });
     }
     return LoadMask(ctx, ctx.subgroup_mask_eq);
 }
@@ -216,12 +420,18 @@ Id EmitSubgroupLtMask(EmitContext& ctx) {
     if (!StageSupportsSubgroups(ctx)) {
         return ctx.u32_zero_value;
     }
+    if (ctx.warp_shared) {
+        return SharedOr(ctx, SharedLtMask(ctx), [&] { return LoadMask(ctx, ctx.subgroup_mask_lt); });
+    }
     return LoadMask(ctx, ctx.subgroup_mask_lt);
 }
 
 Id EmitSubgroupLeMask(EmitContext& ctx) {
     if (!StageSupportsSubgroups(ctx)) {
         return ctx.Const(1u);
+    }
+    if (ctx.warp_shared) {
+        return SharedOr(ctx, SharedLeMask(ctx), [&] { return LoadMask(ctx, ctx.subgroup_mask_le); });
     }
     return LoadMask(ctx, ctx.subgroup_mask_le);
 }
@@ -230,12 +440,18 @@ Id EmitSubgroupGtMask(EmitContext& ctx) {
     if (!StageSupportsSubgroups(ctx)) {
         return ctx.u32_zero_value;
     }
+    if (ctx.warp_shared) {
+        return SharedOr(ctx, ctx.OpNot(ctx.U32[1], SharedLeMask(ctx)), [&] { return LoadMask(ctx, ctx.subgroup_mask_gt); });
+    }
     return LoadMask(ctx, ctx.subgroup_mask_gt);
 }
 
 Id EmitSubgroupGeMask(EmitContext& ctx) {
     if (!StageSupportsSubgroups(ctx)) {
         return ctx.Const(1u);
+    }
+    if (ctx.warp_shared) {
+        return SharedOr(ctx, ctx.OpNot(ctx.U32[1], SharedLtMask(ctx)), [&] { return LoadMask(ctx, ctx.subgroup_mask_ge); });
     }
     return LoadMask(ctx, ctx.subgroup_mask_ge);
 }
@@ -258,12 +474,26 @@ Id EmitShuffleIndex(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id cla
     const IR::Value lane{inst->Arg(1).Resolve()};
     const IR::Value segment{inst->Arg(3).Resolve()};
     if (lane.IsImmediate() && segment.IsImmediate() && segment.U32() == 0) {
-        return ctx.OpSelect(ctx.U32[1], in_range, BroadcastLane(ctx, value, lane.U32() & 31),
+        const auto subgroup = [&] { return BroadcastLane(ctx, value, lane.U32() & 31); };
+        if (ctx.warp_shared) {
+            const Id source{ctx.Const(lane.U32() & 31)};
+            const Id shared{SharedBroadcast(ctx, value, lane.U32() & 31)};
+            return ctx.OpSelect(ctx.U32[1], in_range,
+                                SharedOr(ctx, shared, subgroup, ShuffleCounts(ctx, in_range, source)),
+                                value);
+        }
+        return ctx.OpSelect(ctx.U32[1], in_range, subgroup(), value);
+    }
+    const auto subgroup = [&] {
+        return ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id), UseShuffleFallback(ctx));
+    };
+    if (ctx.warp_shared) {
+        const Id shared{SharedShuffle(ctx, value, src_thread_id)};
+        return ctx.OpSelect(ctx.U32[1], in_range,
+                            SharedOr(ctx, shared, subgroup, ShuffleCounts(ctx, in_range, src_thread_id)),
                             value);
     }
-    const Id shuffled{
-        ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id), UseShuffleFallback(ctx))};
-    return ctx.OpSelect(ctx.U32[1], in_range, shuffled, value);
+    return ctx.OpSelect(ctx.U32[1], in_range, subgroup(), value);
 }
 
 Id EmitShuffleUp(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clamp,
@@ -279,9 +509,16 @@ Id EmitShuffleUp(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clamp,
     const Id in_range{ctx.OpSGreaterThanEqual(ctx.U1, src_thread_id, max_thread_id)};
 
     SetInBoundsFlag(inst, in_range);
-    const Id shuffled{ShuffleRelative(ctx, value, delta, src_thread_id,
-                                      spv::Op::OpGroupNonUniformShuffleUp)};
-    return ctx.OpSelect(ctx.U32[1], in_range, shuffled, value);
+    const auto subgroup = [&] {
+        return ShuffleRelative(ctx, value, delta, src_thread_id, spv::Op::OpGroupNonUniformShuffleUp);
+    };
+    if (ctx.warp_shared) {
+        const Id shared{SharedShuffle(ctx, value, src_thread_id)};
+        return ctx.OpSelect(ctx.U32[1], in_range,
+                            SharedOr(ctx, shared, subgroup, ShuffleCounts(ctx, in_range, src_thread_id)),
+                            value);
+    }
+    return ctx.OpSelect(ctx.U32[1], in_range, subgroup(), value);
 }
 
 Id EmitShuffleDown(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clamp,
@@ -297,9 +534,16 @@ Id EmitShuffleDown(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clam
     const Id in_range{ctx.OpSLessThanEqual(ctx.U1, src_thread_id, max_thread_id)};
 
     SetInBoundsFlag(inst, in_range);
-    const Id shuffled{ShuffleRelative(ctx, value, delta, src_thread_id,
-                                      spv::Op::OpGroupNonUniformShuffleDown)};
-    return ctx.OpSelect(ctx.U32[1], in_range, shuffled, value);
+    const auto subgroup = [&] {
+        return ShuffleRelative(ctx, value, delta, src_thread_id, spv::Op::OpGroupNonUniformShuffleDown);
+    };
+    if (ctx.warp_shared) {
+        const Id shared{SharedShuffle(ctx, value, src_thread_id)};
+        return ctx.OpSelect(ctx.U32[1], in_range,
+                            SharedOr(ctx, shared, subgroup, ShuffleCounts(ctx, in_range, src_thread_id)),
+                            value);
+    }
+    return ctx.OpSelect(ctx.U32[1], in_range, subgroup(), value);
 }
 
 Id EmitShuffleButterfly(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id clamp,
@@ -317,10 +561,18 @@ Id EmitShuffleButterfly(EmitContext& ctx, IR::Inst* inst, Id value, Id index, Id
     SetInBoundsFlag(inst, in_range);
     // (hookshot) through the broadcasts where shuffles are broken (UseShuffleFallback: AMD's fragment stages, Lichii #273),
     // as the absolute and relative shuffles are; #273 left SHFL.BFLY native, and some of Kokiri Forest's plants use it
-    const Id shuffled{UseShuffleFallback(ctx)
-                          ? ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id), true)
-                          : ctx.OpGroupNonUniformShuffleXor(ctx.U32[1], SubgroupScope(ctx), value, mask)};
-    return ctx.OpSelect(ctx.U32[1], in_range, shuffled, value);
+    const auto subgroup = [&] {
+        return UseShuffleFallback(ctx)
+                   ? ShuffleAbsolute(ctx, value, HostThreadId(ctx, src_thread_id), true)
+                   : ctx.OpGroupNonUniformShuffleXor(ctx.U32[1], SubgroupScope(ctx), value, mask);
+    };
+    if (ctx.warp_shared) {
+        const Id shared{SharedShuffle(ctx, value, src_thread_id)};
+        return ctx.OpSelect(ctx.U32[1], in_range,
+                            SharedOr(ctx, shared, subgroup, ShuffleCounts(ctx, in_range, src_thread_id)),
+                            value);
+    }
+    return ctx.OpSelect(ctx.U32[1], in_range, subgroup(), value);
 }
 
 Id EmitQuadBroadcast(EmitContext& ctx, Id value, Id lane) {
@@ -379,127 +631,19 @@ Id EmitDPdyCoarse(EmitContext& ctx, Id op_a) {
     return ctx.OpDPdyCoarse(ctx.F32[1], op_a);
 }
 
-// (hookshot) HMMA in software, from Lichii (zortos293/Lichii, emit_spirv_tensor.cpp, GPL-3.0): the 32 lanes' fragments
-// through subgroup shuffles in one helper function, accumulated with FMA in f32 and rounded to f16 after every 8
-// columns of K, as HMMA.F16 does. It needs no cooperative matrices (RX_VK_MMA_SOFTWARE=1, vk_coopmat.cpp).
+// (hookshot) HMMA in software (mma_software.h): the 32 lanes' fragments through subgroup operations in one helper function,
+// accumulated with FMA in f32 and rounded to f16 after every 8 columns of K, as HMMA.F16 does. It needs no cooperative matrices
+// (RX_VK_MMA_SOFTWARE=1, vk_coopmat.cpp); the form is the one vk_coopmat.cpp's self-test chose for this device (mma_software_form).
 void DefineSoftwareMatrixFunction(EmitContext& ctx) {
-    {
-        constexpr bool variant = true;
-        ctx.AddCapability(spv::Capability::GroupNonUniform);
-        ctx.AddCapability(spv::Capability::GroupNonUniformShuffle);
-        if (!ctx.profile.SupportsSubgroupStage(ctx.stage) ||
-            ctx.profile.has_broken_spirv_subgroup_shuffle)
-            throw NotImplementedException("Software HMMA requires subgroup shuffle support");
-        const Id u32ty = ctx.U32[1], f32ty = ctx.F32[1];
-        const auto imm = [&](u32 v) { return ctx.Const(v); };
-        const auto add = [&](Id a, Id b) { return ctx.OpIAdd(u32ty, a, b); };
-        const auto and_ = [&](Id a, u32 b) { return ctx.OpBitwiseAnd(u32ty, a, imm(b)); };
-        const auto unpack = [&](Id v) { return ctx.OpUnpackHalf2x16(ctx.F32[2], v); };
-        const auto round_half = [&](Id value) {
-            // Do not express the intermediate rounding as unpack(pack(value)): drivers may
-            // eliminate that round trip. Round normal significands explicitly, ties to even;
-            // half subnormals lie on the exactly representable 2^-24 grid.
-            const Id bits = ctx.OpBitcast(u32ty, value);
-            const Id magnitude = and_(bits, 0x7fffffffU);
-            const Id tie = and_(ctx.OpShiftRightLogical(u32ty, magnitude, imm(13)), 1);
-            const Id rounded = and_(add(add(magnitude, imm(0xfff)), tie), ~0x1fffU);
-            const Id normal = ctx.OpSelect(u32ty,
-                ctx.OpUGreaterThanEqual(ctx.U1, rounded, imm(0x47800000)), imm(0x7f800000), rounded);
-            const Id scaled = ctx.OpFMul(f32ty, ctx.OpBitcast(f32ty, magnitude), ctx.Const(16777216.0f));
-            const Id subnormal = ctx.OpBitcast(u32ty,
-                ctx.OpFMul(f32ty, ctx.OpRoundEven(f32ty, scaled), ctx.Const(0x1p-24f)));
-            const Id finite = ctx.OpSelect(u32ty,
-                ctx.OpUGreaterThanEqual(ctx.U1, magnitude, imm(0x38800000)), normal, subnormal);
-            const Id result = ctx.OpSelect(u32ty,
-                ctx.OpUGreaterThanEqual(ctx.U1, magnitude, imm(0x7f800000)), magnitude, finite);
-            return ctx.OpBitcast(f32ty, ctx.OpBitwiseOr(u32ty, result, and_(bits, 0x80000000)));
-        };
-        const Id type = ctx.TypeFunction(ctx.U32[2], ctx.U32[4], ctx.U32[2], ctx.U32[2]);
-        const Id fn = ctx.OpFunction(ctx.U32[2], spv::FunctionControlMask::DontInline, type);
-        ctx.software_matrix_function = fn;
-        const Id matrix_a = ctx.OpFunctionParameter(ctx.U32[4]);
-        const Id matrix_b = ctx.OpFunctionParameter(ctx.U32[2]);
-        const Id matrix_c = ctx.OpFunctionParameter(ctx.U32[2]);
-        ctx.AddLabel();
-        const Id counter = ctx.AddLocalVariable(ctx.TypePointer(spv::StorageClass::Function, u32ty),
-                                           spv::StorageClass::Function);
-        std::array<Id, 4> accumulators;
-        for (auto& acc : accumulators)
-            acc = ctx.AddLocalVariable(ctx.TypePointer(spv::StorageClass::Function, f32ty),
-                                 spv::StorageClass::Function);
-        std::array<Id, 8> inputs;
-        for (u32 i = 0; i < 4; ++i)
-            inputs[i] = ctx.OpCompositeExtract(u32ty, matrix_a, i);
-        for (u32 i = 0; i < 2; ++i) {
-            inputs[4 + i] = ctx.OpCompositeExtract(u32ty, matrix_b, i);
-            inputs[6 + i] = ctx.OpCompositeExtract(u32ty, matrix_c, i);
-        }
-        for (u32 row = 0; row < 2; ++row) {
-            const Id c = unpack(inputs[6 + row]);
-            for (u32 col = 0; col < 2; ++col)
-                ctx.OpStore(accumulators[row * 2 + col], ctx.OpCompositeExtract(f32ty, c, col));
-        }
-        ctx.OpStore(counter, imm(0));
-        const Id lane = ctx.OpLoad(u32ty, ctx.subgroup_local_invocation_id);
-        const Id warp_base = and_(lane, ~31U);
-        const Id row_base = and_(lane, 28);
-        const Id col_base = ctx.OpShiftLeftLogical(u32ty, and_(lane, 3), imm(3));
-        const Id header = ctx.OpLabel(), body = ctx.OpLabel(), next = ctx.OpLabel(), end = ctx.OpLabel();
-        ctx.OpBranch(header);
-        ctx.AddLabel(header);
-        const Id pair = ctx.OpLoad(u32ty, counter);
-        const Id more = ctx.OpULessThan(ctx.U1, pair, imm(variant ? 8 : 4));
-        ctx.OpLoopMerge(end, next, spv::LoopControlMask::DontUnroll);
-        ctx.OpBranchConditional(more, body, end);
-        ctx.AddLabel(body);
-        const Id upper = ctx.OpUGreaterThanEqual(ctx.U1, pair, imm(4));
-        const Id component = and_(pair, 3);
-        const Id a_lane = add(warp_base, add(row_base, component));
-        const Id b_lane = add(warp_base, add(col_base, component));
-        const Id b = ctx.OpSelect(u32ty, upper, inputs[5], inputs[4]);
-        std::array<Id, 2> bs;
-        for (u32 col = 0; col < 2; ++col)
-            bs[col] = unpack(ctx.OpGroupNonUniformShuffle(u32ty, imm(3), b,
-                                                          add(b_lane, imm(col * 4))));
-        const Id round_now = ctx.OpIEqual(ctx.U1, component, imm(3));
-        for (u32 row = 0; row < 2; ++row) {
-            const Id a = ctx.OpSelect(u32ty, upper, inputs[row + 2], inputs[row]);
-            const Id as = unpack(ctx.OpGroupNonUniformShuffle(u32ty, imm(3), a, a_lane));
-            for (u32 col = 0; col < 2; ++col) {
-                Id value = ctx.OpLoad(f32ty, accumulators[row * 2 + col]);
-                for (u32 half = 0; half < 2; ++half) {
-                    value = ctx.OpFma(f32ty, ctx.OpCompositeExtract(f32ty, as, half),
-                                      ctx.OpCompositeExtract(f32ty, bs[col], half), value);
-                    ctx.Decorate(value, spv::Decoration::NoContraction);
-                }
-                ctx.OpStore(accumulators[row * 2 + col], value);
-            }
-        }
-        // HMMA.F16 rounds after each K=8 group, including the midpoint of K=16.
-        // OpSelect evaluates both operands: keep the expensive half conversion in
-        // a branch so the other three pairs do no rounding work. The counter is
-        // identical in every participating lane and all shuffles precede this branch.
-        const Id round_block = ctx.OpLabel(), round_merge = ctx.OpLabel();
-        ctx.OpSelectionMerge(round_merge, spv::SelectionControlMask::DontFlatten);
-        ctx.OpBranchConditional(round_now, round_block, round_merge);
-        ctx.AddLabel(round_block);
-        for (const Id accumulator : accumulators) {
-            ctx.OpStore(accumulator, round_half(ctx.OpLoad(f32ty, accumulator)));
-        }
-        ctx.OpBranch(round_merge);
-        ctx.AddLabel(round_merge);
-        ctx.OpBranch(next);
-        ctx.AddLabel(next);
-        ctx.OpStore(counter, add(pair, imm(1)));
-        ctx.OpBranch(header);
-        ctx.AddLabel(end);
-        std::array<Id, 2> packed;
-        for (u32 row = 0; row < 2; ++row)
-            packed[row] = ctx.OpPackHalf2x16(u32ty, ctx.OpCompositeConstruct(ctx.F32[2],
-                ctx.OpLoad(f32ty, accumulators[row * 2]), ctx.OpLoad(f32ty, accumulators[row * 2 + 1])));
-        ctx.OpReturnValue(ctx.OpCompositeConstruct(ctx.U32[2], packed[0], packed[1]));
-        ctx.OpFunctionEnd();
-    }
+    ctx.AddCapability(spv::Capability::GroupNonUniform);
+    ctx.AddCapability(spv::Capability::GroupNonUniformShuffle);
+    if (!ctx.profile.SupportsSubgroupStage(ctx.stage) || ctx.profile.has_broken_spirv_subgroup_shuffle)
+        throw NotImplementedException("Software HMMA requires subgroup shuffle support");
+    const auto form = static_cast<SoftwareMmaForm>(mma_software_form);
+    const bool quad = form != SoftwareMmaForm::Loop && mma_software_quad;
+    if (quad) ctx.AddCapability(spv::Capability::GroupNonUniformQuad);
+    const SoftwareMmaTypes types{ctx.U32[1], ctx.U32[2], ctx.U32[4], ctx.F32[1], ctx.F32[2], ctx.F16[1], ctx.U1};
+    ctx.software_matrix_function = DefineSoftwareMma(ctx, types, ctx.subgroup_local_invocation_id, form, quad);
 }
 
 

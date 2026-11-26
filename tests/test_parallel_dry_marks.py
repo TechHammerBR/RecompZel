@@ -24,12 +24,10 @@ def main():
     # (a clear in the dry pass marks its pass's targets, colour and depth-stencil clears both)
     for op, nxt in (("case NOP_CLEAR_COLOR:", "case NOP_CLEAR_DS:"), ("case NOP_CLEAR_DS:", "case NOP_DRAW:")):
         part = body(replay, op, nxt)
-        if "dry && dry_clears_on()) dry_mark_written(s, false, true);" not in part:
+        if "if (s.render_enabled && dry) dry_mark_written(s, false, true);" not in part:
             raise SystemExit("vk_replay.cpp: the dry pass no longer marks the targets of " + op)
         if "!dry" not in part:
             raise SystemExit("vk_replay.cpp: " + op + " is no longer left out of the dry pass itself")
-    if 'getenv("RX_VK_NO_DRY_CLEARS")' not in replay:
-        raise SystemExit("vk_replay.cpp: the switch RX_VK_NO_DRY_CLEARS is gone")
     # (a worker counts a uniform update by the same test the dry pass appends it by)
     part = body(replay, "case NOP_UPDATE_UB:", "case NOP_SET_RT:")
     test = "u.size && u.size <= avail - sizeof u"

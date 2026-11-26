@@ -1,4 +1,4 @@
-/* The game's window (Windows): the renderer's surface (gpu/render/, WebGPU). The native NVN layer (nvn_native.c)
+/* The game's window (Windows): the renderer's surface (the Vulkan back end, gpu/vk). The native NVN layer (nvn_native.c)
    presents the game's window textures into it (rx_nvn_present). The title bar carries live numbers.
    TOTKPort's hos/display.c, without its emulated-GPU fallback (the window buffer read from guest memory): MKW has
    no emulated GPU, so the renderer is the only way to a picture.
@@ -11,18 +11,26 @@
    while one of the game's own menus is open (host/oot_menu.c: hos_mouse_game_menu each frame it runs), its clicks and
    wheel for that menu (hos_mouse_game_pointer). */
 #include "hos.h"
+void hos_input_clear_toggles(void);
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include "hos_paths.h"   /* (hos_game_title: the game's own name, from its folder) */
 #include "../gpu/render/rx.h"
 void rx_close_asked(void);   /* host/rx_backend.c */
 #include "../gpu/vk/vk_api.h"
 #include "display_pointer.h"
+#include "fullscreen_monitor.h"
+#ifndef HOOKSHOT_ENV_H   /* (env_on: the switches' one rule) */
+#include "../gpu/vk/compat/hookshot_env.h"
+#endif
 
 void hos_relaunch_ask(void);        /* (host/hos_relaunch.c) */
 void hos_window_closed_exit(void);
+int hos_text_focus(void);          /* (host/rx_backend.c: the Insert menu's text fields, MkwVkHost.take_text) */
+void hos_text_put(uint32_t c);
 #ifndef WM_DPICHANGED
 #define WM_DPICHANGED 0x02E0
 #endif
@@ -36,9 +44,38 @@ static volatile LONG mouse_dx, mouse_dy;
 static volatile LONG mouse_captured;
 static int cursor_hidden;
 
+/* (hookshot) HOS_MOUSE_TEST=<counts a second>: a test run has no mouse and its window is behind the others. With this the mouse
+   counts as captured and moves to the right at that rate, so a run can see whether the camera goes on turning (the mouse look
+   that stopped after a scene change, issue 2). 0 or unset: the real mouse alone. */
+static int mouse_test_rate(void) {
+    static int rate = -1;
+    if (rate < 0) {
+        const char *e = getenv("HOS_MOUSE_TEST");
+        rate = e ? atoi(e) : 0;
+        if (rate < 0) rate = 0;
+        if (rate) hos_log("mouse: a test's mouse, captured, %d counts a second to the right (HOS_MOUSE_TEST)", rate);
+    }
+    return rate;
+}
+int hos_mouse_test_on(void) { return mouse_test_rate() > 0; }   /* (nn_hid.c: read even while a script is the only input) */
+static int mouse_test(int32_t *dx) {
+    static int64_t last;
+    const int rate = mouse_test_rate();
+    if (rate <= 0) return 0;
+    const int64_t now = hos_now_ns();
+    if (!last) last = now;
+    const int64_t n = (now - last) * rate / 1000000000;
+    if (n > 0) {
+        last += n * 1000000000 / rate;
+        *dx += (int32_t)n;
+    }
+    return 1;
+}
+
 int hos_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = InterlockedExchange(&mouse_dx, 0);
     *dy = InterlockedExchange(&mouse_dy, 0);
+    if (mouse_test(dx)) return 1;
     return mouse_captured;
 }
 
@@ -58,19 +95,33 @@ static int esc_had_capture;
 /* the game's own menus: open while one of their screens runs with the mouse (stamped each frame on the
    game's thread), their clicks */
 static int game_menu_open;
+/* (one of them has the mouse, the Insert menu closed: read on the game's thread, where the mouse's side buttons, which no
+   menu takes, stay their controls'. host/nn_hid.c mouse_buttons_arm) */
+static volatile LONG game_menu_mouse;
+int hos_mouse_in_game_menu(void) { return (int)game_menu_mouse; }
 static volatile LONG64 game_menu_seen_ns;
 static HosPointer game_pointer = HOS_POINTER_INIT;
-/* The cursor over the game's menus is hidden until the mouse is used (moved or a button pressed) and again once the
-   pads or the keys are (nn_hid.c: hos_player_input_ns): a player on a controller never sees it, and a mouse at rest
-   takes no part (no pointing or clicks while hidden). The wheel works hidden too, and does not show it: a button held
-   (R, for the item choice) counts as the pad in use, and hid the cursor again at each notch */
+/* The cursor over the game's window, in play and in the game's menus (not the Insert menu), is shown until the pads or
+   the keys are used (nn_hid.c: hos_player_input_ns) and again once the mouse is (moved or a button pressed): a player on
+   a controller sees it only until the first input, and a mouse at rest takes no part in the menus (no pointing or clicks
+   while hidden). The wheel works hidden too, and does not show it: a button held (R, for the item choice) counts as the
+   pad in use, and hid the cursor again at each notch. gm_mx, gm_my: the last point a move counted at, in screen
+   coordinates */
 int64_t hos_player_input_ns(void);
-static volatile LONG gm_shown, gm_mx = -1, gm_my = -1;
+static volatile LONG gm_shown = 1, gm_mx = -1, gm_my = -1;
 static volatile LONG64 gm_mouse_ns;
 static void gm_mouse_used(void) { InterlockedExchange64(&gm_mouse_ns, (LONG64)hos_now_ns()); InterlockedExchange(&gm_shown, 1); }
 static int gm_cursor_shown(void) {
     if (gm_shown && hos_player_input_ns() > InterlockedCompareExchange64(&gm_mouse_ns, 0, 0)) InterlockedExchange(&gm_shown, 0);
     return (int)gm_shown;
+}
+/* Whether a move to (x, y) is the mouse used, from the last point one counted at (ax, ay). While the cursor is shown any
+   other point is. While it is hidden only one more than slack pixels away: a bumped desk or a sensor's noise does not
+   bring it back in a cutscene. In screen coordinates, so the WM_MOUSEMOVE Windows sends when the window moves or
+   resizes under a cursor at rest (F11, a DPI change: its client point changes, its screen point does not) is no move */
+static int gm_move_counts(int shown, LONG x, LONG y, LONG ax, LONG ay, LONG slack) {
+    const LONG dx = x > ax ? x - ax : ax - x, dy = y > ay ? y - ay : ay - y;
+    return shown ? dx || dy : dx > slack || dy > slack;
 }
 
 int hos_mouse_pointer(MkwVkPointer *out) { return hos_pointer_take(&pointer, out); }
@@ -111,33 +162,122 @@ static void pointer_update(HWND w, uint32_t pressed, int wheel) {
 static HANDLE renderer_up;
 static int fullscreen;
 static WINDOWPLACEMENT windowed_place;
+static MkwVkMonitor window_monitors[HOS_MONITOR_MAX];
+static HMONITOR window_monitor_handles[HOS_MONITOR_MAX];
+static int window_monitor_count;
+static void
+mouse_capture(HWND w,int on);
+
+/* The monitor driver's DeviceString can be "Generic PnP Monitor" even when EDID supplies a model.
+   Match the target's interface path, never its model name or current enumeration ordinal. */
+static int monitor_friendly_name(const WCHAR *id,char *out,int size) {
+    for (int attempt=0;attempt<3;attempt++) {
+        UINT32 paths=0,modes=0;
+        if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS,&paths,&modes)!=ERROR_SUCCESS || !paths) return 0;
+        DISPLAYCONFIG_PATH_INFO *p=calloc(paths,sizeof *p);
+        DISPLAYCONFIG_MODE_INFO *m=calloc(modes?modes:1,sizeof *m);
+        if (!p || !m) { free(p); free(m); return 0; }
+        LONG status=QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS,&paths,p,&modes,m,NULL);
+        if (status==ERROR_INSUFFICIENT_BUFFER) { free(p); free(m); continue; }
+        int found=0;
+        if (status==ERROR_SUCCESS) for (UINT32 i=0;i<paths;i++) {
+            DISPLAYCONFIG_TARGET_DEVICE_NAME target={0};
+            target.header.type=DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME;
+            target.header.size=sizeof target;
+            target.header.adapterId=p[i].targetInfo.adapterId;
+            target.header.id=p[i].targetInfo.id;
+            if (DisplayConfigGetDeviceInfo(&target.header)==ERROR_SUCCESS &&
+                !lstrcmpiW(id,target.monitorDevicePath) && target.monitorFriendlyDeviceName[0]) {
+                found=WideCharToMultiByte(CP_UTF8,0,target.monitorFriendlyDeviceName,-1,out,size,NULL,NULL)!=0;
+                break;
+            }
+        }
+        free(p); free(m);
+        return found;
+    }
+    return 0; /* Display hotplug kept changing the required buffers. */
+}
+
+static BOOL CALLBACK collect_monitor(HMONITOR mon,HDC dc,LPRECT rect,LPARAM data) {
+    (void)dc; (void)rect; (void)data;
+    if (window_monitor_count==HOS_MONITOR_MAX) return FALSE;
+    MONITORINFOEXW mi={0}; DISPLAY_DEVICEW device={0};
+    mi.cbSize=sizeof mi; device.cb=sizeof device;
+    if (!GetMonitorInfoW(mon,(MONITORINFO *)&mi)) return TRUE;
+    /* EDD_GET_DEVICE_INTERFACE_NAME returns a monitor interface path, not DISPLAY1's current ordinal. */
+    if (!EnumDisplayDevicesW(mi.szDevice,0,&device,1) || !device.DeviceID[0]) return TRUE;
+    MkwVkMonitor item={0};
+    if (!WideCharToMultiByte(CP_UTF8,0,device.DeviceID,-1,item.id,sizeof item.id,NULL,NULL)) return TRUE;
+    if (!monitor_friendly_name(device.DeviceID,item.name,sizeof item.name) &&
+        !WideCharToMultiByte(CP_UTF8,0,device.DeviceString,-1,item.name,sizeof item.name,NULL,NULL)) return TRUE;
+    item.width=mi.rcMonitor.right-mi.rcMonitor.left; item.height=mi.rcMonitor.bottom-mi.rcMonitor.top;
+    item.flags=(mi.dwFlags&MONITORINFOF_PRIMARY)?HOS_MONITOR_PRIMARY:0;
+    if (hwnd && mon==MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST)) item.flags|=HOS_MONITOR_CURRENT;
+    window_monitor_handles[window_monitor_count]=mon;
+    window_monitors[window_monitor_count++]=item;
+    return TRUE;
+}
+static void refresh_monitors(void) {
+    window_monitor_count=0;
+    EnumDisplayMonitors(NULL,NULL,collect_monitor,0);
+    hos_monitor_publish(window_monitors,window_monitor_count,hwnd!=NULL);
+}
+void hos_monitor_prepare(void) { hos_monitor_load(); refresh_monitors(); }
+static HMONITOR fullscreen_target(HWND w) {
+    char wanted[512]; hos_monitor_wanted(wanted);
+    int pick=hos_monitor_find(window_monitors,window_monitor_count,wanted);
+    return pick>=0?window_monitor_handles[pick]:MonitorFromWindow(w,MONITOR_DEFAULTTONEAREST);
+}
 
 static void set_fullscreen(HWND w, int on) {
-    if (on == fullscreen) return;
+    if (!on && !fullscreen) return;
     const LONG style = GetWindowLongA(w, GWL_STYLE);
     if (on) {
         MONITORINFO mi;
         mi.cbSize = sizeof mi;
-        windowed_place.length = sizeof windowed_place;
-        if (!GetWindowPlacement(w, &windowed_place) ||
-            !GetMonitorInfoA(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mi))
+        if (!GetMonitorInfoA(fullscreen_target(w), &mi)) return;
+        RECT current;
+        if (fullscreen && GetWindowRect(w,&current) && EqualRect(&current,&mi.rcMonitor)) return;
+        if (!fullscreen) {
+            windowed_place.length = sizeof windowed_place;
+            if (!GetWindowPlacement(w,&windowed_place)) return;
+        }
+        SetWindowLongA(w,GWL_STYLE,style&~WS_OVERLAPPEDWINDOW);
+        if (GetWindowLongA(w,GWL_STYLE)!=(style&~WS_OVERLAPPEDWINDOW)) {
+            hos_log("display: fullscreen style request failed");
             return;
-        fullscreen = 1;
-        SetWindowLongA(w, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
-        SetWindowPos(w, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
-                     mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        }
+        const int was_fullscreen=fullscreen;
+        fullscreen=1; /* re-entrant WM_DPICHANGED must not apply a windowed suggested rectangle */
+        if (!SetWindowPos(w,HWND_TOP,mi.rcMonitor.left,mi.rcMonitor.top,mi.rcMonitor.right-mi.rcMonitor.left,
+                          mi.rcMonitor.bottom-mi.rcMonitor.top,SWP_NOOWNERZORDER|SWP_FRAMECHANGED)) {
+            SetWindowLongA(w,GWL_STYLE,style);
+            fullscreen=was_fullscreen;
+            hos_log("display: fullscreen monitor request failed (%lu)",(unsigned long)GetLastError());
+            return;
+        }
+        fullscreen=1;
     } else {
-        fullscreen = 0;
         SetWindowLongA(w, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
-        SetWindowPlacement(w, &windowed_place);
-        SetWindowPos(w, NULL, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        fullscreen=0;
+        if (GetWindowLongA(w,GWL_STYLE)!=(style|WS_OVERLAPPEDWINDOW) || !SetWindowPlacement(w,&windowed_place)) {
+            SetWindowLongA(w,GWL_STYLE,style);
+            fullscreen=1;
+            hos_log("display: restoring window placement failed (%lu)",(unsigned long)GetLastError());
+            return;
+        }
+        fullscreen=0;
+        if (!SetWindowPos(w, NULL, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED))
+            hos_log("display: refreshing restored window frame failed (%lu)",(unsigned long)GetLastError());
     }
+    if (mouse_captured) { mouse_capture(w,0); mouse_capture(w,1); }
+    refresh_monitors();
     hos_log("display: %s", on ? "fullscreen (F11 for a window)" : "windowed");
 }
 
 static void dpi_aware_thread(void) {
-    if (getenv("HOS_DPI_UNAWARE")) return;
+    if (env_on("HOS_DPI_UNAWARE")) return;
     typedef void *(WINAPI * SetCtx)(void *);
     SetCtx set = (SetCtx)(void *)GetProcAddress(GetModuleHandleA("user32.dll"), "SetThreadDpiAwarenessContext");
     if (set) set((void *)(intptr_t)-4);
@@ -150,7 +290,18 @@ static UINT window_dpi(HWND w) {
     return dpi ? dpi : 96;
 }
 
+/* WM_MOUSEMOVE, also under the Insert menu: a click that closes it leaves the cursor shown. 4 pixels of slack at 96 dpi */
+static void gm_mouse_moved(HWND w) {
+    const DWORD at = GetMessagePos();
+    const LONG x = (short)LOWORD(at), y = (short)HIWORD(at);
+    if (!gm_move_counts(gm_cursor_shown(), x, y, gm_mx, gm_my, MulDiv(4, (int)window_dpi(w), 96))) return;
+    gm_mx = x, gm_my = y;
+    gm_mouse_used();
+}
+
 static void mouse_capture(HWND w, int on) {
+    int rx_option(int id, int otherwise);
+    if (on && rx_option(6, 0) == 2) return;   /* (Mouse camera Off: the mouse plays no part) */
     if (on == (int)mouse_captured) return;
     mouse_captured = on;
     InterlockedExchange(&mouse_dx, 0);
@@ -186,14 +337,15 @@ static void gm_cursor_off(HWND w) {
    back, if the window still has the focus */
 static void menus_mouse(HWND w, int insert_open, int game_open) {
     const int was = menu_open || game_menu_open, now = insert_open || game_open, game_was = game_menu_open;
+    if ((insert_open && !menu_open) || (game_open && !game_was)) hos_input_clear_toggles();
     menu_open = insert_open, game_menu_open = game_open;
+    InterlockedExchange(&game_menu_mouse, game_open && !insert_open);
     /* (hidden till used; a menu back within a second, a moment between its screens, keeps the cursor as it was) */
     static int64_t game_closed_ns;
     if (!game_open && game_was) game_closed_ns = hos_now_ns();
     if (game_open && !game_was && (!game_closed_ns || hos_now_ns() - game_closed_ns > 1000000000LL)) {
         POINT at = {0};
         GetCursorPos(&at);
-        ScreenToClient(w, &at);
         InterlockedExchange(&gm_shown, 0), gm_mx = at.x, gm_my = at.y;
     }
     if (now && !was) {
@@ -257,21 +409,160 @@ static void game_menu_press(LPARAM lp, LONG bit) {
     gm_mouse_used();
     pointer_publish_at(hwnd, at, (uint32_t)bit, 0);
 }
+/* (hookshot) The item wheel (host/oot_wheel.c) for the mouse: while it is open the mouse is let go and the
+   pointer put in the wheel's middle, hidden until the mouse moves 5 pixels (R or L is held the whole time: a controller's
+   opening as a rule); the item under it is picked, a left click picks it and closes the wheel, the mouse wheel turns its
+   pages. The capture it had comes back when the wheel closes. The input thread posts WM_APP + 20 (wParam 1 open, 0 closed) */
+static volatile LONG wheel_click, wheel_click_x, wheel_click_y, wheel_notches;
+static int wheel_open_now, captured_before_wheel, wheel_cursor_hidden, wheel_mx, wheel_my;
+
+void hos_wheel_mouse_open(int open) {
+    if (hwnd) PostMessageA(hwnd, WM_APP + 20, (WPARAM)(open != 0), 0);
+}
+/* the free pointer in client pixels and the client's size: 1 when it is over the window, the window in front and the
+   mouse not captured. *clicked: a left click since the last call (its place in *click_x, *click_y) */
+int hos_wheel_pointer(int32_t *x, int32_t *y, int32_t *w, int32_t *h, int *clicked, int32_t *click_x, int32_t *click_y) {
+    *clicked = (int)InterlockedExchange(&wheel_click, 0);
+    *click_x = wheel_click_x, *click_y = wheel_click_y;
+    AcquireSRWLockShared(&pointer.lock);   /* (main's pointer sample, looked at: the menus' clicks stay theirs) */
+    const MkwVkPointer at = pointer.point;
+    const int active = pointer.active;
+    ReleaseSRWLockShared(&pointer.lock);
+    *x = at.x, *y = at.y, *w = at.width, *h = at.height;
+    return hwnd && !mouse_captured && active && at.width > 0 && at.height > 0 && GetForegroundWindow() == hwnd;
+}
+/* the mouse wheel's notches since the last call, while the item wheel is open (away from the player positive) */
+int hos_wheel_notches_take(void) {   /* (the item wheel's own; hos_mouse_wheel_take is the menus') */
+    const LONG v = InterlockedExchange(&wheel_notches, 0);
+    if (v % WHEEL_DELTA) InterlockedExchangeAdd(&wheel_notches, v % WHEEL_DELTA);   /* (a part of a notch: kept) */
+    return (int)(v / WHEEL_DELTA);
+}
+static void wheel_cursor(int hidden) {
+    if (hidden == wheel_cursor_hidden) return;
+    wheel_cursor_hidden = hidden;
+    ShowCursor(hidden ? FALSE : TRUE);
+}
+static void wheel_mouse(HWND w, int open) {
+    if (open == wheel_open_now) return;
+    wheel_open_now = open;
+    InterlockedExchange(&wheel_click, 0), InterlockedExchange(&wheel_notches, 0);
+    if (open) {
+        captured_before_wheel = (int)mouse_captured && !menu_open;
+        if (captured_before_wheel) {
+            mouse_capture(w, 0);
+            RECT rc;
+            GetClientRect(w, &rc);
+            POINT p = {rc.right / 2, rc.bottom / 2};
+            ClientToScreen(w, &p);
+            SetCursorPos(p.x, p.y);
+            pointer_publish_at(w, (POINT){rc.right / 2, rc.bottom / 2}, 0, 0);
+        }
+        POINT at = {0};
+        GetCursorPos(&at);
+        ScreenToClient(w, &at);
+        wheel_mx = at.x, wheel_my = at.y;
+        wheel_cursor(1);
+    } else {
+        wheel_cursor(0);
+        if (captured_before_wheel && !menu_open && GetForegroundWindow() == w) mouse_capture(w, 1);
+        captured_before_wheel = 0;
+    }
+}
+
 static void menu_press(HWND w, LPARAM lp, LONG bit) {   /* (a click while the menu is open: the menu's) */
     const POINT at = {(short)LOWORD(lp), (short)HIWORD(lp)};
     SetCapture(w);   /* a drag past the window edge still reaches it */
     pointer_publish_at(w, at, (uint32_t)bit, 0);
 }
+/* (hookshot) the clipboard's first line into the Insert menu's text field that has the keyboard (Ctrl+V, Shift+Insert, or the
+   menu's own Paste: WM_APP + 12), as typed: its characters as code points, a pair of UTF-16 halves as one */
+static void paste_clipboard(HWND w) {
+    if (!hos_text_focus() || !OpenClipboard(w)) return;
+    HANDLE data = GetClipboardData(CF_UNICODETEXT);
+    const WCHAR *t = data ? (const WCHAR *)GlobalLock(data) : NULL;
+    for (size_t i = 0; t && t[i] && t[i] != '\r' && t[i] != '\n'; i++) {
+        uint32_t c = t[i];
+        if (c >= 0xD800 && c < 0xDC00 && t[i + 1] >= 0xDC00 && t[i + 1] < 0xE000) c = 0x10000 + ((c - 0xD800) << 10) + (t[++i] - 0xDC00);
+        hos_text_put(c);
+    }
+    if (t) GlobalUnlock(data);
+    CloseClipboard();
+}
+void hos_display_paste(void) {
+    if (hwnd) PostMessageA(hwnd, WM_APP + 12, 0, 0);
+}
+
+/* (hookshot, issue 3: "not even the keyboard is recognized in the game ... I can press F1 to bring up the settings ... I can
+   press ESC to cancel changing a control, but I can't press any keyboard key")
+   The game's keys and the menu's key bindings were read by asking Windows for the keyboard's state (GetAsyncKeyState);
+   F1, Esc and the menu's own keys come as the window's messages. On that player's PC the messages arrived and the state
+   answered nothing (what a program that hides the keyboard's state from the others does, a key-logger guard for one; which
+   it was there is not known), and the game could not be played at all. The window now keeps the keys its own messages say are down, mouse buttons too, cleared when
+   it loses the focus; hos_key_down answers from them once Windows' state has been seen to answer nothing: three keys
+   pressed in the window that it called up, and none it called down. Where it answers, nothing changes. */
+static volatile unsigned char key_msg[256];
+static volatile LONG key_state_said, key_state_missed;
+static int key_state_deaf(void) { return key_state_missed >= 3 && !key_state_said; }
+static void key_note(unsigned vk, int down, int first) {
+    if (vk >= 256) return;
+    key_msg[vk] = (unsigned char)down;
+    if (!down || !first || vk < 8) return;   /* (the mouse's buttons are not asked about: a click is over by now more often) */
+    const int was_deaf = key_state_deaf();
+    if (GetAsyncKeyState((int)vk) & 0x8000) InterlockedIncrement(&key_state_said);
+    else InterlockedIncrement(&key_state_missed);
+    if (!was_deaf && key_state_deaf())
+        hos_log("hid: Windows says no key is down while keys reach the window (something hides the keyboard's state from "
+                "the game): the window's own key messages are used for the game's keys");
+}
+static void key_messages(UINT msg, WPARAM wp, LPARAM lp) {
+    switch (msg) {
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN: key_note((unsigned)wp, 1, !(lp & (1 << 30))); break;
+    case WM_KEYUP:
+    case WM_SYSKEYUP: key_note((unsigned)wp, 0, 0); break;
+    case WM_LBUTTONDOWN: key_note(VK_LBUTTON, 1, 0); break;
+    case WM_LBUTTONUP: key_note(VK_LBUTTON, 0, 0); break;
+    case WM_RBUTTONDOWN: key_note(VK_RBUTTON, 1, 0); break;
+    case WM_RBUTTONUP: key_note(VK_RBUTTON, 0, 0); break;
+    case WM_MBUTTONDOWN: key_note(VK_MBUTTON, 1, 0); break;
+    case WM_MBUTTONUP: key_note(VK_MBUTTON, 0, 0); break;
+    case WM_XBUTTONDOWN: key_note(HIWORD(wp) == 1 ? VK_XBUTTON1 : VK_XBUTTON2, 1, 0); break;
+    case WM_XBUTTONUP: key_note(HIWORD(wp) == 1 ? VK_XBUTTON1 : VK_XBUTTON2, 0, 0); break;
+    case WM_KILLFOCUS: memset((void *)key_msg, 0, sizeof key_msg); break;
+    }
+}
+/* (nn_hid.c, the Insert menu through rx_backend.c) whether a key or a mouse button is down. HOS_KEY_MESSAGES=1: as on a PC
+   whose keyboard state answers nothing, from the window's messages alone (a test) */
+int hos_key_down(int vk) {
+    static int only = -1;
+    if (only < 0) only = env_on("HOS_KEY_MESSAGES");
+    if (!only && (GetAsyncKeyState(vk) & 0x8000)) return 1;
+    return (only || key_state_deaf()) && key_msg[vk & 255];
+}
+
+/* (hookshot) The item wheel's mouse in the window procedure, before its own cases: 1 when the message was the wheel's.
+   WM_APP + 20 opens or closes it (hos_wheel_mouse_open); while it is open the mouse wheel turns its pages and a left click
+   (not one on the Insert menu or a game menu) picks, and the hidden cursor comes back once the mouse moves */
+static int wheel_msg(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_APP + 20) return wheel_mouse(w, (int)wp), 1;
+    if (!wheel_open_now) return 0;
+    if (msg == WM_MOUSEMOVE && wheel_cursor_hidden && !mouse_captured &&
+        (abs((short)LOWORD(lp) - wheel_mx) > 4 || abs((short)HIWORD(lp) - wheel_my) > 4)) wheel_cursor(0);
+    if (msg == WM_MOUSEWHEEL) return InterlockedExchangeAdd(&wheel_notches, GET_WHEEL_DELTA_WPARAM(wp)), 1;
+    if (msg == WM_LBUTTONDOWN && !menu_open && !game_menu_open) {
+        InterlockedExchange(&wheel_click_x, (short)LOWORD(lp)), InterlockedExchange(&wheel_click_y, (short)HIWORD(lp));
+        return InterlockedExchange(&wheel_click, 1), 1;
+    }
+    return 0;
+}
 
 static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
+    key_messages(msg, wp, lp);
+    if (wheel_msg(w, msg, wp, lp)) return 0;
     switch (msg) {
     case WM_MOUSEMOVE: {
         if (mouse_captured) return 0;
-        const int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
-        if (game_menu_open && !menu_open && (x != gm_mx || y != gm_my)) {   /* (a move: not a repeat at rest) */
-            gm_mx = x, gm_my = y;
-            gm_mouse_used();
-        }
+        gm_mouse_moved(w);
         if (!pointer_tracking) {
             TRACKMOUSEEVENT t = {sizeof t, TME_LEAVE, w, 0};
             pointer_tracking = TrackMouseEvent(&t) != 0;
@@ -312,6 +603,15 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         if (game_menu_open) menus_mouse(w, menu_open, 0);
         return 0;
     case WM_TIMER: {
+        static DWORD monitor_poll;
+        static char previous_monitor[512];
+        char wanted_monitor[512]; hos_monitor_wanted(wanted_monitor);
+        DWORD monitor_now=GetTickCount();
+        if (monitor_now-monitor_poll>=1000 || strcmp(previous_monitor,wanted_monitor)) {
+            monitor_poll=monitor_now; strcpy(previous_monitor,wanted_monitor);
+            refresh_monitors();
+            if (fullscreen) set_fullscreen(w,1); /* selection/hotplug changes, on the window thread */
+        }
         pointer_update(w, 0, 0);
         /* (hookshot, #1532) a controller is not input to Windows: playing with one, the display went off at the power
            plan's timeout. While the game's window is in front and not minimized, the display's idle timer is reset every
@@ -319,7 +619,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
            HOS_KEEP_DISPLAY=0: Windows' timeout as before */
         static ULONGLONG last_awake;
         static int keep = -1;
-        if (keep < 0) keep = !getenv("HOS_KEEP_DISPLAY") || atoi(getenv("HOS_KEEP_DISPLAY")) != 0;
+        if (keep < 0) keep = env_on_or("HOS_KEEP_DISPLAY", 1);
         const ULONGLONG now = GetTickCount64();
         if (keep && renderer && now - last_awake >= 30000 && GetForegroundWindow() == w && !IsIconic(w)) {
             last_awake = now;
@@ -330,7 +630,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         if (game_menu_open && seen && (LONG64)hos_now_ns() - seen > 300000000LL &&
             InterlockedCompareExchange64(&game_menu_seen_ns, 0, seen) == seen)
             menus_mouse(w, menu_open, 0);
-        if (game_menu_open && !menu_open && !gm_cursor_shown()) gm_cursor_off(w);   /* (hidden by the pads or keys: at once) */
+        /* (hidden by the pads or keys: at once, not at the next move's WM_SETCURSOR) */
+        if (!menu_open && !gm_cursor_shown() && GetForegroundWindow() == w) gm_cursor_off(w);
         return 0;
     }
     case WM_SYSCOMMAND:
@@ -366,9 +667,32 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
             const int mod = (GetKeyState(VK_SHIFT) | GetKeyState(VK_CONTROL) | GetKeyState(VK_MENU)) & 0x8000;
             if (!mod) set_fullscreen(w, !fullscreen);
         }
+        if (hos_text_focus()) {   /* (a text field of the Insert menu has the keyboard: its editing keys, repeats too, and paste) */
+            if ((wp == 'V' && GetKeyState(VK_CONTROL) < 0) || (wp == VK_INSERT && GetKeyState(VK_SHIFT) < 0)) {
+                if (!(lp & (1 << 30))) paste_clipboard(w);
+            }
+            else if (wp == VK_LEFT || wp == VK_RIGHT || wp == VK_HOME || wp == VK_END || wp == VK_BACK || wp == VK_DELETE ||
+                     wp == VK_RETURN || wp == VK_ESCAPE)
+                hos_text_put(HOS_TEXT_KEY | (uint32_t)wp);
+        }
+        return 0;
+    }
+    case WM_CHAR: {   /* (hookshot) a character typed, for the Insert menu's text fields (TranslateMessage, by the keyboard's
+                         layout). The window is an ANSI one: a byte of the code page, ASCII as itself, which is what a field
+                         takes; a double-byte character's two (a lead byte, then its trail) are left out together */
+        static int trail;
+        const BYTE c = (BYTE)wp;
+        if (trail) trail = 0;
+        else if (IsDBCSLeadByte(c)) trail = 1;
+        else if (c >= 0x20 && c != 0x7F) hos_text_put(c);   /* (Backspace, Enter, Esc and Ctrl+letters: WM_KEYDOWN above) */
         return 0;
     }
     case WM_SYSKEYDOWN:   /* Alt+Enter, as on Linux (display_sdl.c); other Alt keys (Alt+F4) go on to Windows */
+        if (wp == VK_F10 && !(lp & (1 << 29))) {
+            extern void hos_vk_note_key_press(unsigned key);
+            if (!(lp & (1 << 30))) hos_vk_note_key_press(VK_F10);
+            return 0;
+        }
         if (wp == VK_RETURN && (lp & (1 << 29))) {
             if (!(lp & (1 << 30))) set_fullscreen(w, !fullscreen);
             return 0;
@@ -378,7 +702,11 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == '\r') return 0;
         break;
     case WM_APP + 7:   /* (the Insert menu's row) */
+        refresh_monitors();
         set_fullscreen(w, (int)wp);
+        return 0;
+    case WM_APP + 12:   /* (hookshot: the Insert menu's Paste, MkwVkHost.take_text) */
+        paste_clipboard(w);
         return 0;
     case WM_DPICHANGED:
         if (!fullscreen) {
@@ -393,13 +721,14 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     case WM_KILLFOCUS:
     case WM_CANCELMODE:
+        hos_input_clear_toggles();
         esc_had_capture = 0;
         mouse_capture(w, 0);
         hos_pointer_reset(&pointer);
         hos_pointer_reset(&game_pointer);
         break;
     case WM_SETCURSOR:
-        if ((mouse_captured || (game_menu_open && !menu_open && !gm_cursor_shown())) && LOWORD(lp) == HTCLIENT) {
+        if ((mouse_captured || (!menu_open && !gm_cursor_shown())) && LOWORD(lp) == HTCLIENT) {
             SetCursor(NULL);
             return TRUE;
         }
@@ -436,6 +765,8 @@ static void display_start_failed(const char *operation) {
     const DWORD error = GetLastError();
     hos_log("display: %s failed (error %lu)", operation, (unsigned long)error);
     hos_log_flush();
+    void hos_crash_clean_end(void);
+    hos_crash_clean_end();
     ExitProcess(1);
 }
 
@@ -466,7 +797,7 @@ static DWORD WINAPI display_main(void *p) {
     }
     RECT r = {0, 0, win_w, win_h};
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
-    const int noactivate = getenv("HOS_WINDOW_NOACTIVATE") != NULL;
+    const int noactivate = env_on("HOS_WINDOW_NOACTIVATE");
     hwnd = CreateWindowA("Hookshot", HOS_GAME_TITLE, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                          CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, NULL, NULL, wc.hInstance, NULL);
     if (!hwnd) display_start_failed("CreateWindowA");
@@ -476,21 +807,31 @@ static DWORD WINAPI display_main(void *p) {
         AdjustWindowRect(&s, WS_OVERLAPPEDWINDOW, FALSE);
         SetWindowPos(hwnd, NULL, 0, 0, s.right - s.left, s.bottom - s.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    {   /* the game's own name for the window (host/hos_paths.h hos_game_title), as Unicode: the class is an ANSI one */
+        wchar_t title[256];
+        if (MultiByteToWideChar(CP_UTF8, 0, hos_game_title(HOS_GAME_TITLE), -1, title, 256))
+            DefWindowProcW(hwnd, WM_SETTEXT, 0, (LPARAM)title);
+    }
     /* (no activate: shown at the bottom of the z-order, so a game in front keeps its focus) */
     if (noactivate)
         SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     else
         ShowWindow(hwnd, SW_SHOW);
-    /* (the menu's Fullscreen row, hookshot_options.ini's fullscreen=, taken before the renderer starts: applied later by
-       vk_menu.cpp's fullscreen_tick, the first swapchain was made at the 1280x720 window and made again a moment after) */
-    extern int hos_ini_option(const char *key, int otherwise);
-    const char *fs_env = getenv("HOS_FULLSCREEN");
-    if (fs_env ? atoi(fs_env) != 0 : hos_ini_option("fullscreen", 0) != 0) set_fullscreen(hwnd, 1);
+    hos_monitor_load();
+    refresh_monitors();
+    if (hos_monitor_start_fullscreen()) set_fullscreen(hwnd, 1);
     RAWINPUTDEVICE rid = {1, 2, 0, hwnd};   /* generic desktop mouse: WM_INPUT while the window is in front */
     RegisterRawInputDevices(&rid, 1, sizeof rid);
     pointer_update(hwnd, 0, 0);
     renderer = rx_start(hwnd);
-    if (!renderer) hos_log("display: no WebGPU device: the window stays black");
+    if (!renderer) {   /* (hookshot) the game ends at once, as on Linux (host/posix/display_sdl.c renderer_main): behind a black
+                          window it played on until the player closed it. The window after it reads this line */
+        hos_log("display: the renderer did not start: the game ends, and the window after it says why");
+        hos_log_flush();
+        void hos_crash_clean_end(void);
+        hos_crash_clean_end();
+        ExitProcess(1);
+    }
     SetEvent(renderer_up);
     SetTimer(hwnd, 1, 250, NULL);
     MSG m;
@@ -505,13 +846,17 @@ static DWORD WINAPI display_main(void *p) {
    shaders were being prepared (80 s on a first start) was lost: that run had no ambient light, black foliage and dark characters. The
    game itself goes on starting as it did: held at the start instead, it left holes in the ground */
 void hos_renderer_wait(void) {
-    { const char *e = getenv("HOS_NO_RENDERER_WAIT"); if (e && atoi(e) != 0) return; }   /* (=0: the wait, as without it) */   /* (a test: the game's first GPU work no longer waits for the renderer, as before lighting-fix) */
+    if (env_on("HOS_NO_RENDERER_WAIT")) return;   /* (=0: the wait, as without it) */   /* (a test: the game's first GPU work no longer waits for the renderer, as before lighting-fix) */
     if (renderer_up) WaitForSingleObject(renderer_up, INFINITE);
 }
 
 void hos_display_start(void) {
-    if (getenv("HOS_HEADLESS")) {   /* no window: the renderer still draws, offscreen (screenshots, frame dumps) */
+    if (env_on("HOS_HEADLESS")) {   /* no window: the renderer still draws, offscreen (screenshots, frame dumps) */
         rx_start(NULL);
+        /* The renderer's startup may attach/free a console, which resets Windows' console handlers.
+           Install the stop route afterwards; it needs neither a rendered frame nor the game's input loop. */
+        int hos_windows_stop_start(void);
+        if (!hos_windows_stop_start()) hos_log("stop: windowless stop route unavailable; use the control bridge");
         return;
     }
     renderer_up = CreateEventA(NULL, TRUE, FALSE, NULL);

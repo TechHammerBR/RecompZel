@@ -1,9 +1,10 @@
-"""The Insert menu's Rumble strength row (Controls): Off, 25% to 150% in steps of 25, stopping at its ends.
+"""The Insert menu's Vibration strength row (Controls): 25% to 200% in steps of 25, stopping at its ends.
 
 gpu/vk/vk_menu.cpp's row, set_row (the arrows, Enter and a click on the value) and the ini's snap to the row's steps are
-compiled from the source with stubs and run: one step below Off stays Off, one above 150% stays 150%, however it is
-asked. The mouse wheel never changes a value (it scrolls the rows): menu_tick is checked for that. The option id the host reads it by (9, host/pad_sdl.c) is checked against the
-renderer's option table (gpu/vk/vk_replay.cpp) and the other ids.
+compiled from the source with stubs and run: one step below 25% stays 25%, one above 200% stays 200%, however it is
+asked. Its line in the options file keeps the key it had as Rumble strength (rumble_strength=), and that row's Off (0)
+from an options file before the Vibration row is read as Vibration Off. The mouse wheel never changes a value (it scrolls the rows): menu_tick is checked for that. The option id the host reads it by (9, host/pad_sdl.c) is checked against the
+renderer's option table (gpu/vk/vk_replay.cpp) and the other ids. Rumble changes do not reset temporal failures.
 
     python -I -B tests/test_rumble_menu.py [--cxx g++]
 """
@@ -56,73 +57,98 @@ FIXTURE = r"""
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "FAIL %%d %%s\n", __LINE__, #x); return 1; } } while (0)
 %(options)s
 Options opts;
+bool debug_warning = false;
+int debug_warning_choice = 0;
+void sync_transition_autosave() {}
+bool menu_refresh = false;
+
 %(tabs)s
 %(row)s
 int saves = 0, presets = 0;
 void save() { saves++; }
 void apply_pad_layout(int) {}
+int detect_pad_layout() { return opts.pad_layout; }
+void gfx_limits() {}   // (detail rows' caps: not what this checks)
 void apply_preset(int) { presets++; }
-void sync_preset_budgets(int) {}
-/* (stand-ins for the rest of set_row, which the Rumble strength row never reaches: the Upscaler's rows, the restart offer) */
+void env_release(const int*) {}   // (the environment's hold on a row: none here)
+/* (stand-ins for the rest of set_row, which the Vibration strength row never reaches: the Upscaler's rows, the restart offer) */
 bool row_fixed(const int*) { return false; }
 int upscaler() { return 0; }
 namespace ur {
-enum { GAME = 0, DLSS = 1, DLAA = 2, FSR3 = 3, FSR4 = 4, FSR4_AA = 5, OFF = 6 };
-inline unsigned bit(int u) { return 1u << u; }
 int step_upscaler(int, int, bool) { return 0; }
 int step(int, int v, int dir) { return v + dir; }
 int snap(int, int v) { return v; }
 int snap_render(int, int v) { return v; }   // (the slider)
+bool full_scale(int) { return false; }   // (only the game's own upscaler here)
 int step_engine(int, int, unsigned) { return 0; }   // (the Upscaler by engine)
 void step_render(int up, int v, int dir, int* u, int* r) { *u = up, *r = v + dir; }
 }
 namespace mr { constexpr int kMax = 8; }
+/* (the Game language row's hook in set_row: language.txt, not written here) */
+namespace i18n { inline void set_game_language(int) {} }
 void restart_values(int*) {}
 struct { void note(const int*) {} } restart_state;
 %(is_slider)s
 %(stops)s
 %(snap)s
+int monitor_pick; // Declared before the extracted ini_key() as well as set_row().
 %(ini_key)s
 /* (the Microphone row's hook in set_row: no microphones here) */
 bool can_mic() { return false; }
+int output_pick;
+bool output_forced() { return false; }
+bool framegen_by_dlss_offered() { return true; }   // (vk_menu.cpp: Frame generation by offers DLSS FG)
+void output_chosen() {}   // Playback selection is covered by test_audio_output_devices.py.
+void monitor_chosen() {}  // Fullscreen selection is covered by test_fullscreen_monitor_menu.py.
 /* (the Upscaler row's choices, which set_row steps through: the game's own only, here) */
 unsigned upscalers_available() { return 1; }
 void mic_chosen() {}
 void samplers_changed() {}
-bool fgtype_available(int) { return true; }   // (the Frame generation method row: every method here)
+int temporal_resets = 0;
+void temporal_reset_failure() { ++temporal_resets; }
+void prompts_at_once(const Row&) {}
+/* (the Debug tab's Descriptor reuse and Sampler cache rows, told to vk_draw.cpp in play: not what this checks) */
+void menu_debug_rows(bool, bool) {}
 // (set_row steps the Output row through vk_menu.cpp's step_output_choice (#1144): not what this checks)
 int step_output_choice(int id, int dir) { return id + dir; }
+// (the Aspect ratio row moves the Output resolution to one of its shape's sizes, output_for_aspect: not what this checks)
+int output_for_aspect(int) { return opts.output_res; }
+// (the Frame generation rows in set_row: DLSS FG offered (framegen_by_dlss_offered); no DLSS FG top here (vk_dlss.cpp
+// dlss_fg_most, vk_framegen.cpp framegen_capped))
+int dlss_fg_most() { return 0; }
+int framegen_capped(int framegen, int) { return framegen; }
 %(set_row)s
 /* (menu_tick's arrows: Left, Right, and Enter as Right; a click on the value's left or right half presses them) */
 void arrow(Row& r, bool right) { %(arrow)s }
 int main() {
-    Row r = {TAB_CONTROLS, "Rumble strength", &opts.rumble, %(lo)s, %(hi)s, %(step)s, nullptr, nullptr%(exempt)s};
-    CHECK(r.lo == 0 && r.hi == 150 && r.step == 25);
-    CHECK(opts.rumble == 100);
+    Row r = {TAB_CONTROLS, "Vibration strength", &opts.rumble, %(lo)s, %(hi)s, %(step)s, nullptr, nullptr%(exempt)s};
+    CHECK(r.lo == 25 && r.hi == 200 && r.step == 25);
+    CHECK(opts.rumble == 100 && opts.vibration == 0);
     CHECK(!std::strcmp(ini_key(r), "rumble_strength"));
     opts.preset = 3;
-    /* the arrows (and clicks): Off stays Off, 150%% stays 150%% */
-    opts.rumble = 0;
+    /* the arrows (and clicks): 25%% stays 25%%, 200%% stays 200%% */
+    opts.rumble = 25;
     arrow(r, false);
-    CHECK(opts.rumble == 0);
-    arrow(r, true);
     CHECK(opts.rumble == 25);
+    arrow(r, true);
+    CHECK(opts.rumble == 50);
     for (int i = 0; i < 10; i++) arrow(r, true);
-    CHECK(opts.rumble == 150);
+    CHECK(opts.rumble == 200);
     arrow(r, false);
-    CHECK(opts.rumble == 125);
+    CHECK(opts.rumble == 175);
     for (int i = 0; i < 10; i++) arrow(r, false);
-    CHECK(opts.rumble == 0);
-    set_row(r, 175, 1);
-    CHECK(opts.rumble == 150);
-    set_row(r, -25, -1);
-    CHECK(opts.rumble == 0);
+    CHECK(opts.rumble == 25);
+    set_row(r, 225, 1);
+    CHECK(opts.rumble == 200);
+    set_row(r, 0, -1);
+    CHECK(opts.rumble == 25);
     /* it is a control: the quality preset stays */
     CHECK(opts.preset == 3 && presets == 0 && saves > 0);
+    CHECK(temporal_resets == 0);
     /* an ini's value: on the steps, within the range */
-    static const int in[] = {-10, 0, 12, 13, 60, 63, 100, 137, 138, 150, 151, 999};
-    static const int out[] = {0, 0, 0, 25, 50, 75, 100, 125, 150, 150, 150, 150};
-    for (int i = 0; i < 12; i++) CHECK(rumble_step(in[i]) == out[i]);
+    static const int in[] = {-10, 0, 12, 13, 25, 60, 63, 100, 137, 138, 200, 201, 999};
+    static const int out[] = {25, 25, 25, 25, 25, 50, 75, 100, 125, 150, 200, 200, 200};
+    for (int i = 0; i < 13; i++) CHECK(rumble_step(in[i]) == out[i]);
     return 0;
 }
 """
@@ -150,14 +176,18 @@ def wheel_free(menu):
 def menu_fixture():
     menu = MENU.read_text(encoding="utf-8")
     header = read("gpu", "vk", "vk_menu.h")
-    row = re.search(r'\{TAB_CONTROLS, "Rumble strength", &opts\.rumble, (-?\d+), (\d+), (\d+), tx_rumble,', menu)
+    row = re.search(r'\{TAB_CONTROLS, "Vibration strength", &opts\.rumble, (-?\d+), (\d+), (\d+), tx_percent,', menu)
     if not row:
-        raise SystemExit("the menu lost its Rumble strength row")
+        raise SystemExit("the menu lost its Vibration strength row")
     exempt = block(menu, row.start()).rstrip().endswith(", true}")   # (Row::preset_exempt: a control, not the preset's)
     load = menu.index("bool has_resolution = false;")   # (the ini's load, not save()'s read of its other lines)
     load = block(menu, menu.rindex('if (FILE* f = fopen(ini_path().c_str(), "r"))', 0, load))
     if "opts.rumble = rumble_step(opts.rumble);" not in load:
-        raise SystemExit("the ini's Rumble strength is not put on the row's steps")
+        raise SystemExit("the ini's Vibration strength is not put on the row's steps")
+    # (Rumble strength's Off, from an options file before the Vibration row: Vibration Off, before the snap to 25%)
+    old_off = "if (!has_vibration && opts.rumble <= 0) opts.vibration = 2, opts.rumble = 100;"
+    if old_off not in load or load.index(old_off) > load.index("opts.rumble = rumble_step(opts.rumble);"):
+        raise SystemExit("an options file's rumble_strength=0 (Off) is not read as Vibration Off")
     wheel_free(menu)
     arrow = re.search(r"\n\s*(set_row\(r, \*r\.value \+ \(press\[4\] \? r\.step : -r\.step\), press\[4\] \? 1 : -1\);)", menu)
     if not arrow:
@@ -178,12 +208,15 @@ def menu_fixture():
 
 
 def option_ids():
-    """option 9 is the menu's Rumble strength, and no other option has its id"""
-    replay, api = read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h")
+    """option 9 is the menu's Vibration strength, and no other option has its id"""
+    replay, api = read("gpu", "vk", "vk_replay.cpp"), read("gpu", "vk", "vk_api.h") + read("gpu", "vk", "oot_wheel_state.h")   # (the item wheel's ids too)
     value = {}   # (every HOS_OPT_* enum: the cheats', the motion rows', DLSS's jitter and one-name ones as Text size's)
     for first, start, rest in re.findall(r"enum \{ (HOS_OPT_\w+) = (\d+)([^}]*)\}", api):
         names = [first] + [n.strip() for n in rest.split(",") if n.strip()]
         value.update({n: int(start) + i for i, n in enumerate(names)})
+    # (the game side's own ids: OOT_CHEAT_AGE_ID)
+    value.update({n: int(v) for n, v in re.findall(r"#define (OOT_CHEAT_\w+) (\d+)", read("gpu", "vk", "oot_cheat_items.h"))})
+    value.update({n: int(v) for n, v in re.findall(r"#define (HOS_OPT_\w+) (\d+)", read("gpu", "vk", "oot_teleport_capture.h"))})
     table = block(replay, replay.index("t.option = [](int id) -> int {"))
     ids = []
     for name in re.findall(r"\bid == (\w+)", table):
@@ -191,7 +224,7 @@ def option_ids():
     if len(ids) != len(set(ids)):
         raise SystemExit("vk_replay.cpp: an option id is read twice: %s" % sorted(ids))
     if not re.search(r"\bid == 9 \? opts\.rumble\b", table):
-        raise SystemExit("vk_replay.cpp: option 9 is not the menu's Rumble strength")
+        raise SystemExit("vk_replay.cpp: option 9 is not the menu's Vibration strength")
     base = int(re.search(r"#define OOT_CHEAT_ITEM_BASE (\d+)", read("gpu", "vk", "oot_cheat_items.h")).group(1))
     if any(i >= base for i in ids):
         raise SystemExit("vk_replay.cpp: an option id is among the cheat items'")
@@ -215,7 +248,7 @@ def main():
         src.write_text(menu_fixture(), encoding="utf-8")
         subprocess.run([args.cxx, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(src), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)
-    print("PASS: the menu's Rumble strength stops at Off and 150%, and option 9 is its own")
+    print("PASS: the menu's Vibration strength stops at 25% and 200%, and option 9 is its own")
 
 
 if __name__ == "__main__":

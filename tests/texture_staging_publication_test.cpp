@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "astc_opaque.h"   // (gpu/vk: upload_astc_gpu counts the blocks' kinds as it stages them)
+
 namespace fixture {
 void require(bool ok, const char* why) { if (!ok) { fprintf(stderr, "FAIL: %s\n", why); std::exit(1); } }
 struct VmaAllocation_T { std::vector<uint8_t> cpu, gpu; bool alive = true; };
@@ -47,6 +49,11 @@ VkResult vmaFlushAllocation(VmaAllocator, VmaAllocation a, uint64_t offset, uint
     std::copy(a->cpu.begin() + lo, a->cpu.begin() + hi, a->gpu.begin() + lo); flushes++; return VK_SUCCESS;
 }
 void logf(const char*, ...) {}
+enum LogLevel : int { log_error, log_warn, log_info, log_debug, log_trace };   // (gpu/vk/vk_internal.h's: staging's slow-arena line is debug)
+void logf_at(LogLevel, const char*, ...) {}
+// (staging()'s count of every arena it makes, and their time: the log's memory line)
+std::atomic<uint64_t> st_arena_makes{0};
+std::atomic<int64_t> st_arena_make_ns{0};
 void consume(VkCommandBuffer) {
     for (auto& a : allocations) {
         if (!a->alive) continue;
@@ -73,6 +80,9 @@ const uint8_t* guest_bytes(uint64_t at, uint64_t n, std::vector<uint8_t>&) {
     require(at <= guest.size() && n <= guest.size() - at, "authored guest bounds"); return guest.data() + at;
 }
 int64_t st_bytes = 0;
+// (the BC1 choice's count of the blocks' kinds: on here, so the gather reads each layer's blocks from the game's bytes too)
+bool env_on(const char*) { return false; }
+bool astc_kinds_wanted(const Texture&) { return true; }
 struct { uint32_t w=8, tw=8, d=1; } g;
 Texture tex;
 uint32_t px_h=2, th=2, level=0, layer=0, y0=0;
@@ -102,6 +112,17 @@ int run(int argc, char** argv) {
     } else if (test == "reuse") {
         cpu(37,0x5b); auto old = arenas.front().buffer; completed_value = rec_value++;
         cpu(37,0xa7); require(arenas.size() == 1 && arenas.front().buffer == old, "completed arena reused with new bytes");
+    } else if (test == "inflight-tail") {
+        cpu(37, 0x5b);
+        require(arenas.size() == 1, "initial arena allocated");
+        auto old = arenas.front().buffer;
+        auto first_used = arenas.front().used;
+        rec_value++; // advance timeline without completing the first slice
+        cpu(49, 0xa7);
+        require(arenas.size() == 1 && arenas.front().buffer == old, "in-flight arena tail reused without new allocation");
+        require(arenas.front().value == rec_value, "in-flight arena bumped to latest rec_value");
+        require(arenas.front().used > first_used, "second slice allocated past first slice");
+        require(flushes == 2, "both slices flushed independently");
     } else if (test == "multiple") {
         cpu(kModelArena,0x5b); cpu(31,0xa7); require(arenas.size() == 2, "multiple arenas independently published");
     } else if (test == "failure") {

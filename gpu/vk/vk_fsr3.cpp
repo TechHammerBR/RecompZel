@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -21,10 +22,12 @@
 #include "vk_draw.h"      // (descriptors_disturbed)
 #include "vk_gprof.h"     // (RX_VK_PASS_TIMING: a span per pass, so the report names them)
 #include "vk_menu.h"
+#include "vk_reactive.h"
 #include "vk_temporal.h"   // (temporal_env_chosen: RX_VK_DLSS / RX_VK_FSR4 over the row's FSR 3.1)
 #include "vk_texture.h"
 #include "upscaler_rows.h"
 
+#include "vk_builtin_spv.h"   // (RX_VK_SHADER_DIR)
 #include "shaders/dlss_out_comp_spv.h"   // (the network's output from a picture: its encoding squared back, as for DLSS)
 #include "shaders/fsr3_accumulate_comp_spv.h"
 #include "shaders/fsr3_luma_instability_comp_spv.h"
@@ -54,6 +57,7 @@ struct PassInfo {
     size_t spv_bytes;
     const Kind* bindings;
     size_t binding_count;
+    const char* spv_name;   ///< the array's, for builtin_spv (RX_VK_SHADER_DIR)
 };
 
 constexpr Kind PREPARE_INPUTS[]{T, T, T, I, I, I, I, I, U};
@@ -64,7 +68,7 @@ constexpr Kind PREPARE_REACTIVITY[]{T, T, T, T, T, T, T, T, T, I, I, I, U};
 constexpr Kind LUMA_INSTABILITY[]{T, T, T, T, T, T, T, I, I, U};
 constexpr Kind ACCUMULATE[]{T, T, T, T, T, T, T, T, T, I, I, I, U};
 
-#define PASS(n, spv, b) PassInfo{n, spv, sizeof spv, b, sizeof b / sizeof b[0]}
+#define PASS(n, spv, b) PassInfo{n, spv, sizeof spv, b, sizeof b / sizeof b[0], #spv}
 
 /// The passes, in the order PassId numbers them. The two _nowave pyramids are alternatives to the two before them, for
 /// devices without the subgroup operations the single-pass downsampler wants. FSR's own sharpening (accumulate_sharpen and
@@ -239,7 +243,8 @@ bool make_image(Image& t, VkFormat format, uint32_t width, uint32_t height, uint
     ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    // (hookshot: and a copy's source: the output's picture goes into vk_temporal.cpp's chain output, kChainEngine)
+    ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (!create_image(ci, t.image, t.memory, false)) {
         logf("vk: fsr3: a %ux%u image (format %d) was not made", t.width, t.height, (int)format);
@@ -284,10 +289,14 @@ bool make_pipeline(Pipeline& p, const PassInfo& info) {
     pi.setLayoutCount = 1, pi.pSetLayouts = &p.set;
     if (vkCreatePipelineLayout(dev.device, &pi, nullptr, &p.layout) != VK_SUCCESS) return false;
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    mi.codeSize = info.spv_bytes;
-    mi.pCode = info.spv;
+    const auto spv = builtin_spv(info.spv_name, info.spv, info.spv_bytes);
+    mi.codeSize = spv.size;
+    mi.pCode = spv.code;
     VkShaderModule m = VK_NULL_HANDLE;
-    if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) != VK_SUCCESS) return false;
+    {
+        IntelDriverGate gate;   // (released before shared_compute_pipeline, which takes the same lock)
+        if (extern_guarded_shader_module(&mi, &m) != VK_SUCCESS) return false;
+    }
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main",
                 nullptr};
@@ -464,6 +473,16 @@ bool prepare(uint32_t render_width, uint32_t render_height, uint32_t upscale_wid
 
 } // namespace
 
+int prepare_sizes(uint32_t render_width, uint32_t render_height, uint32_t upscale_width, uint32_t upscale_height) {
+    if (!supported()) return -1;
+    free_dead();   // (as upscale does first: a prepare that fails retires what it made, and the next try must not keep it all)
+    const bool had = g.output.image && g.render_width == std::max(1u, render_width) &&
+                     g.render_height == std::max(1u, render_height) && g.upscale_width == std::max(1u, upscale_width) &&
+                     g.upscale_height == std::max(1u, upscale_height);
+    if (!prepare(render_width, render_height, upscale_width, upscale_height)) return g.tried && !g.ok ? -1 : 0;
+    return had ? 1 : 2;
+}
+
 bool supported() {
     if (!dev.device) return false;   // (asked before the device is made, by the menu: not an answer to keep)
     static const bool answer = [] {
@@ -487,6 +506,26 @@ bool supported() {
         return true;
     }();
     return answer;
+}
+
+uint64_t memory() {
+    uint64_t sum = 0;
+    for (const Image* t : all_images())
+        if (t->image) sum += allocation_size(t->memory);
+    return sum;
+}
+
+void collect_retired() {
+    if (!g.dead.empty()) free_dead();  // The last FSR 3.1 release may be before the GPU finishes its images.
+}
+
+void release() {
+    for (Image* t : all_images()) drop_image(*t);   // (retired: freed once the GPU's uses of them are done)
+    g.render_width = g.render_height = g.upscale_width = g.upscale_height = 0;
+    free_dead();
+    // (what the GPU still uses is freed by the chain a few frames on: otherwise only FSR 3.1's next upscale freed it, and
+    // after the row went back to the game's upscaler its images stayed for the session)
+    if (!g.dead.empty()) temporal_later([] { free_dead(); });
 }
 
 bool upscale(VkCommandBuffer cmd, const Inputs& in) {
@@ -650,7 +689,8 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
         spd_x, spd_y);
     run(P_SHADING_CHANGE, {tex(g.spd_mips), tex(g.shading_change), cb_fsr}, groups(rw / 2, 8), groups(rh / 2, 8));
     run(P_PREPARE_REACTIVITY,
-        {tex(g.previous_nearest_depth), tex(g.dilated_motion_vectors), tex(g.dilated_depth), tex(g.default_reactive),
+        {tex(g.previous_nearest_depth), tex(g.dilated_motion_vectors), tex(g.dilated_depth),
+         in.reactive ? Resource{in.reactive} : tex(g.default_reactive),
          tex(g.default_reactive), tex(g.accumulation[p]), tex(g.shading_change), current_luma, exposure,
          tex(g.dilated_reactive_masks), tex(g.new_locks), tex(g.accumulation[q]), cb_fsr},
         groups(rw, 8), groups(rh, 8));
@@ -661,7 +701,7 @@ bool upscale(VkCommandBuffer cmd, const Inputs& in) {
     run(P_ACCUMULATE,
         {exposure, tex(g.dilated_reactive_masks), tex(g.dilated_motion_vectors), tex(g.internal_upscaled[p]),
          tex(g.lanczos_lut), tex(g.farthest_depth_mip1), current_luma, tex(g.farthest_depth), color,
-         tex(g.internal_upscaled[q]), tex(g.output), tex(g.new_locks), cb_fsr},
+         tex(g.internal_upscaled[q]), in.output ? Resource{in.output} : tex(g.output), tex(g.new_locks), cb_fsr},
         groups(uw, 8), groups(uh, 8));
     g.parity = q;
     return true;
@@ -673,6 +713,8 @@ VkImageView output_view() { return g.output.view; }
 } // namespace mkwvk::fsr3
 
 namespace mkwvk {
+
+extern std::atomic<bool> present_native_pq;   // (vk_replay.cpp do_present: the game presents its own HDR10 picture, Native)
 
 namespace {
 
@@ -717,9 +759,13 @@ bool make_out_pipeline() {
     pi.setLayoutCount = 1, pi.pSetLayouts = &o.set, pi.pushConstantRangeCount = 1, pi.pPushConstantRanges = &pr;
     if (vkCreatePipelineLayout(dev.device, &pi, nullptr, &o.layout) != VK_SUCCESS) return false;
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    mi.codeSize = sizeof DLSS_OUT_COMP_SPV, mi.pCode = DLSS_OUT_COMP_SPV;
+    const auto spv = BUILTIN_SPV(DLSS_OUT_COMP_SPV);
+    mi.codeSize = spv.size, mi.pCode = spv.code;
     VkShaderModule m = VK_NULL_HANDLE;
-    if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) != VK_SUCCESS) return false;
+    {
+        IntelDriverGate gate;   // (released before shared_compute_pipeline, which takes the same lock)
+        if (extern_guarded_shader_module(&mi, &m) != VK_SUCCESS) return false;
+    }
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main",
                 nullptr};
@@ -746,7 +792,7 @@ bool fail(const char* why) {   // (the network runs: why, when it changes and ev
 
 } // namespace
 
-bool fsr3_wanted() {
+bool fsr3_chosen() {
     static const int env = env_switch("RX_VK_FSR");
     if (env == 0) return false;
     // (the Upscaler row's FSR 3.1, upscaler_rows.h, read each time: the row changes it while the game runs. RX_VK_DLSS=1 / 2
@@ -754,15 +800,121 @@ bool fsr3_wanted() {
     return (env > 0 || (opts.dlss == upscaler_rows::FSR3 && !temporal_env_chosen())) && fsr3::supported();
 }
 
+bool fsr3_on_chain() {
+    static const bool on = env_switch("RX_VK_FSR3_CHAIN") != 0;
+    return on;
+}
+
+bool fsr3_wanted() { return !fsr3_on_chain() && fsr3_chosen(); }
+
+// ---- (hookshot) FSR 3.1 as an engine of the temporal chain (vk_temporal.cpp) ----
+// The chain's frame into the passes above: its colour (the network's input as it samples it), its depth reversed for FSR
+// (the chain's prep takes it so for an engine with fsr_depth), its motion toward the frame before in render pixels with the
+// skinned draws' own drawn over the camera's (vk_temporal.cpp actor_motion), and the jitter the host gave the camera. The
+// passes' picture (RGBA16F at the output size) is copied into the chain's output, which the chain squares back into the
+// network's output with dlss_out.comp, as fsr3_upscale's own last pass does.
+// With the game's native HDR the chain gives it linear light past 1 instead, and takes its picture back linear (chain_hdr):
+// the passes are built for HDR colour (FFX_FSR3UPSCALER_OPTION_HDR_COLOR_INPUT) and work out their own exposure.
+// (PsychoV35's linear HDR path writes it unchanged into a matching RGBA16F output.)
+namespace {
+struct ChainState {
+    std::chrono::steady_clock::time_point last{};
+    uint64_t drawn = 0;
+    bool told = false;
+    // (HDR colour this frame, as chain_prepare decided it; a change of encoding starts a new history: the one kept was in
+    // the other)
+    bool hdr = false, hdr_changed = false;
+};
+ChainState& chain_state() {
+    static ChainState& c = *new ChainState;   // (never destroyed: as the chain's own state)
+    return c;
+}
+bool chain_start() { return fsr3::supported(); }
+int chain_prepare(VkCommandBuffer, uint32_t rw, uint32_t rh, uint32_t ow, uint32_t oh, bool, uint32_t* in_w, uint32_t* in_h,
+                  const char** why) {
+    // (the passes' pipelines and images for these sizes, here and not in the evaluation: an image that cannot be made now
+    // (VRAM full as the size changes) is "not this frame", and the next frame tries again, as fsr3_upscale's own path did)
+    *in_w = rw, *in_h = rh;
+    // (the game's native HDR: what the game presents, not the option and the swapchain: with Native picked and the game's
+    // picture not PQ, the scene is LDR. RX_VK_FSR3_HDR=0: the colour clamped at the paper white with Native too, as before)
+    static const bool hdr_allowed = env_switch("RX_VK_FSR3_HDR") != 0;
+    const bool hdr = hdr_allowed && present_native_pq.load(std::memory_order_relaxed);
+    ChainState& c = chain_state();
+    if (hdr != c.hdr) {
+        logf("vk: fsr3 on the chain: %s", hdr ? "HDR colour, linear (the game's native HDR)" : "LDR colour (the game's native HDR off)");
+        c.hdr = hdr, c.hdr_changed = true;
+    }
+    const int r = fsr3::prepare_sizes(rw, rh, ow, oh);
+    if (r == 0) *why = "its images could not be made at this size";
+    if (r < 0) *why = "its passes could not be made";
+    return r;
+}
+bool chain_evaluate(VkCommandBuffer cmd, const TemporalFrame& f) {
+    ChainState& c = chain_state();
+    fsr3_math::Camera camera;
+    if (!fsr3_math::camera_from_projection(f.projection, camera)) {
+        logf("vk: fsr3 on the chain: the scene's projection is not one FSR takes");
+        return false;
+    }
+    if (!f.color.view || !f.depth.view || !f.motion.view || !f.output.image || !f.output.view ||
+        f.output.format != VK_FORMAT_R16G16B16A16_SFLOAT)
+        return false;
+    fsr3::Inputs ai;
+    ai.color = f.color.view, ai.depth = f.depth.view, ai.motion = f.motion.view;
+    ai.output = f.output.view;
+    ai.render_width = f.render_w, ai.render_height = f.render_h;
+    ai.upscale_width = f.output.width, ai.upscale_height = f.output.height;
+    ai.jitter[0] = f.jitter[0], ai.jitter[1] = f.jitter[1];
+    ai.jitter_phases = f.jitter_phases ? f.jitter_phases : 8;
+    ai.camera = camera;
+    const auto now = std::chrono::steady_clock::now();
+    ai.frame_time_ms = c.last.time_since_epoch().count() && !f.reset
+                           ? (float)std::min(250.0, std::chrono::duration<double, std::milli>(now - c.last).count())
+                           : 16.667f;
+    c.last = now;
+    ai.reset = f.reset || c.hdr_changed;
+    c.hdr_changed = false;
+    // (what the scene's transparent draws changed, when RX_VK_REACTIVE asks for it and there were any: vk_reactive.h. The
+    // same mask DLSS gets on this chain, as large as the chain's inputs; without one FSR's default reactivity, as before)
+    if (reactive::Mask m; reactive::mask(cmd, f.render_w, f.render_h, f.color.width, f.color.height, f.color.view, m))
+        ai.reactive = m.view;
+    if (!fsr3::upscale(cmd, ai)) return false;
+    // (P_ACCUMULATE wrote directly into f.output.view; vk_temporal.cpp's barrier and dlss_out.comp follow)
+    if (++c.drawn % 600 == 0 || !c.told)
+        logf("vk: fsr3 on the chain: %llu frames drawn, %ux%u -> %ux%u, jitter %+.3f %+.3f px of %u phases, depth %s",
+             (unsigned long long)c.drawn, f.render_w, f.render_h, f.output.width, f.output.height, f.jitter[0], f.jitter[1],
+             ai.jitter_phases, camera.flip_depth ? "reversed for FSR by the chain" : "reversed already");
+    c.told = true;
+    return true;
+}
+void chain_release() { fsr3::release(); }   // (the passes stay; their images are made again when FSR 3.1 draws next)
+uint64_t chain_memory() { return fsr3::memory(); }   // (its internal images, for the chain's status line)
+/// It takes HDR colour while the game presents its native HDR (chain_prepare): the chain gives it linear light, unclamped
+// (and, from upstream, PsychoV35's linear HDR path while the scene's tone mapping runs: its compatibility is on by default)
+bool chain_hdr() {
+    static const bool psycho = upscaler_rows::psychov35_compatibility(env_switch("RX_VK_PSYCHOV35_DLSS"));
+    return chain_state().hdr || (psycho && scene_tonemap_on());
+}
+// (hdr: linear light past 1 with the game's native HDR, chain_hdr; fsr_depth: its passes are built with
+// FFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH, scripts/fsr3_shaders.py; retry: an
+// evaluation that fails (no room for its constants in the frame's stream) leaves that frame to the network, and the next one
+// tries again. Named, so a field added to TemporalEngine cannot shift these into another)
+const TemporalEngine kChainEngine{.name = "AMD FSR 3.1", .short_name = "FSR 3.1", .start = chain_start,
+                                  .prepare = chain_prepare, .evaluate = chain_evaluate, .release = chain_release,
+                                  .memory = chain_memory, .hdr = chain_hdr, .fsr_depth = true, .retry = true};
+} // namespace
+
+const TemporalEngine* fsr3_engine() { return &kChainEngine; }
+
 bool fsr3_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, VkImageView in_view, Texture* out,
                   VkImageView out_view, uint32_t out_level) {
     const bool upscaling = fsr3_wanted();
     if (!upscaling && !fsr3_inputs::wanted()) return false;
     if (!in || !in_view || !out || !out_view) return false;
+    if (!fsr3_inputs::colour_pair(in->format, out->format)) return false;
     // (another network of the upscale's shape, as temporal_upscale takes them: only the scene into the picture. The gameplay
     // networks sample the scene's B10G11R11 colour and write the B10G11R11 picture)
-    if (!known && (in->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || out->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
-                   (out->width >> out_level) <= in->width || !fsr3_inputs::is_scene(in)))
+    if (!known && ((out->width >> out_level) <= in->width || !fsr3_inputs::is_scene(in)))
         return false;
     fsr3_inputs::Frame f;
     if (!fsr3_inputs::prepare(cmd, in, in_view, f)) return upscaling ? fail("its inputs could not be made") : false;
@@ -784,6 +936,8 @@ bool fsr3_upscale(VkCommandBuffer cmd, uint64_t key, bool known, Texture* in, Vk
     ai.camera = f.camera;
     ai.frame_time_ms = f.frame_ms;
     ai.reset = f.reset;
+    // (what the scene's transparent draws changed, when RX_VK_REACTIVE asks for it and there were any: vk_reactive.h)
+    if (reactive::Mask m; reactive::mask(cmd, f.width, f.height, f.width, f.height, f.color, m)) ai.reactive = m.view;
     if (!fsr3::upscale(cmd, ai)) return fail("its passes could not be recorded");
     {
         const int32_t pc[2] = {(int32_t)ow, (int32_t)oh};

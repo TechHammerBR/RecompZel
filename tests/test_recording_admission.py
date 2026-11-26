@@ -4,20 +4,16 @@ from pathlib import Path
 import os
 import subprocess
 import tempfile
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
+
+# (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/hookshot_env.h)
+ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "hookshot_env.h")
 
 RUN_ALL_ARGS = ["--cxx", "{cxx}", "--headers", "{vulkan_headers}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def block(source, marker):
-    start = source.index(marker)
-    at = source.index('{', start) + 1
-    depth = 1
-    while depth:
-        depth += (source[at] == '{') - (source[at] == '}')
-        at += 1
-    return source[start:at]
 
 
 def main():
@@ -41,13 +37,16 @@ def main():
     start = draw.index('    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};', draw.index('bool bind_descriptors('))
     end = draw.index('\n    return true;\n}', start) + len('\n    return true;')
     fixture = fixture.replace('/* RES */', record).replace('/* STREAM */', stream)
-    fixture = fixture.replace('/* POOL */', block(draw, 'VkDescriptorPool make_pool('))
+    pool = block(draw, 'VkDescriptorPool make_pool(')
+    if 'uint32_t pool_shift_first() {' in draw:   # (a slot's pool at half its size first, made whole after one ran out)
+        pool = 'std::atomic<uint64_t> pools_grown{0};\n' + block(draw, 'uint32_t pool_shift_first() {') + '\n' + pool
+    fixture = fixture.replace('/* POOL */', pool)
     fixture = fixture.replace('/* BEGIN */', block(draw, 'void draw_begin_recording(')).replace('/* DESCRIPTORS */', draw[start:end])
     fixture = fixture.replace('/* BANK_CACHE */', block(draw, 'struct BankCache {') + ';')
     fixture = fixture.replace('/* BANK_BRANCH */', block(block(draw, 'VkDescriptorBufferInfo uniform_range('), 'if (index == 0 || index == 2)'))
     cases = ['healthy', 'no-recording', 'initial-buffer', 'initial-map', 'initial-commit', 'pool-retry', 'parallel',
              'growth-buffer', 'growth-map', 'growth-commit', 'overflow', 'rounding', 'alignment-zero',
-             'alignment-three', 'grow-off', 'reuse', 'retention', 'descriptor-pool', 'descriptor-set', 'descriptor-commit', 'descriptor-retained', 'bank-retry', 'bank-same']
+             'alignment-three', 'reuse', 'retention', 'descriptor-pool', 'descriptor-set', 'descriptor-commit', 'descriptor-retained', 'bank-retry', 'bank-same']
     if a.case != 'all':
         assert a.case in cases
         cases = [a.case]
@@ -55,7 +54,7 @@ def main():
         cpp, exe = Path(tmp) / 'fixture.cpp', Path(tmp) / 'fixture.exe'
         cpp.write_text(fixture, encoding='utf-8')
         flags = ['-fsanitize=address,undefined', '-fno-sanitize-recover=all'] if a.sanitize else []
-        subprocess.run([a.cxx, '-std=c++20', '-O1', '-pthread', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', *flags,
+        subprocess.run([a.cxx, '-std=c++20', '-include', ENV_ON_H, '-include', str(ROOT / 'gpu' / 'vk' / 'flat_map.h'), '-O1', '-pthread', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', *flags,
                         '-I' + str(a.headers), str(cpp), '-o', str(exe)], check=True)
         env = {k: v for k, v in os.environ.items() if not k.startswith('RX_VK_')}
         for case in cases:

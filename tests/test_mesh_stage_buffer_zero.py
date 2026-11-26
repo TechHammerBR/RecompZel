@@ -2,23 +2,16 @@
 
 Workgroup memory holds what the last workgroup left. A vertex or an index byte the game's mesh program leaves unwritten
 was that, and on AMD it drew long thin triangles across the foliage's shadow map. The prologue zeroes both regions, with
-straight-line stores (its entry block is a phi predecessor: no branch), before the primitive count and the barrier.
-RX_VK_MESH_NO_ZERO turns it off. python -I -B tests/test_mesh_stage_buffer_zero.py
+straight-line stores (its entry block is a phi predecessor: no branch), before the primitive count and the barrier,
+in every mesh program with threads (no switch turns it off). python -I -B tests/test_mesh_stage_buffer_zero.py
 """
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # (tests/srccut.py: python -I leaves this folder off the path)
+from srccut import block   # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "gpu" / "vk" / "eden" / "shader_recompiler" / "backend" / "spirv" / "emit_spirv_mesh.cpp"
-
-
-def block(text, marker):
-    start = text.index(marker)
-    end = text.index("{", start) + 1
-    depth = 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
 
 
 def main():
@@ -38,8 +31,8 @@ def main():
         raise SystemExit("the zeroing branches: the prologue's entry block is a phi predecessor")
     if "Clamped(ctx," not in zero_fn:
         raise SystemExit("the zeroing stores are not clamped into their arrays")
-    if 'getenv("RX_VK_MESH_NO_ZERO")' not in mesh:
-        raise SystemExit("no RX_VK_MESH_NO_ZERO switch")
+    if "if (ctx.mesh_threads) {\n        const Id invocation{LocalInvocation(ctx)};\n        const auto zero_all = [&]" not in mesh:
+        raise SystemExit("the zeroing is no longer for every mesh program with threads")
     print("mesh stage buffer zeroed in the prologue ok")
 
 

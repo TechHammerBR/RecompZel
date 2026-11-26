@@ -22,12 +22,14 @@ namespace fixture {
 using VmaAllocation = void*;
 constexpr int kMaxMult = 8;
 struct Device { VkDevice device{}; bool push_descriptor = true, offscreen = false; std::mutex present_mu; } dev;
-struct Options { int framegen = 2; int fgtype = 0; } opts;
-namespace slfg { int max_generated() { return 0; } }   // (NVIDIA DLSS Frame Generation: not ready in this fixture)
+struct Options { int framegen = 2; } opts;
 auto vkCmdPushDescriptorSetKHR = reinterpret_cast<PFN_vkCmdPushDescriptorSetKHR>(uintptr_t(1));
 constexpr uint32_t FG_COPY_COMP_SPV[] = {0}, FG_LUMA_COMP_SPV[] = {0}, FG_FLOW_COMP_SPV[] = {0},
-                   FG_MEDIAN_COMP_SPV[] = {0}, FG_SYNTH_COMP_SPV[] = {0}, FG_SCALE_COMP_SPV[] = {0},
-                   FG_HUDGUARD_COMP_SPV[] = {0};   // (recompzel: a guarda de HUD, vk_framegen.cpp)
+                   FG_MEDIAN_COMP_SPV[] = {0}, FG_SYNTH_COMP_SPV[] = {0}, FG_SCALE_COMP_SPV[] = {0};
+constexpr uint32_t CRT_DOWNSAMPLE_COMP_SPV[] = {0}, CRT_LOTTES_COMP_SPV[] = {0},
+                   CRT_HYLLIAN_COMP_SPV[] = {0}, CRT_ZFAST_COMP_SPV[] = {0};
+// (gpu/vk/vk_builtin_spv.h's lookup as with RX_VK_SHADER_DIR unset: the compiled-in words themselves)
+#define BUILTIN_SPV_ARGS(words) words, sizeof words
 /* ACTUAL_STRUCTS */
 int multiplier() { return opts.framegen; }
 int display_refresh_mhz() { return 60000; }
@@ -61,6 +63,20 @@ VkResult vkCreateComputePipelines(VkDevice, VkPipelineCache, uint32_t count, con
     // Vulkan may return owned pipeline handles together with an error: cleanup must inspect the output.
     *p = allocate('P', info->layout); return fail ? VK_ERROR_OUT_OF_DEVICE_MEMORY : VK_SUCCESS;
 }
+// Main's compiler guard wraps the same injected allocation failures.
+bool gate_held = false;
+struct IntelDriverGate {
+    IntelDriverGate() { CHECK(!gate_held); gate_held = true; }
+    ~IntelDriverGate() { CHECK(gate_held); gate_held = false; }
+};
+VkResult extern_guarded_shader_module(const VkShaderModuleCreateInfo* info, VkShaderModule* p) {
+    CHECK(gate_held);
+    return vkCreateShaderModule(dev.device, info, nullptr, p);
+}
+VkResult extern_guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* info, VkPipeline* p) {
+    CHECK(gate_held);
+    return vkCreateComputePipelines(dev.device, cache, 1, info, nullptr, p);
+}
 void vkDestroyPipeline(VkDevice, VkPipeline h, const VkAllocationCallbacks*) { release(h, 'P'); }
 void vkDestroyPipelineLayout(VkDevice, VkPipelineLayout h, const VkAllocationCallbacks*) { release(h, 'L'); }
 void vkDestroyDescriptorSetLayout(VkDevice, VkDescriptorSetLayout h, const VkAllocationCallbacks*) { release(h, 'D'); }
@@ -83,6 +99,7 @@ void to_general(VkCommandBuffer, VkImage image) { CHECK(image && live.count(imag
 /* ACTUAL_FUNCTIONS */
 
 void clear_model() {
+    CHECK(!gate_held);
     CHECK(live.empty()); fg.init = fg.failed = false; fg.w = fg.h = 0; fg.mult = 0;
     fg.have_prev = false; fg.recorded = nullptr; fg.nearest = fg.linear = 0;
     fg.copy = fg.luma = fg.flow = fg.median = fg.synth = {};
@@ -90,6 +107,7 @@ void clear_model() {
     for (int i = 0; i < 2; ++i) fg.frames[i] = fg.lumas[i] = fg.flows[i] = {};
     for (auto& set : fg.sets) { set.busy = false; for (auto& image : set.frame) image = {}; }
     scale.init = scale.failed = false; scale.pipe = {}; scale.linear = 0;
+    crt = {};
     attempts = fail_at = barriers = waits = 0; submitted = false; idle = true;
 }
 void inspect_disabled() {
@@ -102,21 +120,21 @@ int run(const std::string& phase) {
         fail_at = 21; CHECK(!init()); inspect_disabled(); return 0;
     }
     if (phase == "all") {
-        for (int failure = 1; failure <= 26; ++failure) {   // (26 attempts in a full init: the HUD guard pipe added 4)
+        for (int failure = 1; failure <= 22; ++failure) {
             clear_model(); fail_at = failure; CHECK(!init()); inspect_disabled();
         }
         clear_model(); dev.push_descriptor = false; CHECK(!init() && live.empty()); dev.push_descriptor = true;
     }
     // Every image or view failure at fixed2x and max8x, after successful pipeline setup.
     for (int mult : {2, 8}) for (int failed = 1; failed <= 2 * (6 + 3 * mult); ++failed) {
-        clear_model(); opts.framegen = mult; CHECK(init() && live.size() == 20);   // (6 pipes: the HUD guard added 3 objects)
+        clear_model(); opts.framegen = mult; CHECK(init() && live.size() == 17);
         fail_at = attempts + failed; CHECK(!ensure_size({}, 3440, 1440));
         CHECK(barriers == 0 && !fg.w && !fg.h && !fg.mult && !fg.have_prev && !fg.recorded);
         inspect_disabled();
     }
     // Resize must drain old work before releasing it, then roll back a partially allocated replacement.
     clear_model(); opts.framegen = 2; CHECK(init()); CHECK(ensure_size({}, 1720, 720));
-    CHECK(live.size() == 56 && barriers == 12 && framegen_on());
+    CHECK(live.size() == 53 && barriers == 12 && framegen_on());
     const int count = attempts; CHECK(ensure_size({}, 1720, 720) && attempts == count);
     submitted = true; idle = false; fail_at = attempts + 8;
     CHECK(!ensure_size({}, 3440, 1440)); CHECK(waits == 2 && idle);
@@ -125,6 +143,31 @@ int run(const std::string& phase) {
     for (int failure = 1; failure <= 5; ++failure) {
         clear_model(); fail_at = failure; CHECK(!init_scale() && scale.failed && live.empty());
     }
+    // CRT's shared downsample/samplers roll back every setup failure, before any image is used.
+    for (int failure = 1; failure <= 6; ++failure) {
+        clear_model(); fail_at = failure;
+        CHECK(!init_crt(0) && crt.failed && live.empty());
+        const int attempted = attempts;
+        CHECK(!init_crt(0) && attempts == attempted);
+    }
+    // A selected filter pipeline can fail independently; its partial objects are all released.
+    for (int failure = 7; failure <= 10; ++failure) {
+        clear_model(); fail_at = failure; CHECK(!init_crt(0));
+        CHECK(!crt.failed && crt.tried[0] && live.size() == 5);
+        const int attempted = attempts;
+        CHECK(!init_crt(0) && attempts == attempted);
+        drop_pipe(crt.downsample);
+        vkDestroySampler(dev.device, crt.nearest, nullptr);
+        vkDestroySampler(dev.device, crt.linear, nullptr);
+        CHECK(live.empty());
+    }
+    clear_model(); CHECK(init_crt(0) && attempts == 10);
+    CHECK(init_crt(0) && attempts == 10);   // no per-frame construction
+    CHECK(init_crt(1) && attempts == 14);   // another shader, same samplers/downsample
+    drop_pipe(crt.filter[0]); drop_pipe(crt.filter[1]); drop_pipe(crt.downsample);
+    vkDestroySampler(dev.device, crt.nearest, nullptr);
+    vkDestroySampler(dev.device, crt.linear, nullptr);
+    CHECK(live.empty());
     std::puts("PASS: framegen setup/image rollback, checked samplers, no stale size, queue drain and direct fallback gate");
     return 0;
 }

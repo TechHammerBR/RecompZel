@@ -30,6 +30,13 @@ bool coherent=false,fail_buffer=false;
 unsigned flushed=0,queued=0;
 std::mutex par_mutex;
 struct ParLock { std::lock_guard<std::mutex> lock{par_mutex}; };
+namespace rec {   // (vk_recorder.h's RX_VK_RECORDER_OWN marks, as they are with the recorder off)
+inline void slot_begin(uint64_t) {}
+inline void slot_done() {}
+inline uint64_t produced() { return 0; }
+struct OwnSlot { OwnSlot() {} ~OwnSlot() {} };   // (a scope, as the real one)
+}   // namespace rec
+uint64_t rec_end_pos[64];   // (vk_replay.cpp: each slot's end in the recorder's ring)
 void logf(const char*,...) {}
 bool create_buffer(uint64_t size,VkBufferUsageFlags,bool,VkBuffer& buffer,VmaAllocation& allocation,void** mapped,bool=false) {
     if(fail_buffer) return false;
@@ -47,26 +54,32 @@ std::deque<RecordingRes> res;
 thread_local RecordingRes* cur=nullptr;
 const uint64_t kStream=1024;
 constexpr VkBufferUsageFlags kStreamUse=VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT|VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|VK_BUFFER_USAGE_TRANSFER_SRC_BIT|VK_BUFFER_USAGE_TRANSFER_DST_BIT|VK_BUFFER_USAGE_INDEX_BUFFER_BIT|VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-std::atomic<uint64_t> stream_extra{0},stream_grown{0},stream_peak{0};
-bool stream_grow_off() { return false; }
+std::atomic<uint64_t> stream_extra{0},stream_grown{0},stream_peak{0},pools_extra{0};
 struct BufferRef { VkBuffer buffer{}; uint64_t offset=0,size=0,address=0; };
 void draw_flush_recording(int slot);
 /* STREAM */
 VkCommandBuffer rec_cmd{};
 uint64_t rec_value=0,targets_serial=0;
 VkBuffer zero_buffer{}; VmaAllocation zero_alloc{};
-VkDescriptorPool make_pool() { return handle<VkDescriptorPool>(); }
+VkDescriptorPool make_pool(uint32_t = 0) { return handle<VkDescriptorPool>(); }   // (vk_draw.cpp: the shift sizes it; a handle here)
+uint32_t pool_shift_first() { return 1; }   // (vk_draw.cpp's default: a slot's first pool at half the size)
+std::atomic<uint64_t> pools_grown{0};
 VKAPI_ATTR VkResult VKAPI_CALL vkResetDescriptorPool(VkDevice,VkDescriptorPool,VkDescriptorPoolResetFlags) { return VK_SUCCESS; }
 VKAPI_ATTR void VKAPI_CALL vkDestroyDescriptorPool(VkDevice,VkDescriptorPool,const VkAllocationCallbacks*) {}
 struct Pass {}; Pass& pass() { static Pass p;return p; }
-bool work_since_barrier=false,last_dyn_valid=false,last_desc_valid=false,last_vb_valid=false;
-VkPipeline last_pipeline{};
-struct { bool on=false; } vertex_set,last_ib;
+bool work_since_barrier=false;
+struct CmdBound { void reset() {} };   // (vk_draw.cpp's: what the command buffer has bound, forgotten by a new recording)
+CmdBound& bound() { static CmdBound b; return b; }
 void descriptors_disturbed() {}
 std::unordered_map<int,int>& handle_hits() { static std::unordered_map<int,int> h;return h; }
+// (vk_draw.cpp's front cache of handle_hits, #2960: emptied with it, nothing else read here)
+struct ViewFast { uint64_t key = ~0ull; };
+std::array<ViewFast, 1024>& view_fast() { static thread_local std::array<ViewFast, 1024> a; return a; }
 struct BankCache { uint64_t at=0; };
 std::array<std::array<BankCache,2>,2>& bank_cache() { static std::array<std::array<BankCache,2>,2> b;return b; }
 void make_dummies() {}
+// (vk_draw.cpp's per-program descriptor slots, emptied by a new recording past 8192: nothing kept here)
+std::unordered_map<const void*,int>& prog_slots() { static thread_local std::unordered_map<const void*,int> m; return m; }
 /* FLUSH */
 /* BEGIN */
 struct Recording { int slot;VkCommandBuffer cmd,upload,init; VkFence fence;uint64_t value=1,batch=0,part=0;bool submitted=false; };
@@ -77,7 +90,6 @@ std::map<VkCommandBuffer,int> slots;
 bool texture_uploads_recorded() { return true; }
 void gprof_submitted(int,bool) {}
 void gpu_time_end(Recording&) {}
-bool memory_mirror_bind_wait(VkSemaphoreSubmitInfo*) { return false; }   // (Triforce: the mirrors' piece binds: none here)
 VKAPI_ATTR VkResult VKAPI_CALL vkEndCommandBuffer(VkCommandBuffer) { return VK_SUCCESS; }
 VkSemaphore timeline{},rec_timeline{};
 uint64_t rec_seq=0;
@@ -89,11 +101,16 @@ std::condition_variable rec_map_cv;
 std::atomic<bool> pend_held{false};
 std::multimap<uint64_t,uint64_t> value_rec;
 std::set<uint64_t> rec_open_values;
-struct { std::vector<VkCommandBufferSubmitInfo> cbs;uint64_t signal=0,rec=0;bool any_signal=false; } pend;
+struct { std::vector<VkCommandBufferSubmitInfo> cbs;uint64_t signal=0,rec=0;bool any_signal=false;uint64_t reflex=0; } pend;
+uint64_t reflex_frame() { return 0; }   // (vk_reflex.cpp: no Reflex here)
+const void* reflex_submit_id(const void* next, uint64_t = ~0ull) { return next; }   // (vk_reflex.cpp: no tag without Reflex)
 uint64_t batch_next=0;std::chrono::steady_clock::time_point pend_since;
 bool batch=false;bool batch_on() { return batch; }
-int flush_reason=0;constexpr int FR_CAP=1,FR_OTHER=0;bool batch_gpu_idle() { return false; }
+int flush_reason=0;constexpr int FR_CAP=1,FR_OTHER=0,FR_READBACK=7;bool batch_gpu_idle() { return false; }
+bool readback_send_now() { return false; }   // (held submits sent for a readback's wait: none waits here)
 void device_lost() { require(false,"unexpected device loss"); }
+void note_timeline_sent(uint64_t) {}
+bool memory_sparse_wait(VkSemaphoreSubmitInfo*) { return false; }   // (vk_memory.cpp: no sparse mirror binds here)
 #define PROF(x) ((void)0)
 VKAPI_ATTR VkResult VKAPI_CALL vkQueueSubmit2(VkQueue,uint32_t count,const VkSubmitInfo2* submits,VkFence) {
     for(unsigned i=0;i<count;i++) for(unsigned j=0;j<submits[i].commandBufferInfoCount;j++) {
@@ -112,6 +129,14 @@ void queue_flush_locked() {
     VkSubmitInfo2 si{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};si.commandBufferInfoCount=(uint32_t)pend.cbs.size();si.pCommandBufferInfos=pend.cbs.data();
     vkQueueSubmit2(dev.queue,1,&si,VK_NULL_HANDLE);pend.cbs.clear();
 }
+uint64_t occ_part_lo = UINT64_MAX, occ_part_hi = 0;   // (vk_replay.cpp, RX_VK_OCC_COPY: the recording's queries, forgotten at its submit)
+// (vk_replay.cpp: the submit made again after a refusal for want of memory goes to the queue as it is here; the host-read
+// barrier before a readback does nothing here)
+VkResult submit_or_retry(const VkSubmitInfo2& si, VkFence fence) { return vkQueueSubmit2(dev.queue, 1, &si, fence); }
+void host_read_barrier(VkCommandBuffer) {}
+VkSemaphore batch_tl{}; uint64_t batch_flushed = 1;
+// (the GPU still busy with the batch sent before: held submits stay held until a flush, as the batch case checks)
+VKAPI_ATTR VkResult VKAPI_CALL vkGetSemaphoreCounterValue(VkDevice,VkSemaphore,uint64_t* value) { *value = 0; return VK_SUCCESS; }
 /* SUBMIT */
 struct Job { Recording* r;int inits=0;bool uploads=true; };
 void submit_segments(std::vector<Job>& jobs) {
@@ -132,7 +157,15 @@ static void write(Recording& r,size_t bytes,unsigned seed) {
 int main(int argc,char**argv) {
     require(argc==3,"fixture arguments");std::string mode=argv[1];coherent=std::string(argv[2])=="coherent";
     dev.props.limits.minUniformBufferOffsetAlignment=256;dev.props.limits.minStorageBufferOffsetAlignment=64;
+    // (first-stream-failure: the slot's first stream cannot be made, as when host-visible memory runs out at a recording's start)
+    fail_buffer=mode=="first-stream-failure";
     Recording a=recording(0);draw_begin_recording(0,a.cmd,1);
+    fail_buffer=false;
+    if(mode=="first-stream-failure") {
+        require(res[0].streams.empty() && !res[0].stream && res[0].si==0,"the slot has no stream");
+        submit_recording(a);require(!flushed && a.submitted,"a recording without a stream submits with nothing to flush");
+        std::puts("PASS: a recording whose first stream could not be made");return 0;
+    }
     if(mode=="empty") { submit_recording(a);require(!flushed,"empty recording must not flush old bytes");return 0; }
     write(a,701,1);
     if(mode=="grow" || mode=="reuse") {

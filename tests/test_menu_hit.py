@@ -46,7 +46,7 @@ def sources():
     down = down[:down.index("break;")]
     if "if (menu_open)" not in down or "else if (renderer && !mouse_captured) mouse_capture(1);" not in down:
         raise SystemExit("display_sdl.c: a click with the menu open captures the mouse")
-    down = win[win.index("case WM_LBUTTONDOWN:"):]
+    down = win[win.index("case WM_LBUTTONDOWN:", win.index("static LRESULT CALLBACK wndproc(")):]   # (not key_messages' case)
     down = down[:down.index("return 0;")]
     if "if (menu_open)" not in down or "else if (renderer && !mouse_captured) mouse_capture(w, 1);" not in down:
         raise SystemExit("display.c: a click with the menu open captures the mouse")

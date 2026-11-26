@@ -17,7 +17,9 @@ meanwhile. The statements are cut from the source and run against stand-ins for 
     look was under way; every time while a queue is stopped at an event nobody has set (its value is guest memory's,
     where a store meets the wait with no signal); and not otherwise;
   - the part wait gives way to the last part when a part after the range's own reads guest memory in place (a pool
-    with no mirror, a mirror's pages no capture holds): vk_memory.cpp notes each such read.
+    with no mirror, a mirror's pages no capture holds): vk_memory.cpp notes each such read;
+  - a range RX_VK_READBACK_LATE names (readback_late.h: its writer is the newest submission, or its size) is read without
+    its wait, and every other range waits as before.
 
 python -I -B tests/test_readback_part.py [--cxx g++]
 """
@@ -60,10 +62,12 @@ FIXTURE = r"""
 #include <memory>
 #include <mutex>
 #include <vector>
+#include "readback_late.h"
+#include "page_marks.h"   // (wb_ever, which wb_pages_note marks: invalidate_quick)
+using mkwvk::PageMarks;
 constexpr uint64_t kPageShift = 12, kChunkPages = 16, kPages = 64;
-#include <unordered_map>
-static bool env_on(const char*) { return false; }   // (no switch set)
-static uint64_t vk_timeline_completed() { return 0; }   // (Triforce: wb_pages_note trims its recent runs by it)
+[[maybe_unused]] static bool env_on(const char*) { return false; }   // (nothing the check cuts reads a switch now)
+[[maybe_unused]] static bool env_on_or(const char*, int def) { return def != 0; }   // (a switch at its default: RX_VK_WB_SPANS)
 namespace {
 /* PAGES */
 static int failures;
@@ -96,16 +100,42 @@ static int waited_whole_value;   // (readback_wait_value: the main timeline, eve
 static bool replay_behind() { return false; }
 static void wait_queue_empty() {}
 static bool readback_wait_value(uint64_t) { waited_whole_value++; return true; }
-static const bool by_part = true, unforced = true;
+static const bool unforced = true;
+static const bool behind = false;          // (RX_VK_ASYNC=1, the render thread: not here)
+static void readback_fell_back(int = 0) {}
 static uint64_t in_place_part;   // (the newest part that reads guest memory in place, as vk_memory.cpp keeps it)
 static uint64_t memory_in_place_part() { return in_place_part; }
 static int held_back;
+static int in_place;   // (the waits for a whole submission whose pages were written in place, part 0)
+static uint64_t fence_handed;             // (the newest value handed out, as fence() when the readback begins)
+static readback_late::Rules late_rules;   // (RX_VK_READBACK_LATE: none set, until the checks of it)
+static bool readback_late_wanted(uint64_t size, bool newest) { return readback_late::wanted(late_rules, size, newest); }
+// (RX_VK_READBACK_EARLY, off here: tests/test_readback_early.py checks its wait)
+static bool readback_early_on() { return false; }
+static bool early_check_on() { return false; }
+static void early_check_read(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, bool) {}
+static void memory_rb_waited(uint64_t, uint64_t) {}
+static uint64_t memory_in_place_writer_part(uint64_t, uint64_t, uint64_t) { return 0; }
+static bool early_recorded_wait(uint64_t, double* ms) { *ms = 0; return true; }
+static std::atomic<int64_t> st_early_waits{0}, st_early_ns{0}, st_early_whole{0}, st_early_rec{0}, st_early_rec_ns{0}, st_early_rec_late{0};
+struct Host { uint64_t gpu_guest(uint64_t g) const { return g; } };
+static Host host_v;
+static Host* host = &host_v;
+// (RX_VK_LOG_RB_WRITERS: its wait for the last writer's part, counted)
+struct RbDiag {};
+static bool diag_on;
+static int diag_waits;
+static bool rb_writers_on() { return diag_on; }
+static bool rb_probe_only() { return false; }   // (RX_VK_LOG_RB_WRITERS=2: the release probe alone, no wait)
+static void rb_diag_wait(uint64_t, uint64_t, RbDiag&, uint64_t, uint64_t, bool) { diag_waits++; }
 /// what a readback of [guest, guest + size) waits for: the recording (0: none)
 static uint64_t readback(uint64_t guest, uint64_t size) {
     bool w = false;
     waited_seq = 0;
     uint64_t part = 0, whole = 0;
     const uint64_t v = memory_writeback_value(guest, size, nullptr, &part, &whole);
+    const uint64_t f0 = fence_handed, gpu = guest;
+    RbDiag rbd;
     /* CHOICE */
     (void)w;
     return waited_seq;
@@ -131,6 +161,7 @@ static void finish_recording(uint64_t) {   // (ends the recording: its pages are
     rec_cur = nullptr;
     unsettled_while_finishing += ev_cpu_settled.load() != ev_cpu_signals.load();
 }
+static void rb_span_close() {}   // (RX_VK_LOG_RB_WRITERS's span: tests/test_readback_early.py)
 static int looks, signal_during_look;
 static void cpu_signal() { ev_cpu_signals.fetch_add(1, std::memory_order_release); }
 static bool wait_met_at(const uint8_t*) {
@@ -168,8 +199,11 @@ int main() {
     note(d, 4);
     rec_open_values.push_back(11);
     note(e, 5);
+    in_place = 0;
     check(readback(3 * P, 64) == 5, "a range written in place waits for its submission's last part");
     check(readback(3 * P, 2 * P) == 5, "and so does a range with a page written in place and one written back from a mirror");
+    check(in_place == 1, "the readback line counts the range written in place (no mirror: part 0) as a wait for its whole "
+          "submission, and not the range with a mirror's page (its part known)");
     check(readback(4 * P, 64) == 4, "the mirror's page alone waits for its part");
     // a page written back from a mirror, then written in place by a later submission: the part is gone with the value
     wb_pages_note(1 * P, 2 * P, 12, 0);
@@ -203,12 +237,29 @@ int main() {
     // a part after the range's own reads guest memory in place (a pool with no mirror, a mirror's pages from no capture):
     // the game, let go after the range's part, would write what that part still reads. The last part, as before
     done_value = 10;
-    held_back = 0;
+    held_back = 0, in_place = 0;
     in_place_part = 4;
     check(readback(4 * P, 64) == 4 && held_back == 0, "guest memory read in place in the range's own part: that part is enough");
     in_place_part = 5;
     check(readback(4 * P, 64) == 5 && held_back == 1, "guest memory read in place in a later part: the submission's last part");
+    check(in_place == 0, "a range in a part of its own (not written in place) counted as a whole-submission wait");
     in_place_part = 0;
+    // RX_VK_READBACK_LATE: a range the rule names is read without its wait, the others wait as before (page 4: value 11)
+    late_rules = readback_late::parse("newest");
+    fence_handed = 11;
+    check(readback(4 * P, 64) == 0, "newest: a range the newest submission writes is read without its wait");
+    fence_handed = 12;
+    check(readback(4 * P, 64) == 4, "newest: a range an older submission writes still waits for its part");
+    late_rules = readback_late::parse("40");
+    check(readback(4 * P, 0x40) == 0 && readback(4 * P, 0x20) == 4, "a size: the ranges of that size are read without their wait, no other");
+    diag_on = true;   // (RX_VK_LOG_RB_WRITERS: its wait comes after the late rule, and never for a late read)
+    late_rules = readback_late::parse("newest");
+    fence_handed = 11;
+    check(readback(4 * P, 64) == 0 && diag_waits == 0, "the diagnostics add no wait to a range read late");
+    late_rules = readback_late::parse(nullptr);
+    fence_handed = 11;
+    check(readback(4 * P, 64) == 4 && diag_waits == 1, "no rule: the wait, as before, the diagnostics' first");
+    diag_on = false;
 
     // the look at the stopped queues: only after a CPU signal nobody has looked at
     const uint64_t event = 0x1000;
@@ -264,21 +315,20 @@ def main():
     memory = (a.source / "gpu/vk/vk_memory.cpp").read_text(encoding="utf-8")
     replay = (a.source / "gpu/vk/vk_replay.cpp").read_text(encoding="utf-8")
     pages = memory[memory.index("std::mutex wb_pages_mu;"):memory.index("uint64_t memory_writeback_value(")]
-    # (Triforce: the late pages' second copy, between the two, reads captures and the pools: not this test's, left out)
-    if "// (Triforce) see late_unresolved_n." in pages:
-        cut = pages.index("// (Triforce) see late_unresolved_n.")
-        pages = pages[:cut] + "} // namespace\n"
     pages += block(memory, "uint64_t memory_writeback_value(")
-    if "bool wb_inflight_in(" in pages:   # (Triforce: take_capture's, not used here)
-        pages += "\n[[maybe_unused]] static auto* const wb_inflight_in_kept = &wb_inflight_in;\n"
     submit = replay[replay.index("void submit_recording("):]
     bookkeeping = between(submit, "std::lock_guard mk(rec_map_mu);", "while (part_rec.size() > 8192) part_rec.erase(part_rec.begin());")
     assert len(bookkeeping) < 3000, "the bookkeeping must be in submit_recording's rec_timeline block"
+    # Match the definition, not the forward declaration used by vk_timeline_wait.
     waits = block(replay, "bool wait_recorded(uint64_t f, uint64_t timeout_ns, int* ok) {") + "\n" + block(replay, "bool wait_recorded_part(")
     inv = replay[replay.index("void invalidate(uint64_t gpu, uint64_t size) {"):]
     lookup = "const uint64_t v = memory_writeback_value(host->gpu_guest(gpu), size, nullptr, &part, &whole);"
     after = inv[inv.index(lookup):]
-    choice = block(after, "if (v > completed()) {\n                int ok = 0;")
+    marker = "if (pending && !late) {\n                int ok = 0;"
+    choice = after[after.index("const bool pending = v > completed()"):after.index(marker)] + block(after, marker)
+    assert "readback_late_wanted(size, newest)" in choice, "the readback's late rule is no longer asked before its wait"
+    assert "rb_diag_wait(" not in inv[:inv.index("const bool pending = v > completed()")], \
+        "RX_VK_LOG_RB_WRITERS's wait comes before the late rule: a read late would wait"
     assert "wait_recorded_part(part" in choice, "the readback no longer waits for its pages' part: update this test"
     # (the settle before the lookup goes through sync_settle_met with per-queue fences)
     before = inv[:inv.index(lookup)]
@@ -290,6 +340,8 @@ def main():
         "update_blocked no longer says whether a stopped queue waits on an event in guest memory"
     assert "const bool in_place_after = memory_in_place_part() > part;" in choice and "!in_place_after &&" in choice, \
         "the readback's part wait no longer gives way to guest memory read in place after its part"
+    assert "if (!parted && !part) in_place++;" in choice and "(long long)held_back.exchange(0), (long long)in_place.exchange(0));" \
+        in replay, "the readback line no longer counts the waits for a whole submission whose pages were written in place"
     memory_src = memory
     # every place the guest pool's own buffer is handed to the GPU to read: bound, copied from, or given out whole
     # (gpu_buffer: a texture unswizzled on the GPU, a texel buffer's view). The write-back's own copies into it, the
@@ -297,6 +349,8 @@ def main():
     noted = 0
     for site in ("return remember({p->buffer, off, size, 0});", "vkCmdCopyBuffer(upload_command_buffer(), p.buffer, p.mirror,",
                  "vkCmdCopyBuffer(upload_command_buffer(), p->buffer, p->mirror, 1, &all);",
+                 "vkCmdCopyBuffer(upload_command_buffer(), p->buffer, p->mirror, (uint32_t)parts.size(), parts.data());",
+                 "vkCmdCopyBuffer(up, p.buffer, p.mirror, (uint32_t)fill.size(), fill.data());",
                  "return {p->buffer, guest - p->lo, size, p->address + (guest - p->lo)};"):
         at = 0
         while (at := memory_src.find(site, at)) >= 0:
@@ -304,8 +358,8 @@ def main():
                 "a read of guest memory in place is not noted for the readback's part wait: " + site
             at += 1
             noted += 1
-    # (recompzel, with Triforce's mirrors in pieces: a piece bound or left in guest memory, its fill and a deferred late page: 4 more)
-    assert noted == 10, "the reads of guest memory in place have changed (%d found): look at each again" % noted
+    # (9: a sparse mirror's binding of a block with no memory, its first fill of the blocks with memory, and sparse_grow's fill)
+    assert noted == 9, "the reads of guest memory in place have changed (%d found): look at each again" % noted
     import re
     sources = re.findall(r"vkCmdCopyBuffer\([^,]+, (?:p|pp)(?:->|\.)buffer, [^,]+", memory_src)
     assert len(sources) == 6, "a new copy out of a guest pool (%d found): is it noted for the readback's part wait?" % len(sources)
@@ -327,7 +381,8 @@ def main():
         src = Path(temp) / "readback_part.cpp"
         exe = Path(temp) / "readback_part.exe"   # (the name llvm-mingw writes on Windows; any name runs on Linux)
         src.write_text(fixture, encoding="utf-8")
-        subprocess.run([a.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", str(src), "-o", str(exe)], check=True)
+        subprocess.run([a.cxx, "-std=c++20", "-O1", "-Wall", "-Wextra", "-Werror", "-I", str(a.source / "gpu/vk"), str(src),
+                        "-o", str(exe)], check=True)
         r = subprocess.run([str(exe)], text=True, capture_output=True, timeout=20)
         print(r.stdout, end="")
         raise SystemExit(r.returncode)

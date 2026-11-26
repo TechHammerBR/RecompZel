@@ -12,6 +12,7 @@ import tempfile
 RUN_ALL_ARGS = ["--cxx", "g++"]
 
 ROOT = Path(__file__).resolve().parents[1]
+ENV_ON_H = str(ROOT / "gpu" / "vk" / "compat" / "hookshot_env.h")
 
 
 def block(source, marker):
@@ -39,12 +40,18 @@ static const char* fixture_getenv(const char* name) {
     return nullptr;
 }
 #define getenv fixture_getenv
-static bool float16_shaders() { return !no_f16; }   // (vk_shader.cpp: no f16 shaders, RX_VK_NO_F16 among the reasons)
+// (env_on, the switches' rule (hookshot_env.h, included first), over the fixture's environment)
+static bool fixture_env_on(const char* name) { const char* v = fixture_getenv(name); return v && !env_value_off(v); }
+#define env_on fixture_env_on
+static bool float16_shaders() { return !env_on("RX_VK_NO_F16"); }   // (vk_shader.cpp: off under RX_VK_NO_F16 or without shaderFloat16)
 namespace Shader { namespace Backend { namespace SPIRV { static bool mma_software = true; } } }
 using VkCommandBuffer = int;
 using VkImageView = int;
 constexpr int VK_IMAGE_VIEW_TYPE_2D=2, VK_FORMAT_B10G11R11_UFLOAT_PACK32=7;
-enum class ViewUse { Storage };
+constexpr int VK_FORMAT_R16G16B16A16_SFLOAT=97, VK_FORMAT_UNDEFINED=0;
+static bool tone=false, resolve_input=true, rgba_views=true;
+static bool scene_tonemap_on(){return tone;}
+enum class ViewUse { Sample, Storage };
 struct Desc { unsigned count=1; int format=23; };
 struct Info { std::vector<Desc> texture_descriptors, image_descriptors; };
 struct Stage { Info info; };
@@ -52,6 +59,7 @@ struct NvnState {};
 struct Program { uint64_t key; std::vector<Stage> stages; };
 struct Texture { int format=VK_FORMAT_B10G11R11_UFLOAT_PACK32; };
 static Texture texture;
+static Texture input_texture{VK_FORMAT_R16G16B16A16_SFLOAT};
 static struct { bool push_descriptor=false; } dev;
 static bool vkCmdPushDescriptorSetKHR=true;
 struct ImageInfo { VkImageView imageView; };
@@ -71,10 +79,13 @@ static uint32_t handle_of(const NvnState&,const Stage&,const Desc&,uint32_t inde
     ++handle_calls;return index==0?handle_value:0;
 }
 static int image_format(int f){return f+100;}
-static VkImageView texture_view_of(uint32_t handle,int type,ViewUse use,int format,Texture** out,uint32_t* level){
+static VkImageView texture_view_of(uint32_t handle,int type,ViewUse use,int format,Texture** out=nullptr,uint32_t* level=nullptr){
     ++view_calls;
-    if(handle!=5 || type!=VK_IMAGE_VIEW_TYPE_2D || use!=ViewUse::Storage || format!=123) return 0;
-    *out=resolve_image?&texture:nullptr;*level=7;return 99;
+    if(handle!=5 || type!=VK_IMAGE_VIEW_TYPE_2D) return 0;
+    if(use==ViewUse::Storage && format==123){*out=resolve_image?&texture:nullptr;*level=7;return 99;}
+    if(use==ViewUse::Sample && format==VK_FORMAT_UNDEFINED){*out=resolve_input?&input_texture:nullptr;return 98;}
+    if(format==VK_FORMAT_R16G16B16A16_SFLOAT && rgba_views)return use==ViewUse::Sample?51:52;
+    return 0;
 }
 static bool typed_upscale(VkCommandBuffer cmd,VkImageView input,VkImageView output,Texture* out,uint32_t level,uint64_t key,const char* text,bool temporal){
     ++upscale_calls;forwarded_cmd=cmd;forwarded_input=input;forwarded_output=output;forwarded_texture=out;
@@ -128,6 +139,16 @@ int main(int argc,char** argv){
         accepted(configured_keys?configured_keys:"fd029a317a9a4b94",true);
         configured_keys="later diagnostic override";accepted(configured_keys,false);
         configured_keys=nullptr;accepted("fd029a317a9a4b94",true);
+        // A matching PsychoV35 pair must replace both views, not bind a packed storage view to RGBA.
+        texture.format=VK_FORMAT_R16G16B16A16_SFLOAT;
+        rejected("RGBA without Native PsychoV35");tone=true;
+        resolve_input=false;rejected("RGBA without input image");resolve_input=true;
+        input_texture.format=VK_FORMAT_B10G11R11_UFLOAT_PACK32;rejected("mixed packed/RGBA");
+        input_texture.format=VK_FORMAT_R16G16B16A16_SFLOAT;
+        rgba_views=false;rejected("missing matching typed views");rgba_views=true;
+        check(taau_stand_in(19,state,program),"PsychoV35 accepted");
+        check(forwarded_input==51 && forwarded_output==52 && forwarded_level==7 && forwarded_temporal,
+              "both RGBA views forwarded to gameplay helper");
     }
     printf("%s failures=%u eligible=%d\n",argv[1],failures,upscale_calls);
     return failures?1:0;
@@ -153,10 +174,12 @@ def main():
         source, exe = folder / 'fixture.cpp', folder / 'fixture.exe'
         source.write_text(cpp, encoding='utf-8')
         if Path(args.cxx).name.lower() in ('cl', 'cl.exe', 'clang-cl', 'clang-cl.exe'):
-            command = [args.cxx, '/nologo', '/std:c++17', '/EHsc', '/W4', '/WX', str(source),
+            # (/FI, -include: env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/hookshot_env.h)
+            command = [args.cxx, '/nologo', '/std:c++17', '/EHsc', '/W4', '/WX', '/FI' + ENV_ON_H, str(source),
                        '/Fo' + str(folder / 'fixture.obj'), '/Fe' + str(exe), *args.cxx_arg]
         else:
-            command = [args.cxx, '-std=c++17', '-Wall', '-Wextra', '-Werror', *args.cxx_arg, str(source), '-o', str(exe)]
+            command = [args.cxx, '-std=c++17', '-include', ENV_ON_H, '-Wall', '-Wextra', '-Werror', *args.cxx_arg, str(source), '-o',
+                       str(exe)]
         subprocess.run(command, cwd=folder, check=True)
         failed = False
         for case in ('software', 'hardware', 'no-f16', 'empty', 'disabled', 'custom', 'prefixes'):

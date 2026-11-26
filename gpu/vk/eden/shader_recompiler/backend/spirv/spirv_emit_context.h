@@ -6,7 +6,9 @@
 
 #pragma once
 
+#include <unordered_set>
 #include <array>
+#include <functional>
 
 #include <sirit/sirit.h>
 #include "common/container/unordered_set.h"
@@ -45,6 +47,7 @@ struct TextureDefinition {
 
 struct TextureBufferDefinition {
     Id id;
+    Id pointer_type;
     u32 count;
 };
 
@@ -261,6 +264,7 @@ public:
     std::vector<ImageDefinition> images;
 
     Id workgroup_id{};
+    Id num_workgroups{};
     Id local_invocation_id{};
     Id invocation_id{};
     Id patch_vertices_in{};
@@ -353,6 +357,12 @@ public:
         StorageDefinitions vars{};
     };
     std::vector<GlobalTableVars> ssbo_tables;
+    /// (RX_VK_MESH_G3, task and mesh stages) code the first block runs before anything else: the global accesses' buffer ranges, worked out once
+    std::vector<std::function<void()>> entry_emitters;
+    void EmitEntryPrologue() {
+        for (auto& f : entry_emitters) f();
+        entry_emitters.clear();
+    }
     std::array<Id, 9> atomic_global_func_u32{};
     Id atomic_global_cas_func_u32{};   // (hookshot) (address, comparator, value) -> the old value
 
@@ -363,11 +373,15 @@ public:
     Id write_global_func_u32x2{};
     Id write_global_func_u32x4{};
     Id write_global_cas_loop_func{};
+    Id write_global_u8_func{};    // (hookshot) (address, value): the byte written directly
+    Id write_global_u16_func{};   // (hookshot) (address, value): the half written directly
     Id atomic_global_add_f32_func{};   // (hookshot) (address, value) -> the old value
 
     bool need_input_position_indirect{};
     Id input_position{};
     std::array<InputGenericInfo, 32> input_generics{};
+    /// Screen-linear fragment inputs read through perspective interpolation, times FragCoord.w.
+    std::array<bool, 32> noperspective_as_smooth_inputs{};
 
     Id output_point_size{};
     Id output_position{};
@@ -401,7 +415,35 @@ public:
     /// (hookshot) a fallback mesh workgroup's slot (task workgroup * threads + its index), read from the task's map in the
     /// entry block (EmitMeshPrologue); invalid without a task program, where the slot is the workgroup id
     Id mesh_fallback_slot{};
+    Id mesh_fallback_epilogue_word{};   ///< (hookshot) the fallback epilogue's loop index, a function variable of the entry block
+    Id mesh_fallback_epilogue_line{};   ///< (hookshot) the Soa records' line, WriteFallbackLines' inner loop index, as above
+    /// (hookshot, mma_layout.h mesh_fallback_global_attributes) the attribute region in a pool slot, not in workgroup memory: the
+    /// slot's bytes, the function that takes a ticket for it (thread 0, into the workgroup word), and in the entry block the
+    /// ticket and the region's device address (EmitMeshPrologue)
+    bool mesh_attributes_global{};
+    u32 mesh_attribute_slot_bytes{};
+    Id mesh_attribute_ticket_shared{};
+    Id mesh_attribute_claim{};
+    Id mesh_attribute_ticket{};
+    Id mesh_attribute_base{};
     Id mesh_shared_u32{};   ///< pointer type to one workgroup word
+    /// (hookshot, mma_layout.h mesh_fallback_shared_warp) the warp in workgroup memory: the words (a region's entered and
+    /// reached lanes, a ballot's lanes and arrivals, a shuffle's values and arrivals), the function that waits for lanes'
+    /// bits in a word, this invocation's lane and bit (entry block), the lanes that run the block being emitted and those of
+    /// the ifs around it, and the ifs (by their body) with a ballot, vote or shuffle inside (PlanSharedWarp)
+    bool warp_shared{};
+    bool warp_shared_check{};
+    Id warp_words{};
+    Id warp_word_pointer{};
+    Id warp_wait{};
+    Id warp_lane{};
+    Id warp_bit{};
+    Id warp_region{};
+    std::vector<Id> warp_regions;
+    std::vector<bool> warp_region_opened;   ///< each open if: whether it opened a region
+    u32 warp_word_count{};
+    u32 warp_word_next{};
+    std::unordered_set<const IR::Block*> warp_region_ifs;
     Id mesh_primitive_indices{};
     MeshInfo mesh_info{};
     u32 mesh_threads{};
@@ -424,12 +466,15 @@ public:
     // the payload, map and record buffers, pushed as device addresses; a generated vertex stage reads the records.
     bool mesh_fallback{};
     bool wants_mesh_fallback{};
+    u32 ir_instruction_count{};   ///< (hookshot, global_helper_policy.h) the program's IR instructions, counted before the emission
     Id mesh_fallback_word_ptr{};   ///< PhysicalStorageBuffer pointer to a block of one u32
     u32 mesh_fallback_payload_member_index{};
     u32 mesh_fallback_records_member_index{};
     u32 mesh_fallback_indirect_input_member_index{};
     /// A pointer to the u32 at a PhysicalStorageBuffer device address
     Id MeshFallbackWord(Id address);
+    /// (hookshot, mma_layout.h mesh_fallback_shared_warp) a pointer to one of the shared warp's counters past the records
+    Id MeshFallbackWarpCounter(u32 counter);
 
     Id load_const_func_u8{};
     Id load_const_func_u16{};
@@ -471,6 +516,8 @@ private:
     void DefineInputs(const IR::Program& program);
     void DefineOutputs(const IR::Program& program);
     void DefineMesh(const IR::Program& program);
+    void PlanSharedWarp(const IR::Program& program);
+    void DefineSharedWarp();
 };
 
 } // namespace Shader::Backend::SPIRV

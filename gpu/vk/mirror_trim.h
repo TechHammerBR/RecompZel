@@ -1,4 +1,4 @@
-// (hookshot) An import trimmed back to the game's live pools (RX_VK_MIRROR_TRIM).
+// (hookshot) An import trimmed back to the game's live pools.
 //
 // Imports only ever grew: a binding across an import's end makes it again, larger, over what it overlaps, and a pool the game
 // binds whole is imported whole. A pool's VRAM mirror (and its write-back shadow) is its import's whole range. So after the game
