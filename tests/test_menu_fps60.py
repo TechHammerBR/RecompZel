@@ -25,10 +25,8 @@ def main():
     args = parser.parse_args()
     vi = (ROOT / "host/nn_vi.c").read_text(encoding="utf-8")
     menu = (ROOT / "host/oot_menu.c").read_text(encoding="utf-8")
-    if "static int fps_max(void) { return fps_effective(hos_now_ns()); }" not in vi:
-        raise SystemExit("fps_max (every pacing, limiter and step site) is not the menu-aware rate")
-    if "return held ? 60 : fps_cap();" not in block(vi, "static int fps_effective("):
-        raise SystemExit("fps_effective does not hold 60 while a menu is in front")
+    if "return held ? 60 : fps_cap();" not in block(vi, "static int fps_max(void) {"):
+        raise SystemExit("fps_max (every pacing, limiter and step site) does not hold 60 while a menu is in front")
     tick = block(menu, "void hos_oot_menu_tick(")
     if "__atomic_store_n(&hos_menu_shown_ns, now" not in tick or "if (front || pause_runs)" not in tick:
         raise SystemExit("the menu tick does not stamp hos_menu_shown_ns")

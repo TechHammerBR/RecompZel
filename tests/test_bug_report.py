@@ -248,7 +248,7 @@ def wiring():
     check("FormatMessageW(" in made and "WideCharToMultiByte(CP_UTF8," in made and "FormatMessageA" not in made,
           "make_dir's reason on Windows is not Windows' wide text turned into UTF-8")
     form = (ROOT / ".github" / "ISSUE_TEMPLATE" / "1-game-problem.yml").read_text(encoding="utf-8")
-    for label in ("Hookshot version", "Where in the game", "Graphics card and driver version", "CPU, RAM and operating system",
+    for label in ("RecompZel version", "Where in the game", "Graphics card and driver version", "CPU, RAM and operating system",
                   "Changes from the defaults", "hookshot_log.txt", "Screenshots or video"):
         check("label: " + label + "\n" in form, "the issue form has no field " + label)
     # (every field the link fills is one of the form's, by the name Forgejo reads: field:<id>)
@@ -317,7 +317,7 @@ def main():
         check(len(copy.splitlines()) == len(now_log.read_text(encoding="utf-8").splitlines()), "lines lost in the copy")
         report = files["report.txt"]
         section = lambda name: hw.section(report, name)
-        check(section("Hookshot version") == VERSION, "the version: " + section("Hookshot version"))
+        check(section("RecompZel version") == VERSION, "the version: " + section("RecompZel version"))
         gpu = section("Graphics card")
         check(gpu == "NVIDIA GeForce RTX 4090, NVIDIA 580.95.05" and hw.classify(gpu) == ("NVIDIA", "RTX 40"),
               "hardware_report.py reads the GPU as %s from %r" % (hw.classify(gpu), gpu))

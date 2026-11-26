@@ -392,7 +392,7 @@ class WalkKeyTests(unittest.TestCase):
         self.assertIn("int walk_mode = 0;", header)
         self.assertIn("rx_option(HOS_OPT_WALK_MODE, 0) == 1", block(hid, "static void read_input("))
         # (documented where the rows and the ini's keys are)
-        readme, development = read("readme.md"), read("docs", "development.md")
+        readme, development = read("docs", "HOOKSHOT-README.md"), read("docs", "development.md")
         lo, hi = speed.groups()
         for text in ("| | Walk mode | Hold, Toggle | Hold |",
                      "| | Walk speed | %s%% to %s%%, in steps of 5 | %d%% |" % (lo, hi, default), "`walk`"):

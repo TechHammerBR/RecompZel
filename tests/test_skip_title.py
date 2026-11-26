@@ -136,7 +136,7 @@ def check_menu():
         raise SystemExit("vk_replay.cpp: the renderer does not answer HOS_OPT_SKIP_TITLE")
     if menu.count("HOS_OPT_SKIP_TITLE") or header.count("HOS_OPT_SKIP_TITLE"):
         raise SystemExit("the menu should use opts.skip_title, not the host's option id")
-    if "Skip title screen" not in (ROOT / "readme.md").read_text(encoding="utf-8"):
+    if "Skip title screen" not in (ROOT / "docs" / "HOOKSHOT-README.md").read_text(encoding="utf-8"):
         raise SystemExit("readme.md: the menu's Skip title screen row is not documented")
 
 

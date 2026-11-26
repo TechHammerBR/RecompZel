@@ -256,9 +256,9 @@ def main():
     line = lambda marker: next(l for l in vi.split("\n") if l.startswith(marker))
     host = "\n".join([line("enum { FPS_UNCAPPED"), line("static volatile uint64_t movie_seen_at;"),
                       line("static const int64_t MOVIE_STALE_NS"), line("static volatile int fps_now;"),
-                      line("static int fps_of(")] +
+                      line("static int fps_of("), line("volatile int64_t hos_menu_shown_ns;")] +
                      [block(vi, m) for m in ("static float text_scale(", "static float camera_scale(", "static void fps_refresh(",
-                                             "static int fps_max(void) {", "int hos_vi_native_interval(", "static int realtime_rate(",
+                                             "static int fps_cap(void) {", "static int menu_hold(", "static int fps_max(void) {", "int hos_vi_native_interval(", "static int realtime_rate(",
                                              "static void realtime_step(")])
     # (the option ids realtime_step names: vk_api.h's HOS_OPT_* enums)
     opts = "\n".join(re.findall(r"enum \{ HOS_OPT_[^}]*\};", (ROOT / "gpu" / "vk" / "vk_api.h").read_text(encoding="utf-8")))

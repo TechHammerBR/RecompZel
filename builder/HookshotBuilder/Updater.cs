@@ -8,14 +8,13 @@ using System.Windows;
 
 namespace HookshotBuilder;
 
-/// The launcher's Update, and --update <game folder> --tag <release> (what a game built when it asked about updates itself
-/// starts). When these tools are
+/// The game's update offer (host/hos_update.c) starts this app with --update <game folder> --tag <release>. When these tools are
 /// not that release, the release's HookshotBuilder.zip is downloaded and unpacked beside this app, and the new app is started with
 /// --fetched to build the folder; when they are, the folder is built again here (nx2/make_game.py --update: from the game files the
 /// folder keeps).
 static class Updater
 {
-    const string Latest = "https://git.notrexed.dev/api/v1/repos/Hookshot/Hookshot/releases/latest";
+    const string Latest = "https://api.github.com/repos/TechHammerBR/RecompZel/releases/latest";
     const string Asset = "HookshotBuilder.zip";
     const string SetupAsset = "RecompZelBuilder.exe";            // (the setup, builder/setup/setup.c: a release holds it and its list)
     const string SetupList = "hookshot-setup.txt";              // (scripts/make_setup_parts.py)
@@ -36,10 +35,10 @@ static class Updater
         UpdateFolder(w, folder, tag, fetched);
     }
 
-    // ---- the update tracks (the Track menu; by default the track of these tools). builder/setup/setup.c and
+    // ---- the update tracks (the Track menu; by default the track of these tools). host/hos_update.c and
     // builder/linux/linux_update.py have the same rules ----
     public const string Release = "release", Candidate = "rc", Nightly = "nightly";
-    const string Releases = "https://git.notrexed.dev/api/v1/repos/Hookshot/Hookshot/releases";
+    const string Releases = "https://api.github.com/repos/TechHammerBR/RecompZel/releases";
     static readonly System.Text.RegularExpressions.Regex NightlyName = new(@"-\d+-g[0-9a-f]+(-dirty)?$");
     static readonly System.Text.RegularExpressions.Regex ReleaseName = new(@"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$");
 
@@ -94,7 +93,7 @@ static class Updater
             {
                 try
                 {
-                    var list = await http.GetStringAsync("https://git.notrexed.dev/Hookshot/Hookshot/releases/download/nightly/" + SetupList);
+                    var list = await http.GetStringAsync("https://github.com/TechHammerBR/RecompZel/releases/download/nightly/" + SetupList);
                     foreach (var line in list.Split('\n'))
                         if (line.StartsWith("tag ")) return line[4..].Trim();
                 }
@@ -105,7 +104,7 @@ static class Updater
         }
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, Releases + "?limit=20");
+            using var request = new HttpRequestMessage(HttpMethod.Get, Releases + "?per_page=20");
             request.Headers.Accept.ParseAdd("application/vnd.github+json");
             using var response = await http.SendAsync(request);
             if (response.IsSuccessStatusCode)
@@ -153,7 +152,7 @@ static class Updater
         {
             try
             {
-                var list = await http.GetStringAsync("https://git.notrexed.dev/Hookshot/Hookshot/releases/latest/download/" + SetupList);
+                var list = await http.GetStringAsync("https://github.com/TechHammerBR/RecompZel/releases/latest/download/" + SetupList);
                 foreach (var line in list.Split('\n'))
                     if (line.StartsWith("tag ")) return line[4..].Trim();
             }
@@ -173,8 +172,8 @@ static class Updater
         var token = w.DownloadToken;
         using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("HookshotBuilder");
-        w.Note("Asking git.notrexed.dev for the latest release");
-        string? setupUrl = null, setupApiUrl = null, setupDigest = null, setupSum = null;
+        w.Note("Asking GitHub for the latest release");
+        string? setupUrl = null, setupApiUrl = null, setupDigest = null;
         long setupSize = 0;
         using (var response = await GetWithRetries(w, http, tag == null ? Latest : Releases + "/tags/" + ReleaseOf(tag), token,
                                                    "application/vnd.github+json", TimeSpan.FromSeconds(30)))
@@ -183,22 +182,18 @@ static class Updater
                 if (asset.GetProperty("name").GetString() == SetupAsset)
                 {
                     setupUrl = asset.GetProperty("browser_download_url").GetString();
-                    setupApiUrl = ApiUrl(asset);
+                    setupApiUrl = asset.GetProperty("url").GetString();
                     setupSize = asset.GetProperty("size").GetInt64();
                     setupDigest = DigestText(asset);
                 }
-                else if (asset.GetProperty("name").GetString() == SetupAsset + ".sha256")
-                    setupSum = asset.GetProperty("browser_download_url").GetString();
         if (setupUrl == null) throw new InvalidOperationException("The latest release has no " + SetupAsset + ".");
-        setupDigest = await DigestOf(http, setupDigest, setupSum, token);
-        var cache = Path.Combine(BuilderHome.Base, "update");
+        var cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "update");
         Directory.CreateDirectory(cache);
         var setup = Path.Combine(cache, SetupAsset);
         w.Note("Downloading the new RecompZel Builder");
         await DownloadWithRetries(w, http, setupUrl, setupApiUrl, setup, setupSize, setupDigest, token);
         var si = new ProcessStartInfo(setup) { UseShellExecute = false, WorkingDirectory = cache };
         foreach (var arg in args) si.ArgumentList.Add(arg);
-        BuilderHome.PassTo(si);
         Process.Start(si);
         Application.Current.Shutdown();
     }
@@ -218,7 +213,7 @@ static class Updater
         // right after a publish), and building here kept players on the old version while the builder said it updated)
         if (fetched && tag != null && tools.Version != null && tools.Version != tag)
         {
-            w.DownloadFailed($"The update installed {tools.Version}, not {tag}: download links can lag right after a release. Try Update again in a few minutes.");
+            w.DownloadFailed($"The update installed {tools.Version}, not {tag}: GitHub's download links can lag right after a release. Try Update again in a few minutes.");
             return;
         }
         // (already the new release, or just downloaded: no second download)
@@ -232,10 +227,10 @@ static class Updater
             var token = w.DownloadToken;
             using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
             http.DefaultRequestHeaders.UserAgent.ParseAdd("HookshotBuilder");
-            w.Note("Asking git.notrexed.dev for the latest release");
+            w.Note("Asking GitHub for the latest release");
             string? newTag = null, url = null, setupUrl = null;
             string? apiUrl = null, setupApiUrl = null;
-            string? digest = null, setupDigest = null, sum = null, setupSum = null;
+            string? digest = null, setupDigest = null;
             long size = 0, setupSize = 0;
             var hasList = false;
             // (another track's build, or one a switch of track asked for: that release; the nightly's is named by its list's tag)
@@ -251,25 +246,21 @@ static class Updater
                     if (assetName == Asset)
                     {
                         url = asset.GetProperty("browser_download_url").GetString();
-                        apiUrl = ApiUrl(asset);
+                        apiUrl = asset.GetProperty("url").GetString();
                         size = asset.GetProperty("size").GetInt64();
                         digest = DigestText(asset);
                     }
                     else if (assetName == SetupAsset)
                     {
                         setupUrl = asset.GetProperty("browser_download_url").GetString();
-                        setupApiUrl = ApiUrl(asset);
+                        setupApiUrl = asset.GetProperty("url").GetString();
                         setupSize = asset.GetProperty("size").GetInt64();
                         setupDigest = DigestText(asset);
                     }
                     else if (assetName == SetupList) hasList = true;
-                    else if (assetName == Asset + ".sha256") sum = asset.GetProperty("browser_download_url").GetString();
-                    else if (assetName == SetupAsset + ".sha256") setupSum = asset.GetProperty("browser_download_url").GetString();
                 }
             }
             if (newTag == null || (url == null && setupUrl == null)) throw new InvalidOperationException("The latest release has no " + Asset + ".");
-            digest = await DigestOf(http, digest, sum, token);
-            setupDigest = await DigestOf(http, setupDigest, setupSum, token);
             if (newTag == tools.Version)
             {
                 w.UpdateBuild(tools, folder);
@@ -280,7 +271,7 @@ static class Updater
             // would be the HookshotBuilder folder itself or not a version (the same rule as the setup's and Linux's lists)
             if (name.Length == 0 || name.Length > 128 || name[0] == '.')
                 throw new InvalidOperationException("The latest release's tag is not a version name.");
-            var cache = Path.Combine(BuilderHome.Base, "update");
+            var cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HookshotBuilder", "update");
             Directory.CreateDirectory(cache);
             // (a release with the setup and its list: the setup downloads only the parts that changed since the version installed (a few MB
             // when only the builder's code did), checks them and starts the new builder with these arguments. The whole zip is the fallback)
@@ -291,7 +282,6 @@ static class Updater
                 await DownloadWithRetries(w, http, setupUrl, setupApiUrl, setup, setupSize, setupDigest, token);
                 var ssi = new ProcessStartInfo(setup) { UseShellExecute = false, WorkingDirectory = cache };
                 foreach (var arg in new[] { "--update", folder, "--tag", newTag, "--fetched" }) ssi.ArgumentList.Add(arg);
-                BuilderHome.PassTo(ssi);
                 Process.Start(ssi);
                 Application.Current.Shutdown();
                 return;
@@ -304,11 +294,7 @@ static class Updater
             // (beside this app when that folder takes writing, else in the app data folder)
             var parent = Directory.GetParent(AppContext.BaseDirectory.TrimEnd('\\', '/'))!.FullName;
             string target;
-            if (BuilderHome.Portable)
-            {
-                target = await Task.Run(() => PortableArchive.Install(zip, BuilderHome.Base, newTag));
-            }
-            else try
+            try
             {
                 target = await Unpack(zip, Path.Combine(parent, "HookshotBuilder " + name));
             }
@@ -321,7 +307,6 @@ static class Updater
             if (!File.Exists(exe)) throw new FileNotFoundException("The download has no HookshotBuilder.exe (your antivirus may have removed it).");
             var si = new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = target };
             foreach (var arg in new[] { "--update", folder, "--tag", newTag, "--fetched" }) si.ArgumentList.Add(arg);
-            BuilderHome.PassTo(si);
             Process.Start(si);
             Application.Current.Shutdown();
         }
@@ -331,7 +316,7 @@ static class Updater
         }
         catch (Exception e)
         {
-            w.DownloadFailed(e.Message + " Your game folder is unchanged; you can also download the new version from git.notrexed.dev yourself.");
+            w.DownloadFailed(e.Message + " Your game folder is unchanged; you can also download the new version from GitHub yourself.");
         }
     }
 
@@ -365,22 +350,11 @@ static class Updater
             }
 
             if (attempt == RetryDelays.Length) break;
-            w.Note($"git.notrexed.dev did not answer{StatusDetail(last)}. Retrying in {(int)RetryDelays[attempt].TotalSeconds} s...");
+            w.Note($"GitHub did not answer{StatusDetail(last)}. Retrying in {(int)RetryDelays[attempt].TotalSeconds} s...");
             await Task.Delay(RetryDelays[attempt], token);
         }
-        throw new HttpRequestException($"The release API did not respond after {RetryDelays.Length + 1} attempts: {last?.Message}",
+        throw new HttpRequestException($"GitHub's release API did not respond after {RetryDelays.Length + 1} attempts: {last?.Message}",
             last, (last as HttpRequestException)?.StatusCode);
-    }
-
-    static string? ApiUrl(JsonElement asset) =>
-        asset.TryGetProperty("url", out var u) && u.ValueKind == JsonValueKind.String ? u.GetString() : null;
-
-    /// (git.notrexed.dev's API gives no digest: each release holds <asset>.sha256 beside the file, its first word the SHA-256)
-    static async Task<string?> DigestOf(HttpClient http, string? digest, string? sumUrl, CancellationToken token)
-    {
-        if (digest != null || sumUrl == null) return digest;
-        var words = (await http.GetStringAsync(sumUrl, token)).Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries);
-        return words.Length > 0 ? "sha256:" + words[0].ToLowerInvariant() : null;
     }
 
     static string? DigestText(JsonElement asset) =>
@@ -389,9 +363,9 @@ static class Updater
     static byte[] ParseDigest(string? digest)
     {
         if (digest == null || !digest.StartsWith("sha256:", StringComparison.Ordinal) || digest.Length != 71)
-            throw new InvalidDataException("The server did not provide a valid SHA-256 digest for this download.");
+            throw new InvalidDataException("GitHub did not provide a valid SHA-256 digest for this download.");
         try { return Convert.FromHexString(digest[7..]); }
-        catch (FormatException e) { throw new InvalidDataException("The server did not provide a valid SHA-256 digest for this download.", e); }
+        catch (FormatException e) { throw new InvalidDataException("GitHub did not provide a valid SHA-256 digest for this download.", e); }
     }
 
     static async Task DownloadWithRetries(MainWindow w, HttpClient http, string url, string? apiUrl, string path, long size,
@@ -409,7 +383,7 @@ static class Updater
             catch (Exception e) when (IsTransient(e))
             {
                 last = e;
-                if (apiUrl != null) w.Note($"Release download failed{StatusDetail(e)}; trying the API's asset URL.");
+                if (apiUrl != null) w.Note($"Release download failed{StatusDetail(e)}; trying GitHub's API asset URL.");
             }
 
             if (apiUrl != null)
@@ -426,10 +400,10 @@ static class Updater
             }
 
             if (attempt == RetryDelays.Length) break;
-            w.Note($"The download server did not answer{StatusDetail(last)}. Retrying in {(int)RetryDelays[attempt].TotalSeconds} s...");
+            w.Note($"GitHub's download servers did not answer{StatusDetail(last)}. Retrying in {(int)RetryDelays[attempt].TotalSeconds} s...");
             await Task.Delay(RetryDelays[attempt], token);
         }
-        throw new HttpRequestException($"The asset download failed after {RetryDelays.Length + 1} attempts: {last?.Message}",
+        throw new HttpRequestException($"GitHub's asset download failed after {RetryDelays.Length + 1} attempts: {last?.Message}",
             last, (last as HttpRequestException)?.StatusCode);
     }
 
@@ -471,7 +445,7 @@ static class Updater
                 }
                 if (total > 0 && have != total) throw new HttpRequestException($"The download ended early ({have >> 20} of {total >> 20} MB).");
                 if (!CryptographicOperations.FixedTimeEquals(hash.GetHashAndReset(), expectedHash))
-                    throw new InvalidDataException("The download did not match the release's SHA-256 digest.");
+                    throw new InvalidDataException("The download did not match GitHub's SHA-256 digest.");
             }
             File.Move(partial, path, overwrite: true);
         }
@@ -483,7 +457,7 @@ static class Updater
     }
 
     static HttpRequestException HttpFailure(HttpResponseMessage response) =>
-        new($"git.notrexed.dev returned HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).", null, response.StatusCode);
+        new($"GitHub returned HTTP {(int)response.StatusCode} ({response.ReasonPhrase}).", null, response.StatusCode);
 
     static bool IsTransient(Exception error) =>
         error is HttpRequestException request && (request.StatusCode is null || (int)request.StatusCode >= 500);

@@ -128,7 +128,7 @@ def wiring_checks():
     menu_h = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
     host = (ROOT / "host" / "hos_wide_ui.c").read_text(encoding="utf-8")
-    readme = (ROOT / "readme.md").read_text(encoding="utf-8")
+    readme = (ROOT / "docs" / "HOOKSHOT-README.md").read_text(encoding="utf-8")
     dev = (ROOT / "docs" / "development.md").read_text(encoding="utf-8")
     for ok, what in (
             (re.search(r"HOS_OPT_HUD_LAYOUT = 75\b", api), "gpu/vk/vk_api.h names option 75 HOS_OPT_HUD_LAYOUT"),

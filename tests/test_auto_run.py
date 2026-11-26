@@ -50,7 +50,7 @@ def source_checks():
     check("int hos_oot_player_free(void)" in main, "hos_main.c has no hos_oot_player_free")
     check(re.search(r"__atomic_store_n\(&player_free_seen, oot_event_playing\(c\) \? 0 : hos_now_ns\(\)", main),
           "Link's update does not note whether he is the player's to move")
-    readme = read("readme.md")
+    readme = read("docs/HOOKSHOT-README.md")
     check("| | Auto run | Off, On | Off |" in readme, "readme.md's option table has no Auto run row")
     check("- **Auto run:**" in readme, "readme.md does not say what Auto run does")
 

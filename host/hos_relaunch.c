@@ -18,6 +18,7 @@
 #include <windows.h>
 #include <process.h>   /* (_cexit) */
 #include "hos_relaunch.h"
+#include "../gpu/vk/compat/hookshot_env.h"   /* (env_on) */
 
 static volatile LONG relaunch_asked;
 
@@ -196,6 +197,9 @@ void hos_close_finish(void) {
 
 /* The window was closed (host/display.c's WM_CLOSE, host/posix/display_sdl.c's quit): the game exits, and starts again
    first when the menu asked for it */
+/* (recompzel) On Windows the atexit handlers run (_cexit: the log, the capture notes), then the process ends without the DLLs'
+   DLL_PROCESS_DETACH: in ExitProcess NVIDIA's frame generation (nvngx_dlssg.dll) tore down after the device and crashed
+   reading 0x48 at every close of the window (2026-11-20). HOS_EXIT_DETACH=1: ExitProcess as before */
 void hos_window_closed_exit(void) {
     /* (a save being written goes to its end first: hos_close_finish waits for it, host/nn_fs.c) */
     const int again = relaunch_asked != 0;
@@ -203,15 +207,7 @@ void hos_window_closed_exit(void) {
     hos_close_finish();
     if (again) relaunch();
 #ifdef _WIN32
-    /* (recompzel) The atexit handlers run (the memory trial's orderly end, the capture notes, the log), then the process ends
-       without the DLLs' DLL_PROCESS_DETACH: in ExitProcess NVIDIA's frame generation (nvngx_dlssg.dll, through Streamline's
-       sl.dlss_g.dll) tore down after the device and crashed reading 0x48 at every close of the window (2026-11-20, both the
-       normal build and the test one), so each session ended as a crash, before the game's own atexit handlers ran.
-       HOS_EXIT_DETACH=1: ExitProcess as before */
-    if (!getenv("HOS_EXIT_DETACH")) {
-        _cexit();
-        TerminateProcess(GetCurrentProcess(), 0);
-    }
+    if (!env_on("HOS_EXIT_DETACH")) _cexit(), TerminateProcess(GetCurrentProcess(), 0);   /* (recompzel: below) */
 #endif
     ExitProcess(0);
 }

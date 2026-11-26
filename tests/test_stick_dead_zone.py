@@ -50,7 +50,7 @@ def main():
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
     header = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
-    readme = (ROOT / "readme.md").read_text(encoding="utf-8")
+    readme = (ROOT / "docs" / "HOOKSHOT-README.md").read_text(encoding="utf-8")
 
     check(not re.search(r"HOS_OPT_\w+ = 11\b", api), "a HOS_OPT_ enum also takes option 11")
     pads = block(hid, "static void xinput_poll(")   # (XInput's pads, read off the game's thread)

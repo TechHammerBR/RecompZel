@@ -534,7 +534,7 @@ std::string write(const Inputs& in) {
     text += std::string("To send it: open ") + kIssues + " and choose Game problem (or the link at the end of this file, which "
             "fills in the answers below), copy the answers below into the fields of the same names, say what happened, and drag "
             "the files of this folder, this one too, into the issue.\n\n";
-    text += "### Hookshot version\n\n" + in.version + "\n\n";
+    text += "### RecompZel version\n\n" + in.version + "\n\n";
     text += "### Where in the game\n\n" + where + "\n\n";
     text += "### Graphics card and driver version\n\n" + gpu + "\n\n";
     text += "### CPU, RAM and operating system\n\n" + in.system + "\n\n";

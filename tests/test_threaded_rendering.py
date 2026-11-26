@@ -329,7 +329,7 @@ def read_sources():
     paths = dict(rule=VK / "threaded_rendering.h", menu=VK / "vk_menu.cpp", menu_h=VK / "vk_menu.h", replay=VK / "vk_replay.cpp",
                  recorder=VK / "vk_recorder.h", api=VK / "vk_api.h", progcache=VK / "vk_progcache.cpp",
                  internal=VK / "vk_internal.h", policy=VK / "device_policy.h", main=VK / "vk_main.cpp",
-                 switches=VK / "switches.def", native=ROOT / "host" / "nvn_native.c", readme=ROOT / "readme.md",
+                 switches=VK / "switches.def", native=ROOT / "host" / "nvn_native.c", readme=ROOT / "docs" / "HOOKSHOT-README.md",
                  docs=ROOT / "docs" / "development.md")
     return {k: p.read_text(encoding="utf-8") for k, p in paths.items()}
 

@@ -71,6 +71,7 @@ class FinishOutputTests(unittest.TestCase):
         with mock.patch.object(make_game, "BESIDE", ["hookshot.exe"]):
             # Comprehensions use globals. Keep one namespace, as in production, and discover only authored setup files.
             namespace = dict(make_game.__dict__, built=str(self.built), out=str(self.out), work=str(self.work),
+                             GAME_EXE="hookshot.exe",   # (recompzel: the game's exe has its own name; this test uses Hookshot's)
                              ROOT=str(self.root / "tools"), LINUX=False if launcher else make_game.LINUX,
                              a=SimpleNamespace(fsr=False, no_fsr=False, update=None, fetch_fsr_runtime=False))
             exec(FINISH, namespace)

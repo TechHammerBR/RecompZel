@@ -573,7 +573,7 @@ static char *report_text(const Report *in, size_t *len) {
     Recent recent = {(int64_t)time(NULL), 0};
     if (pending_of(in->dir, pending, sizeof pending)) each_name(pending, count_recent, &recent);
     putf(&b, "Crash and unclean-end records in the last day: %d.\n\n", recent.count);
-    putf(&b, "### Hookshot version\n\n%s\nChannel (from the version): %s\n\n", in->version, channel_of(in->version));
+    putf(&b, "### RecompZel version\n\n%s\nChannel (from the version): %s\n\n", in->version, channel_of(in->version));
     putf(&b, "### Graphics card and driver version\n\n%s\n", in->gpu);
     if (in->log->facts.devices[0]) putf(&b, "Devices the log lists: %s\n", in->log->facts.devices);
     putf(&b, "\n### CPU, RAM and operating system\n\n%s\nBuilt for: %s\n\n", in->system, built_for());

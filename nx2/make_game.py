@@ -68,6 +68,7 @@ LINUX, CROSS = not _toolchain.windows(), _toolchain.windows() and os.name != "nt
 # (SDL2.dll is sdl2-compat: it loads SDL3.dll from beside the exe. Left out of bin\ since v2.0.0, it said "Failed loading SDL3
 # library" three times and no controller worked: Discord #bug-reporting, 11-08)
 BESIDE = ["hookshot", "hookshot_vk.so", "libSDL2-2.0.so.0", "renhdrum.so"] if LINUX else ["hookshot.exe", "hookshot_vk.dll", "SDL2.dll", "SDL3.dll", "renhdrum.dll"]
+GAME_EXE = BESIDE[0] if LINUX else "RecompZel.exe"   # (recompzel: the game's exe, named for it; the Builder's launcher keeps BESIDE[0])
 LANGUAGES = [("en-US", "English (US)"), ("en-GB", "English (UK)"), ("fr", "French (France)"), ("fr-CA", "French (Canada)"), ("de", "German"),
              ("it", "Italian"), ("es", "Spanish (Spain)"), ("es-419", "Spanish (Latin America)"), ("pt-BR", "Portuguese (Brazil)"), ("nl", "Dutch"),
              ("pl", "Polish"), ("ru", "Russian"), ("ja", "Japanese"), ("ko", "Korean"), ("zh-Hans", "Chinese (Simplified)"),
@@ -2863,7 +2864,7 @@ def game_copy(path, roots):
     program the player keeps in the folder is not: the Hookshot Builder's exe kept there would be taken for the game, its window
     named as Hookshot still running and the update stopped, and a windowless one would have been ended"""
     path = os.path.normcase(path)
-    return os.path.basename(path) == "hookshot.exe" and os.path.dirname(path) + os.sep in roots
+    return os.path.basename(path).lower() in ("hookshot.exe", GAME_EXE.lower()) and os.path.dirname(path) + os.sep in roots
 
 
 def end_stale_games(folders):
@@ -3599,7 +3600,7 @@ def main(a=None):
     print("\n".join(PHASES.table()), flush=True)
     print("the build took %s, compiled in %s%s" % (clock(total_seconds), clock(compile_seconds),
                                                     "" if previous is None else " (the last one %s)" % clock(previous)), flush=True)
-    executable = os.path.join(game_dir, BESIDE[0])
+    executable = os.path.join(game_dir, BESIDE[0] if launcher else GAME_EXE)   # (recompzel: GAME_EXE)
     if os.path.isfile(executable):
         print("executable size: %d bytes" % os.path.getsize(executable), flush=True)
     say("times", "%.0f" % total_seconds, "%.0f" % compile_seconds, "-1" if previous is None else "%.0f" % previous)
@@ -3611,7 +3612,7 @@ def main(a=None):
     if skipped:
         not_prepared(skipped)
     else:
-        prepare_shaders([os.path.join(game_dir, BESIDE[0]), "--prepare-shaders", "--compile-shaders", level], out)
+        prepare_shaders([os.path.join(game_dir, BESIDE[0] if launcher else GAME_EXE), "--prepare-shaders", "--compile-shaders", level], out)
     say("done", out)
 
 

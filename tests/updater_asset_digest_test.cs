@@ -9,19 +9,6 @@ using HookshotBuilder;
 
 namespace DigestFixture
 {
-    // This suite varies the standard-home boundary per case. Portable root/archive algorithms
-    // execute separately in test_portable_builder_home.py and test_portable_archive.py.
-    static class FakeBuilderHome
-    {
-        public static string Base => Path.Combine(State.Current.Root, "HookshotBuilder");
-        public static bool Portable => false;
-        public static void PassTo(ProcessStartInfo info) => info.Environment["HOOKSHOT_SETUP_BASE"] = Base;
-    }
-    static class UnusedPortableArchive
-    {
-        public static string Install(string zip, string home, string tag) =>
-            throw new InvalidOperationException("A standard update unexpectedly selected the portable archive route.");
-    }
     static class FakeEnvironment
     {
         public enum SpecialFolder { LocalApplicationData }
@@ -104,7 +91,7 @@ namespace DigestFixture
         public readonly List<double> Progress = new();
         public int MetadataRequests;
         public string Cache => Path.Combine(Root, "HookshotBuilder", "update");
-        public string Setup => Path.Combine(Cache, "HookshotBuilder.exe");
+        public string Setup => Path.Combine(Cache, "RecompZelBuilder.exe");
         public string Game => Path.Combine(Root, "authored-game-folder");
 
         public State()
@@ -120,8 +107,7 @@ namespace DigestFixture
         public static string Hash(byte[] bytes) => "sha256:" + Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
         public void Release(byte[] served, object? digest, bool zip = false, bool list = true,
-                            bool primaryFails = false, bool length = true, bool unusedBadZip = false, bool omitDigest = false,
-                            string? sumText = null)
+                            bool primaryFails = false, bool length = true, bool unusedBadZip = false, bool omitDigest = false)
         {
             var assets = new List<Dictionary<string, object?>>();
             Dictionary<string, object?> Asset(string name, object? hash) => new()
@@ -129,32 +115,24 @@ namespace DigestFixture
                 ["name"] = name, ["browser_download_url"] = "https://fixture.invalid/browser",
                 ["url"] = "https://fixture.invalid/api", ["size"] = served.Length, ["digest"] = hash
             };
-            assets.Add(Asset(zip ? "HookshotBuilder.zip" : "HookshotBuilder.exe", digest));
+            assets.Add(Asset(zip ? "HookshotBuilder.zip" : "RecompZelBuilder.exe", digest));
             if (omitDigest) assets[0].Remove("digest");
             if (list) assets.Add(new() { ["name"] = "hookshot-setup.txt" });
             if (unusedBadZip) assets.Add(Asset("HookshotBuilder.zip", null));
-            if (sumText != null)   // (git.notrexed.dev: the digest as <asset>.sha256 beside the file)
-                assets.Add(new() { ["name"] = (zip ? "HookshotBuilder.zip" : "HookshotBuilder.exe") + ".sha256",
-                                   ["browser_download_url"] = "https://fixture.invalid/sum" });
             var json = JsonSerializer.SerializeToUtf8Bytes(new { tag_name = "v9.9.9", assets });
             Handler.Respond = request =>
             {
-                if (Api(request))
+                if (request.RequestUri!.Host == "api.github.com")
                 {
                     MetadataRequests++;
                     return new(HttpStatusCode.OK) { Content = new ByteArrayContent(json) };
                 }
-                if (sumText != null && request.RequestUri!.AbsolutePath == "/sum")
-                    return new(HttpStatusCode.OK) { Content = new ByteArrayContent(Encoding.UTF8.GetBytes(sumText)) };
-                if (primaryFails && request.RequestUri!.AbsolutePath == "/browser")
+                if (primaryFails && request.RequestUri.AbsolutePath == "/browser")
                     return new(HttpStatusCode.ServiceUnavailable);
                 HttpContent content = length ? new ByteArrayContent(served) : new StreamContent(new Bytes(served));
                 return new(HttpStatusCode.OK) { Content = content };
             };
         }
-
-        public static bool Api(HttpRequestMessage r) =>
-            r.RequestUri!.Host == "git.notrexed.dev" && r.RequestUri.AbsolutePath.StartsWith("/api/v1/", StringComparison.Ordinal);
 
         public Task SetupRun() => Updater.RunLatestSetup(Window, Array.Empty<string>());
         public async Task<string> FolderRun()
@@ -289,18 +267,6 @@ namespace DigestFixture
                 await s.SetupRun(); Check(s.Starts.Count == 1, "Valid setup not handed off.");
                 Check(File.ReadAllBytes(s.Setup).SequenceEqual(s.Good), "Valid payload changed."); s.NoPartial();
             });
-            await Case("sha256-file-digest", async s =>
-            {
-                s.Release(s.Good, null, omitDigest: true, sumText: State.Hash(s.Good)[7..] + "  HookshotBuilder.exe" + (char)10);
-                await s.SetupRun(); Check(s.Starts.Count == 1, "Setup with its .sha256 beside it not handed off.");
-                Check(File.ReadAllBytes(s.Setup).SequenceEqual(s.Good), "Valid payload changed."); s.NoPartial();
-            });
-            await Case("sha256-file-mismatch", async s =>
-            {
-                s.Release(s.Good, null, omitDigest: true, sumText: new string('0', 64) + "  HookshotBuilder.exe" + (char)10);
-                Check(await Rejects<InvalidDataException>(s.SetupRun), "A .sha256 that does not match was accepted.");
-                s.NoUse(); s.NoPartial();
-            });
             await Case("valid-folder-setup-unused-bad-zip", async s =>
             {
                 s.Release(s.Good, State.Hash(s.Good), unusedBadZip: true);
@@ -334,7 +300,7 @@ namespace DigestFixture
             {
                 s.Release(s.Good, State.Hash(s.Good));
                 var normal = s.Handler.Respond;
-                s.Handler.Respond = r => State.Api(r) ? normal(r) : new(HttpStatusCode.Forbidden);
+                s.Handler.Respond = r => r.RequestUri!.Host == "api.github.com" ? normal(r) : new(HttpStatusCode.Forbidden);
                 Check(await Rejects<HttpRequestException>(s.SetupRun), "HTTP403 accepted.");
                 Check(s.Handler.Requests.Count == 2, "Authorization failure retried/fell back."); s.NoUse();
             });

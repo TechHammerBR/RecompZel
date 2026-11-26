@@ -89,7 +89,7 @@ def source_contract():
         "control.c": ["ExitProcess(0);"],
         "display.c": ["ExitProcess(1);", "ExitProcess(1);"],  # a window that failed to start; the renderer did not start
         "hos_main.c": ["ExitProcess(result);"],
-        "hos_relaunch.c": ["ExitProcess(0);"],
+        "hos_relaunch.c": ["TerminateProcess(GetCurrentProcess(), 0);", "ExitProcess(0);"],   # (recompzel: no DLL detach)
         "hos_svc.c": ["ExitProcess(0);"],
         "hos_thread.c": ["ExitProcess(3);"],  # fatal: record, not a clean end
         "posix/display_sdl.c": ["ExitProcess(1);", "ExitProcess(1);"],  # the renderer did not start; no window

@@ -207,18 +207,17 @@ volatile int64_t hos_menu_shown_ns;
 static int menu_hold(int64_t now, int64_t shown, int cap, int on) {
     return on && cap > 60 && shown && now - shown >= 0 && now - shown < 150000000;
 }
-static int fps_effective(int64_t now) {
+/* the rate every pacing, limiter and step site reads: the cap, 60 while a menu is in front */
+static int fps_max(void) {
     static int on = -1, was;
-    if (on < 0) on = !(getenv("HOS_MENU_FPS60") && !atoi(getenv("HOS_MENU_FPS60")));
-    const int held = menu_hold(now, __atomic_load_n(&hos_menu_shown_ns, __ATOMIC_RELAXED), fps_cap(), on);
+    if (on < 0) on = env_on_or("HOS_MENU_FPS60", 1);
+    const int held = menu_hold(hos_now_ns(), __atomic_load_n(&hos_menu_shown_ns, __ATOMIC_RELAXED), fps_cap(), on);
     if (held != was) {
         was = held;
         hos_log("vi: %s", held ? "a game menu in front: 60 fps, the console's step" : "menu closed: the frame rate cap again");
     }
     return held ? 60 : fps_cap();
 }
-/* the rate every pacing, limiter and step site reads: the cap, 60 while a menu is in front */
-static int fps_max(void) { return fps_effective(hos_now_ns()); }
 static int64_t next_frame_at, window_start, frames_in_window;
 static volatile LONG64 presents;
 /* (HL_STEP_SCAN, hl_trace.c: the frames presented so far) */

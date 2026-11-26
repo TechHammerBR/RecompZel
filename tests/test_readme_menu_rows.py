@@ -14,7 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 MENU = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-README = (ROOT / "readme.md").read_text(encoding="utf-8")
+README = (ROOT / "docs" / "HOOKSHOT-README.md").read_text(encoding="utf-8")
 ACTIONS = {"Restart", "Quit"}
 
 
